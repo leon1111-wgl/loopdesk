@@ -137,6 +137,11 @@ QUERY_SYNONYMS: dict[str, str] = {
     "境外": "海外",
     "寄到": "配送",
     "抵钱": "抵扣",
+    # generic support phrasing (found with the SaaS tenant's eval cases)
+    "用不了": "异常",
+    "不能用": "异常",
+    "有人管": "响应",
+    "有人处理": "响应",
 }
 _SYNONYM_RE = re.compile("|".join(sorted(map(re.escape, QUERY_SYNONYMS), key=len, reverse=True)))
 

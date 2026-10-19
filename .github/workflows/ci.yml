@@ -27,10 +27,12 @@ jobs:
           LOOPDESK_TEST_TRACE_WRITES: buffered
       - name: Regression eval gate (offline model, synthetic data)
         run: python -m app.evals.cli --fresh --gate 0.95 --report eval-report.json
+      - name: Regression eval gate, second tenant (SaaS knowledge base)
+        run: python -m app.evals.cli --fresh --tenant iris --gate 0.95 --report eval-report-iris.json
       - uses: actions/upload-artifact@v4
         with:
           name: eval-report
-          path: backend/eval-report.json
+          path: backend/eval-report*.json
 
   backend-postgres:
     name: Backend tests (PostgreSQL)
