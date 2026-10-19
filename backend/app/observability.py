@@ -26,6 +26,21 @@ request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 tenant_var: ContextVar[int | None] = ContextVar("tenant_id", default=None)
 user_var: ContextVar[int | None] = ContextVar("user_id", default=None)
 
+# Baseline browser hardening for the API and the bundled console. The CSP allows only
+# same-origin scripts, styles (inline style attributes are used by React), images (plus
+# data: for the inline favicon) and XHR/fetch. HSTS belongs at the TLS terminator.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; "
+        "form-action 'self'"
+    ),
+}
+
 logger = logging.getLogger("loopdesk")
 access_logger = logging.getLogger("loopdesk.access")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
@@ -78,6 +93,8 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 response = _error_response(request_id)
             status = response.status_code
             response.headers["X-Request-ID"] = request_id
+            for header, value in SECURITY_HEADERS.items():
+                response.headers.setdefault(header, value)
             return response
         finally:
             if request.url.path.startswith("/api"):

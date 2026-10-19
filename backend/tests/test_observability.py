@@ -63,3 +63,11 @@ def test_streaming_runs_also_record_the_request_id(client, login):
     assert r.headers["X-Request-ID"] == "sse-request-0007"
     run_id = [e for e in sse_events(r) if e["type"] == "done"][0]["run_id"]
     assert client.get(f"/api/runs/{run_id}", headers=login("admin@leon.demo")).json()["request_id"] == "sse-request-0007"
+
+
+def test_security_headers_on_every_response(client):
+    for r in (client.get("/api/health"), client.get("/api/does-not-exist")):
+        assert r.headers["X-Content-Type-Options"] == "nosniff"
+        assert r.headers["X-Frame-Options"] == "DENY"
+        assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+        assert "script-src 'self'" in r.headers["Content-Security-Policy"]
