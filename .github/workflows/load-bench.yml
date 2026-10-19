@@ -52,13 +52,13 @@ jobs:
         run: |
           python - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
           import json
-          print("| Setup | Concurrency | RPS | p50 ms | p95 ms | p99 ms | Errors |")
-          print("|---|---|---|---|---|---|---|")
+          print("| Setup | Concurrency | RPS | p50 ms | p99 ms | In-app p50 ms | In-app p99 ms | Errors |")
+          print("|---|---|---|---|---|---|---|---|")
           for name, path in (("SQLite, 1 worker", "sqlite-w1.json"), ("PostgreSQL, 1 worker", "pg-w1.json"),
                              ("PostgreSQL, 4 workers", "pg-w4.json")):
               for level in json.load(open(path))["levels"]:
-                  print(f"| {name} | {level['concurrency']} | {level['rps']} | {level['p50_ms']} | {level['p95_ms']} "
-                        f"| {level['p99_ms']} | {level['error_rate']} |")
+                  print(f"| {name} | {level['concurrency']} | {level['rps']} | {level['p50_ms']} | {level['p99_ms']} "
+                        f"| {level['server_p50_ms']} | {level['server_p99_ms']} | {level['error_rate']} |")
           EOF
       - uses: actions/upload-artifact@v4
         with:

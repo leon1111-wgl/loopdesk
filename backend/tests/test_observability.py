@@ -83,3 +83,9 @@ def test_validation_errors_are_readable_and_never_echo_the_input(client, login):
     assert "secret-" not in r.text, "a rejected password must not come back in the response"
     r = client.post("/api/auth/login", json={"email": "emma@example.com"})
     assert r.json()["detail"] == "缺少密码"
+
+
+def test_responses_carry_server_timing(client):
+    r = client.get("/api/health")
+    name, _, duration = r.headers["server-timing"].partition(";dur=")
+    assert name == "app" and float(duration) >= 0

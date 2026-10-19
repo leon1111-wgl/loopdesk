@@ -64,7 +64,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,
-        allow_methods=["*"], allow_headers=["*"], expose_headers=["X-Request-ID"],
+        allow_methods=["*"], allow_headers=["*"], expose_headers=["X-Request-ID", "Server-Timing"],
     )
     configure_logging(settings.log_format, settings.log_level)
     install_observability(app)

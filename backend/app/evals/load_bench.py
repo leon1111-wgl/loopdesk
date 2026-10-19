@@ -90,8 +90,18 @@ def _start_server(database_url: str, workers: int, cache_hours: float) -> tuple[
     raise RuntimeError("server did not become ready")
 
 
+def _server_ms(response: httpx.Response) -> float | None:
+    """The app's own time from the Server-Timing header ("app;dur=12.3")."""
+    for part in response.headers.get("server-timing", "").split(","):
+        name, _, rest = part.strip().partition(";dur=")
+        if name == "app" and rest:
+            return float(rest)
+    return None
+
+
 def _run_level(base: str, tokens: dict[str, str], concurrency: int, duration: float) -> dict:
     latencies: list[float] = []
+    server: list[float] = []
     errors: dict[str, int] = {}
     lock = threading.Lock()
     deadline = time.monotonic() + duration
@@ -107,12 +117,15 @@ def _run_level(base: str, tokens: dict[str, str], concurrency: int, duration: fl
                     r = client.post("/api/chat", json={"content": question},
                                     headers={"Authorization": f"Bearer {tokens[email]}"})
                     key = None if r.status_code == 200 else str(r.status_code)
+                    in_app = _server_ms(r)
                 except httpx.HTTPError as exc:
-                    key = type(exc).__name__
+                    key, in_app = type(exc).__name__, None
                 elapsed = (time.perf_counter() - started) * 1000
                 with lock:
                     if key is None:
                         latencies.append(elapsed)
+                        if in_app is not None:
+                            server.append(in_app)
                     else:
                         errors[key] = errors.get(key, 0) + 1
 
@@ -131,6 +144,9 @@ def _run_level(base: str, tokens: dict[str, str], concurrency: int, duration: fl
         "p95_ms": round(_percentile(latencies, 0.95), 1),
         "p99_ms": round(_percentile(latencies, 0.99), 1),
         "mean_ms": round(statistics.mean(latencies), 1) if latencies else 0.0,
+        # Inside the app; the gap to the client numbers is network, queueing and the HTTP server.
+        "server_p50_ms": round(_percentile(server, 0.5), 1),
+        "server_p99_ms": round(_percentile(server, 0.99), 1),
     }
 
 

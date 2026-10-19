@@ -94,6 +94,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 response = _error_response(request_id)
             status = response.status_code
             response.headers["X-Request-ID"] = request_id
+            # Time inside the app (for a stream: until the first byte). Client latency minus
+            # this is network, queueing and the HTTP server: the load benchmark reports both.
+            response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - started) * 1000:.1f}"
             for header, value in SECURITY_HEADERS.items():
                 response.headers.setdefault(header, value)
             return response
