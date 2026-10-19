@@ -19,6 +19,7 @@ import uuid
 from contextvars import ContextVar
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -114,5 +115,40 @@ def _error_response(request_id: str) -> JSONResponse:
     )
 
 
+_FIELD_LABELS = {
+    "content": "消息内容", "email": "邮箱", "password": "密码", "correction": "纠正内容", "comment": "备注",
+    "note": "备注", "query": "检索语句", "title": "标题", "question": "问题",
+}
+
+
+def _validation_message(error: dict) -> str:
+    field = next((p for p in reversed(error.get("loc", ())) if isinstance(p, str) and p != "body"), "")
+    label = _FIELD_LABELS.get(field, field or "请求内容")
+    kind, ctx = error.get("type", ""), error.get("ctx") or {}
+    if kind == "missing":
+        return f"缺少{label}"
+    if kind == "string_too_long":
+        return f"{label}不能超过 {ctx.get('max_length')} 个字"
+    if kind == "string_too_short":
+        return f"{label}不能为空" if ctx.get("min_length") == 1 else f"{label}至少需要 {ctx.get('min_length')} 个字"
+    if kind in ("greater_than_equal", "greater_than"):
+        return f"{label}不能小于 {ctx.get('ge', ctx.get('gt'))}"
+    if kind in ("less_than_equal", "less_than"):
+        return f"{label}不能大于 {ctx.get('le', ctx.get('lt'))}"
+    if kind == "json_invalid":
+        return "请求内容不是合法的 JSON"
+    return f"{label}格式不正确"
+
+
+async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Readable Chinese messages, and no echo of the input: FastAPI's default 422 body repeats
+    the rejected value, i.e. a 2,000-character message, or a password that was too long."""
+    errors = [{"field": ".".join(str(p) for p in e.get("loc", ()) if p != "body"), "type": e.get("type"),
+               "message": _validation_message(e)} for e in exc.errors()]
+    return JSONResponse({"detail": "；".join(dict.fromkeys(e["message"] for e in errors)), "errors": errors,
+                         "request_id": request_id_var.get()}, status_code=422)
+
+
 def install(app: FastAPI) -> None:
     app.add_middleware(RequestContextMiddleware)
+    app.add_exception_handler(RequestValidationError, _validation_error)

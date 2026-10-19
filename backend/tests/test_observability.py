@@ -71,3 +71,15 @@ def test_security_headers_on_every_response(client):
         assert r.headers["X-Frame-Options"] == "DENY"
         assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
         assert "script-src 'self'" in r.headers["Content-Security-Policy"]
+
+
+def test_validation_errors_are_readable_and_never_echo_the_input(client, login):
+    r = client.post("/api/chat", json={"content": "退" * 2001}, headers=login("customer@leon.demo"))
+    assert r.status_code == 422
+    assert r.json()["detail"] == "消息内容不能超过 2000 个字" and r.json()["request_id"]
+    assert "退退退" not in r.text
+    r = client.post("/api/auth/login", json={"email": "emma@example.com", "password": "secret-" * 30})
+    assert r.status_code == 422 and r.json()["detail"] == "密码不能超过 128 个字"
+    assert "secret-" not in r.text, "a rejected password must not come back in the response"
+    r = client.post("/api/auth/login", json={"email": "emma@example.com"})
+    assert r.json()["detail"] == "缺少密码"

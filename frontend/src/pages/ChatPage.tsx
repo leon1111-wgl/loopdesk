@@ -35,6 +35,7 @@ const REASONS: [string, string][] = [
   ["tone", "语气或表达"],
   ["other", "其他"],
 ];
+const MAX_MESSAGE = 2000; // same limit as the API
 const SENTENCE_SPLIT = /(?<=[。！？!?；;])|\n+/;
 const CITE = /\[(\d{1,2})\]/g;
 
@@ -194,7 +195,7 @@ function CorrectionModal({ message, onClose, onDone }: { message: ChatMessage; o
       <div className="faint">原回答</div>
       <div className="json small">{message.content}</div>
       <label className="field">正确答案
-        <textarea className="textarea" value={correction} onChange={(e) => setCorrection(e.target.value)}
+        <textarea className="textarea" value={correction} onChange={(e) => setCorrection(e.target.value)} maxLength={2000}
           placeholder="例如：以旧换新活动仅限手机和平板品类，在商品页点击“以旧换新”提交旧机信息，审核通过后可抵扣50-800元。" />
       </label>
       <label className="field">错误原因
@@ -461,6 +462,7 @@ export default function ChatPage() {
           {convStatus === "handoff" && <div className="notice" style={{ marginBottom: 8 }}>该对话已转人工，人工客服会尽快接入。</div>}
           <div className="composer-box">
             <textarea className="textarea" value={input} placeholder="输入问题，Enter 发送，Shift+Enter 换行" disabled={busy}
+              maxLength={MAX_MESSAGE} aria-describedby={input.length > MAX_MESSAGE * 0.9 ? "message-count" : undefined}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -472,6 +474,9 @@ export default function ChatPage() {
               <Send size={16} /> 发送
             </button>
           </div>
+          {input.length > MAX_MESSAGE * 0.9 && (
+            <div id="message-count" className="small muted" style={{ marginTop: 4 }}>{input.length} / {MAX_MESSAGE} 字</div>
+          )}
           {user?.role === "admin" && (
             <label className="row small muted" style={{ marginTop: 8, cursor: "pointer", width: "fit-content" }}>
               <input type="checkbox" checked={inject} onChange={(e) => setInject(e.target.checked)} />
