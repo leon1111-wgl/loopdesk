@@ -32,6 +32,7 @@ export interface SentenceCheck {
   cited: number[];
   unverified_numbers: number[];
   unknown_ids: string[];
+  contradicts?: string | null;
 }
 
 export interface Verification {

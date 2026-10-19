@@ -46,6 +46,7 @@ REFUSAL = (
 # answered on its own instead of being silently dropped.
 _EXTRA = re.compile(r"[，,。；;！!？?\s]+(?:另外|还有|顺便问一下|顺便|再问一下|以及)[，,\s]*")
 MULTI_REFUND_TEXT = "一次只能为一个订单申请退款，请告诉我要退哪一个订单。"
+REJECTED_NEXT_STEP = "如有补充凭证，可以重新提交退款申请，也可以回复“转人工”由客服进一步处理。"
 
 
 def split_intents(text: str) -> tuple[str, str | None]:
@@ -224,17 +225,23 @@ class MockLLM(LLMProvider):
             elif shipment.get("message"):
                 parts.append(shipment["message"])
 
+        # Only a refund that went through gets the payout timing; a rejected or failed one
+        # gets its reason and a next step, never "arrives in 1-3 working days".
+        refund_failed = bool(refund) and (bool(refund.get("error")) or refund.get("status") == "rejected")
         if refund:
             if refund.get("error"):
                 parts.append(f"退款申请未能提交：{refund['error']}。")
+            elif refund.get("status") == "rejected":
+                parts.append(refund.get("message", ""))
+                parts.append(REJECTED_NEXT_STEP)
             else:
                 parts.append(refund.get("message", ""))
 
         ticket = last("create_ticket")
         knowledge = last("search_knowledge")
         if knowledge:
-            query = "退款 到账 工作日" if refund and not refund.get("error") else expand_query(text)
-            if not (refund and refund.get("error")):
+            query = "退款 到账 工作日" if refund and not refund_failed else expand_query(text)
+            if not refund_failed:
                 limit = 1 if (refund or ticket) else 3
                 sentences = self._extract(query, knowledge.get("results") or [], limit)
                 if sentences:

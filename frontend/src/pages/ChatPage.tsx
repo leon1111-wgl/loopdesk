@@ -148,6 +148,7 @@ function EventItem({ event }: { event: AgentEvent }) {
             <div key={i} className="small" style={{ color: s.supported ? "var(--text-2)" : "var(--danger)" }}>
               {s.supported ? "✓" : "✗"} {s.text}
               {s.unverified_numbers.length > 0 && `（证据中没有数字 ${s.unverified_numbers.join("、")}）`}
+              {s.contradicts === "request_refund" && "（与退款结果矛盾：退款未通过或未提交）"}
             </div>
           ))}
         </div>

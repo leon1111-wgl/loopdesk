@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from app.db import new_session
-from app.models import Approval, Order, Refund, Tenant, User
+from app.models import Approval, Order, Refund, Run, Tenant, User
 from tests.conftest import by_type
 
 
@@ -81,9 +81,15 @@ def test_rejected_refund_tells_customer_the_reason(client, ask, login):
     approval_id = by_type(events, "approval_required")[0]["approval_id"]
     r = client.post(f"/api/approvals/{approval_id}/decide",
                     json={"decision": "reject", "comment": "商品已签收超过15天"}, headers=login("agent@leon.demo"))
-    assert "未通过人工审核" in r.json()["final"]["text"]
+    text = r.json()["final"]["text"]
+    assert "未通过人工审核" in text and "商品已签收超过15天" in text
+    # N-020: a rejected refund must not come with "arrives in 1-3 working days".
+    assert "到账" not in text and "工作日" not in text
+    assert "重新提交" in text or "转人工" in text
     with new_session() as db:
         assert db.get(Order, "SO20261008002").status == "shipped"
+        run = db.get(Run, by_type(events, "done")[0]["run_id"])
+        assert run.verdict == "pass"
 
 
 def test_requester_cannot_approve_own_request(client, ask, login):

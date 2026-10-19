@@ -65,6 +65,42 @@ def test_unsupported_sentence_lowers_coverage_and_bad_citation_is_reported():
     assert v.verdict != "pass"
 
 
+def _refund_result(output: dict) -> Evidence:
+    import json
+    return Evidence(3, "tool", "request_refund", json.dumps(output, ensure_ascii=False))
+
+
+REJECTED = {"status": "rejected", "comment": "该订单已退款",
+            "message": "退款申请未通过人工审核。审核意见：该订单已退款。"}
+
+
+def test_payout_timing_after_a_rejected_refund_is_a_contradiction():
+    # Grounded in the policy, wrong for this customer: the refund was rejected.
+    answer = "退款申请未通过人工审核。审核意见：该订单已退款。微信支付、支付宝退款预计1-3个工作日到账[1]。"
+    v = verify_answer(answer, EVIDENCE + [_refund_result(REJECTED)], "我要退款", Settings())
+    assert v.verdict == "blocked"
+    assert [s.contradicts for s in v.sentences] == [None, None, "request_refund"]
+    # Polite wording is not a way around it.
+    v = verify_answer("请放心，钱会原路退回。", [_refund_result(REJECTED)], "我要退款", Settings())
+    assert v.verdict == "blocked"
+
+
+def test_quoting_why_a_refund_failed_is_not_a_payout_claim():
+    v = verify_answer("退款申请未通过人工审核。审核意见：该订单已退款。", [_refund_result(REJECTED)], "我要退款", Settings())
+    assert v.verdict == "pass"
+    failed = {"error": "该订单当前状态为“已退款”，不能重复申请退款"}
+    v = verify_answer("退款申请未能提交：该订单当前状态为“已退款”，不能重复申请退款。",
+                      [_refund_result(failed)], "我要退款", Settings())
+    assert v.verdict == "pass"
+
+
+def test_payout_timing_after_a_successful_refund_passes():
+    done = {"status": "approved", "refund_id": 7, "message": "退款单 #7 已受理，退款金额 ¥39.90 将按原支付方式退回。"}
+    answer = "退款单 #7 已受理，退款金额 ¥39.90 将按原支付方式退回。微信支付、支付宝退款预计1-3个工作日到账[1]。"
+    v = verify_answer(answer, EVIDENCE + [_refund_result(done)], "我要退款", Settings())
+    assert v.verdict == "pass"
+
+
 def test_polite_sentences_are_not_counted_as_claims():
     answer = "抱歉，知识库中没有找到相关依据。建议您转人工客服确认。"
     v = verify_answer(answer, [], "以旧换新怎么参加", Settings())
