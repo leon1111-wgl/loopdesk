@@ -18,7 +18,7 @@ COPY --from=web /web/dist /app/frontend/dist
 RUN useradd --create-home loopdesk && chown -R loopdesk /app
 USER loopdesk
 EXPOSE 8000
-# Readiness = database reachable and schema at the latest migration (see /api/ready).
+# Readiness = database reachable, schema at the latest migration, retrieval indexes warm (see /api/ready).
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=4).status == 200 else 1)"
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

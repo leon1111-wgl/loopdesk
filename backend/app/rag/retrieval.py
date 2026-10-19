@@ -238,6 +238,39 @@ def _matrix(blobs: list[bytes]):
 index_manager = IndexManager()
 
 
+class Prewarm:
+    """Builds every tenant's index once at startup, in the background: otherwise the first
+    question after a restart waits for it (about 9 s at 50,000 chunks). The readiness probe
+    reports not ready until this is done, so a load balancer sends no traffic before."""
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.error: str | None = None
+
+    def start(self, enabled: bool) -> None:
+        self.done.clear()
+        self.error = None
+        if not enabled:
+            self.done.set()
+            return
+        threading.Thread(target=self._run, name="index-prewarm", daemon=True).start()
+
+    def _run(self) -> None:
+        from ..db import new_session
+
+        try:
+            with new_session() as db:
+                for tenant_id in db.execute(select(Tenant.id)).scalars().all():
+                    index_manager.get(db, tenant_id)
+        except Exception as exc:  # pragma: no cover - a search builds the index anyway
+            self.error = f"{type(exc).__name__}: {exc}"
+        finally:
+            self.done.set()
+
+
+prewarm = Prewarm()
+
+
 def hybrid_search(
     db: Session,
     tenant_id: int,

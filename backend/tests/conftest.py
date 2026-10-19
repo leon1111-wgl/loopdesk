@@ -20,6 +20,7 @@ def settings(tmp_path):
     s.rate_limit_per_minute = 1000
     s.seed_demo_traffic = False
     s.auto_migrate = False  # fast schema setup; migrations have their own tests
+    s.prewarm_index = False  # tests build indexes on demand; test_observability covers the prewarm
     s.log_format = "text"
     # CI also runs the suite with buffered trace writes (the PostgreSQL default) on SQLite.
     s.trace_writes = os.environ.get("LOOPDESK_TEST_TRACE_WRITES") or s.trace_writes

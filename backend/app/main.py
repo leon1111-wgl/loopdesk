@@ -25,6 +25,7 @@ from .observability import install as install_observability
 from .seed import seed_demo, seed_demo_traffic
 from .services import Services, set_services
 from . import telemetry
+from .rag.retrieval import prewarm
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     configure_logging(settings.log_format, settings.log_level)
     install_observability(app)
+    prewarm.start(settings.prewarm_index)  # after seeding, so the demo's documents are included
     for module in (auth, chat, kb, approvals, handoffs, traces, flywheel, evals, metrics, exports, channels, audit):
         app.include_router(module.router)
 
@@ -87,6 +89,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     checks["migrations"] = "ok" if current == head_revision() else f"at {current}, expected {head_revision()}"
         except Exception as exc:  # report, do not raise: probes need a status code, not a stack trace
             checks.setdefault("database", f"error: {type(exc).__name__}")
+        # A failed prewarm does not keep the instance out of service: a search builds the index.
+        checks["retrieval_index"] = "ok" if prewarm.done.is_set() else "warming up"
         ok = all(v == "ok" for v in checks.values())
         return JSONResponse({"status": "ready" if ok else "not_ready", "checks": checks}, status_code=200 if ok else 503)
 

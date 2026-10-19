@@ -113,3 +113,38 @@ def test_the_access_log_says_which_tenant_and_user_made_the_request(client, logi
     assert by_path["/api/conversations"]["tenant_id"] == me["tenant"]["id"]
     assert by_path["/api/conversations"]["user_id"] == me["id"]
     assert by_path["/api/health"]["tenant_id"] is None, "nothing leaks from the previous request"
+
+
+def test_indexes_are_built_at_startup_and_readiness_waits_for_them(settings, monkeypatch, tmp_path):
+    # A restarted process used to make its first customer wait for the index build (about 9 s at
+    # 50,000 chunks). It is now built in the background at startup; until then /api/ready says
+    # 503, so a load balancer sends no traffic to the instance.
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from app.rag.retrieval import index_manager
+    from tests.conftest import _reset_database
+
+    _reset_database(settings.database_url)
+    index_manager._cache.clear()
+    settings.prewarm_index = True
+    release, building = threading.Event(), threading.Event()
+    build = index_manager.get
+
+    def slow_build(db, tenant_id):
+        building.set()
+        release.wait(10)
+        return build(db, tenant_id)
+
+    monkeypatch.setattr(index_manager, "get", slow_build)
+    with TestClient(create_app(settings)) as client:
+        assert building.wait(10)
+        r = client.get("/api/ready")
+        assert r.status_code == 503 and r.json()["checks"]["retrieval_index"] == "warming up"
+        release.set()
+        from app.rag.retrieval import prewarm
+        assert prewarm.done.wait(10)
+        assert client.get("/api/ready").status_code == 200
+    assert len(index_manager._cache) == 2, "both demo tenants are warm"

@@ -30,7 +30,7 @@ docker compose up --build
 ## 健康检查与排障
 
 - `/api/health`：存活检查，只确认进程在运行。
-- `/api/ready`：就绪检查，确认数据库可连接并且表结构已经迁移到最新版本，否则返回 503。Dockerfile 中的 `HEALTHCHECK` 和 Kubernetes 的 readinessProbe 都应该指向它。
+- `/api/ready`：就绪检查，确认数据库可连接、表结构已经迁移到最新版本、检索索引已在后台预热完成，否则返回 503。预热让重启后的第一位顾客不必等索引构建（5 万片段约 9 秒）；`LOOPDESK_PREWARM_INDEX=0` 可以关闭，关闭后第一次检索时构建。Dockerfile 中的 `HEALTHCHECK` 和 Kubernetes 的 readinessProbe 都应该指向它。
 - 每个响应都带 `X-Request-ID`。用户报障时只要提供这个 ID，就可以在日志中找到对应的请求，在链路追踪中找到对应的 Agent 运行（trace 详情里会显示 request_id）。
 
 ## 渠道消息补偿
