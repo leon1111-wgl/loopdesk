@@ -34,7 +34,7 @@ from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.router import ModelRouter
 from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
-from .rewrite import is_followup, rewrite_followup
+from .rewrite import Frame, frame_of, is_followup, next_frame, rewrite_followup
 from ..observability import request_id_var
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
@@ -90,8 +90,12 @@ class AgentRuntime:
         options = options or RunOptions()
         pii = mask_pii(text) if self.settings.pii_masking else PIIReport(text, [])
         history = self._history(conversation)
+        previous, frame = self._previous_turn(conversation)
+        user_message = None
         if conversation is not None:  # dry runs pass a conversation only inside the eval sandbox
-            self.db.add(Message(tenant_id=tenant.id, conversation_id=conversation.id, role="user", content=pii.masked))
+            user_message = Message(tenant_id=tenant.id, conversation_id=conversation.id, role="user",
+                                   content=pii.masked, meta={})
+            self.db.add(user_message)
             if conversation.title == "新对话":
                 conversation.title = pii.masked[:30]
             conversation.updated_at = datetime.now(timezone.utc)
@@ -119,14 +123,17 @@ class AgentRuntime:
 
         # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
         question = pii.masked
-        previous = next((m.content for m in reversed(history) if m.role == "user"), None)
         if is_followup(text, previous):
             with tracer.span("rewrite", "followup_rewrite", {"question": pii.masked, "previous": previous}) as span:
                 span.model = self.settings.llm_model_fast
                 result, span.prompt_tokens, span.completion_tokens = rewrite_followup(
-                    self.provider, self.settings.llm_model_fast, history, pii.masked, previous)
+                    self.provider, self.settings.llm_model_fast, history, pii.masked, frame)
                 span.set(standalone=result.standalone, method=result.method)
             question = result.standalone
+            if user_message is not None:  # the next follow-up builds on this, not on what was typed
+                after = next_frame(frame, pii.masked, question)
+                user_message.meta = {**(user_message.meta or {}), "standalone": question,
+                                     "frame": {"topic": after.topic, "predicate": after.predicate}}
             yield {"type": "rewrite", "standalone": question, "method": result.method}
 
         # Prompt version: forced (offline A/B) > canary split by conversation > default.
@@ -526,6 +533,22 @@ class AgentRuntime:
         yield {"type": "final", "run_id": None, "message_id": None, "text": handoff.notice(current),
                "status": "handoff", "meta": {"handoff": current}}
         yield {"type": "done", "run_id": None, "status": "handoff", "latency_ms": 0}
+
+    def _previous_turn(self, conversation: Conversation | None) -> tuple[str | None, Frame | None]:
+        """The customer's previous question as understood (its standalone rewrite if it was a
+        follow-up) and the conversation frame after it."""
+        if conversation is None:
+            return None, None
+        last = self.db.execute(
+            select(Message).where(Message.conversation_id == conversation.id, Message.role == "user")
+            .order_by(Message.id.desc()).limit(1)
+        ).scalar_one_or_none()
+        if last is None:
+            return None, None
+        meta = last.meta or {}
+        question = meta.get("standalone") or last.content
+        frame = Frame(**meta["frame"]) if meta.get("frame") else frame_of(question)
+        return question, frame
 
     def _history(self, conversation: Conversation | None) -> list[LLMMessage]:
         if conversation is None:
