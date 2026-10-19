@@ -180,7 +180,9 @@ Agent 调用 handoff_to_human ─► 同一会话已有进行中的转人工工�
 
 ## 9. 可观测性
 
-每次运行都是一条 trace（`Run`），每一步是一个 span（`Span`）：类型、名称、输入、输出、状态、耗时、token。span 在完成时立即提交，所以运行还在流式输出时，链路页面就能看到已经完成的步骤。成本按 `LOOPDESK_PRICES` 中配置的单价计算。`/metrics` 以 Prometheus 格式输出聚合计数。运营团队可以在看板中导出近 N 天的对话、反馈和审批（`api/exports.py`），用于质检和复盘。CSV 带 BOM，并对公式前缀做转义，避免顾客输入的 `=HYPERLINK(...)` 在 Excel 里被执行。
+每次运行都是一条 trace（`Run`），每一步是一个 span（`Span`）：类型、名称、输入、输出、状态、开始时间、耗时、token。SQLite 上 span 完成即提交，运行还在流式输出时链路页面就能看到已经完成的步骤；PostgreSQL 上在运行的提交点批量写入（见 `LOOPDESK_TRACE_WRITES`），开始时间取 span 真正开始的时刻，而不是写库的时刻。
+
+**OpenTelemetry**（`app/telemetry.py`）：配置 `LOOPDESK_OTLP_ENDPOINT` 后，每次运行结束时导出为一条 OTel trace：根 span `invoke_agent loopdesk`，模型调用是 `chat <模型>`（带 `gen_ai.usage.input_tokens` / `output_tokens`），工具调用是 `execute_tool <工具>`，按 GenAI 语义约定命名，Jaeger、Grafana Tempo、Langfuse 这类平台不需要适配就能展示。暂停等审批的运行在最终结束时导出一次，暂停前的 span 也在同一条 trace 里。只导出元数据（模型、token、耗时、状态、运行和租户 ID），问题、回答、工具参数留在本地库里，受租户隔离、脱敏和保留期约束。导出走批处理器，不在请求路径上，失败也不影响请求。成本按 `LOOPDESK_PRICES` 中配置的单价计算。`/metrics` 以 Prometheus 格式输出聚合计数。运营团队可以在看板中导出近 N 天的对话、反馈和审批（`api/exports.py`），用于质检和复盘。CSV 带 BOM，并对公式前缀做转义，避免顾客输入的 `=HYPERLINK(...)` 在 Excel 里被执行。
 
 ## 10. 已知限制与演进方向
 

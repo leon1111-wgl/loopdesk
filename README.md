@@ -88,6 +88,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 - MCP：只读工具通过 MCP 暴露，Claude Desktop、Cursor 等客户端可以直接接入。
 - 运维：Prometheus `/metrics`、Docker、docker-compose（PostgreSQL）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、Playwright 端到端走查、镜像构建）。
 - 数据库迁移：Alembic 管理表结构版本，启动时自动升级；对旧版本用 `create_all` 建的库会补齐缺失的表并标记为最新版本。CI 在 SQLite 和 PostgreSQL 上都会校验“模型定义与迁移脚本完全一致”。
+- OpenTelemetry：配置 `LOOPDESK_OTLP_ENDPOINT` 后，每次运行导出为一条 OTel trace（`invoke_agent` → `chat <模型>` / `execute_tool <工具>`，GenAI 语义约定，含 token 用量），可直接接入 Jaeger、Grafana Tempo、Langfuse；只导出元数据，不导出对话内容。
 - 可排障：每个请求都带 `X-Request-ID`（可以沿用网关传入的 ID），它会写进 JSON 结构化日志和 Agent 运行记录；发生 500 错误时只返回 request_id，不暴露内部信息；`/api/ready` 检查数据库和迁移版本，供 Kubernetes 和 Docker 的健康检查使用，`/api/health` 用作存活检查。
 - 数据导出：对话记录、反馈、审批可按天数导出为 CSV（带 UTF-8 BOM，Excel 打开不乱码；对以 `=` `+` `-` `@` 开头的单元格做转义，防止 CSV 公式注入；按租户隔离，导出的文本是已脱敏的版本）。
 

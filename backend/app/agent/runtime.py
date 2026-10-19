@@ -36,6 +36,7 @@ from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
 from .rewrite import Frame, frame_of, is_followup, next_frame, rewrite_followup
 from ..observability import request_id_var
+from .. import telemetry
 from ..textutil import normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
@@ -286,6 +287,7 @@ class AgentRuntime:
         run.error = f"{type(exc).__name__}: {exc}"[:2000]
         run.finished_at = datetime.now(timezone.utc)
         self.db.commit()
+        telemetry.export_run(self.db, run, self.settings)
 
     def _reopen(self, approval: Approval, run: Run) -> None:
         approval.status = "pending"
@@ -573,6 +575,8 @@ class AgentRuntime:
         run.latency_ms = state["elapsed_ms"]
         tracer.flush()
         self.db.commit()
+        if status != "waiting_approval":  # a paused run is exported once, when it ends
+            telemetry.export_run(self.db, run, self.settings)
         yield {"type": "final", "run_id": run.id, "message_id": message_id, "text": final_text,
                "status": status, "meta": meta}
         done = {"type": "done", "run_id": run.id, "status": status, "latency_ms": run.latency_ms}

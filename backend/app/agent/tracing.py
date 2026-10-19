@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -63,6 +64,7 @@ class Tracer:
     @contextmanager
     def span(self, kind: str, name: str, input: dict[str, Any] | None = None):
         handle = SpanHandle()
+        started_at = datetime.now(timezone.utc)  # not the column default: that is the INSERT time
         started = time.perf_counter()
         try:
             yield handle
@@ -82,6 +84,7 @@ class Tracer:
                 latency_ms=latency,
                 prompt_tokens=handle.prompt_tokens,
                 completion_tokens=handle.completion_tokens,
+                started_at=started_at,
             )
             usage = (handle.model or self.run.model, handle.prompt_tokens, handle.completion_tokens)
             if kind == "tool":

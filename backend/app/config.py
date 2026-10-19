@@ -81,6 +81,8 @@ class Settings:
     llm_model_fast: str = "mock-fast"
     llm_model_strong: str = "mock-strong"
     llm_timeout: float = 60.0
+    otlp_endpoint: str | None = None  # OTLP/HTTP traces endpoint, e.g. http://otel-collector:4318/v1/traces
+    otlp_service_name: str = "loopdesk"
     run_deadline_seconds: float = 90.0  # whole run (all steps, retries, both model tiers); 0 disables
     llm_stream_usage: bool = True  # send stream_options.include_usage (disable if a vendor rejects it)
     anthropic_effort: str = "low"
@@ -142,6 +144,8 @@ class Settings:
         s.log_level = _env("LOG_LEVEL", s.log_level)
 
         s.llm_provider = _env("LLM_PROVIDER", s.llm_provider)
+        s.otlp_endpoint = _env("OTLP_ENDPOINT") or None
+        s.otlp_service_name = _env("OTLP_SERVICE_NAME", s.otlp_service_name)
         s.llm_preset = _env("LLM_PRESET")
         s.llm_base_url = _env("LLM_BASE_URL") or PROVIDER_PRESETS.get(s.llm_preset or "")
         s.llm_api_key = _env("LLM_API_KEY")

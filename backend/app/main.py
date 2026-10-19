@@ -24,6 +24,7 @@ from .observability import configure_logging
 from .observability import install as install_observability
 from .seed import seed_demo, seed_demo_traffic
 from .services import Services, set_services
+from . import telemetry
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     prepare_database(settings.database_url, settings.auto_migrate)
     services = Services(settings)
     set_services(services)
+    telemetry.configure(settings)
     if settings.seed_demo:
         with new_session() as db:
             if seed_demo(db, services.embedder) and settings.seed_demo_traffic:

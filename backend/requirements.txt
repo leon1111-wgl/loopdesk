@@ -8,4 +8,6 @@ PyJWT>=2.8
 python-multipart>=0.0.9
 pypdf>=4.2
 jieba>=0.42
+opentelemetry-sdk>=1.25
+opentelemetry-exporter-otlp-proto-http>=1.25
 pytest>=8
