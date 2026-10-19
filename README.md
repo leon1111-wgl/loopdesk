@@ -86,7 +86,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 - 模型：豆包（火山方舟）、混元、DeepSeek、通义、OpenAI 统一走 OpenAI 兼容协议；Claude 使用官方 SDK；没有 Key 时使用离线确定性模型。
 - 渠道：飞书机器人事件回调（challenge 校验、事件去重（记在数据库里，多 worker 和重启后都有效）、3 秒内先回 200，后台处理失败时记录日志并回复兜底话术）、企业微信群机器人审批提醒。
 - MCP：只读工具通过 MCP 暴露，Claude Desktop、Cursor 等客户端可以直接接入。
-- 运维：Prometheus `/metrics`、Docker、docker-compose（PostgreSQL）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、镜像构建）。
+- 运维：Prometheus `/metrics`、Docker、docker-compose（PostgreSQL）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、Playwright 端到端走查、镜像构建）。
 - 数据库迁移：Alembic 管理表结构版本，启动时自动升级；对旧版本用 `create_all` 建的库会补齐缺失的表并标记为最新版本。CI 在 SQLite 和 PostgreSQL 上都会校验“模型定义与迁移脚本完全一致”。
 - 可排障：每个请求都带 `X-Request-ID`（可以沿用网关传入的 ID），它会写进 JSON 结构化日志和 Agent 运行记录；发生 500 错误时只返回 request_id，不暴露内部信息；`/api/ready` 检查数据库和迁移版本，供 Kubernetes 和 Docker 的健康检查使用，`/api/health` 用作存活检查。
 - 数据导出：对话记录、反馈、审批可按天数导出为 CSV（带 UTF-8 BOM，Excel 打开不乱码；对以 `=` `+` `-` `@` 开头的单元格做转义，防止 CSV 公式注入；按租户隔离，导出的文本是已脱敏的版本）。
@@ -161,6 +161,16 @@ cd backend
 pytest -q                                          # 全部测试
 python -m app.evals.cli --fresh --gate 0.95        # 回归评测，低于 95% 退出码为 1
 ```
+
+端到端走查（Playwright，真实 API + 构建后的前端 + 全新的演示库）：
+
+```bash
+cd frontend
+pnpm build && pnpm exec playwright install chromium
+E2E_PYTHON=../backend/.venv/bin/python pnpm e2e
+```
+
+三条路径各跨两种角色：顾客提问拿到带证据校验的回答、管理员在链路页找到这次运行；顾客申请超额退款进入审批、管理员通过后顾客页面无需刷新就收到结果；顾客转人工、坐席在人工接待页回复、顾客页面收到回复。任何页面出现控制台错误、未捕获异常或 5xx 都算失败。CI 中单独一个 job 运行。
 
 ## 接入真实模型
 

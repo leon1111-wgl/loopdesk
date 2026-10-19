@@ -5,10 +5,14 @@ __pycache__/
 .pytest_cache/
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
 
 # Node
 node_modules/
 frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
 
 # Local config and OS files
 .env
