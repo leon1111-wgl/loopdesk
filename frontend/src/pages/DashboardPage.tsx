@@ -9,6 +9,7 @@ interface Overview {
   resolution_rate: number | null;
   handoff_rate: number | null;
   pending_approvals: number;
+  handoff_queue: { waiting: number; in_progress: number; longest_wait_s: number; handoffs: number; avg_first_response_s: number | null };
   latency_p50_ms: number;
   latency_p95_ms: number;
   tokens: number;
@@ -68,6 +69,9 @@ const EXPORTS: [string, string][] = [
   ["approvals", "审批"],
 ];
 
+const duration = (seconds: number | null | undefined) =>
+  seconds == null ? "—" : seconds < 60 ? `${seconds} 秒` : seconds < 3600 ? `${Math.round(seconds / 60)} 分钟` : `${(seconds / 3600).toFixed(1)} 小时`;
+
 export default function DashboardPage() {
   const { data, error } = useLoad(() => api.get<Overview>("/api/metrics/overview?days=7"));
   return (
@@ -94,7 +98,9 @@ export default function DashboardPage() {
             <Kpi label="自助解决率" value={pct(data.resolution_rate)} sub={`转人工率 ${pct(data.handoff_rate)}`} />
             <Kpi label="平均证据覆盖率" value={pct(data.avg_evidence_coverage)}
               sub={`充分 ${data.verdicts.pass ?? 0} · 部分 ${data.verdicts.warn ?? 0} · 冲突 ${data.verdicts.blocked ?? 0}`} />
-            <Kpi label="待审批" value={<Link to="/approvals">{data.pending_approvals}</Link>} sub="超额退款等待人工" />
+            <Kpi label="待审批 / 等待人工"
+              value={<><Link to="/approvals">{data.pending_approvals}</Link> / <Link to="/handoffs">{data.handoff_queue.waiting}</Link></>}
+              sub={`接待中 ${data.handoff_queue.in_progress} · 最长等待 ${duration(data.handoff_queue.longest_wait_s)} · 首次响应 ${duration(data.handoff_queue.avg_first_response_s)}`} />
             <Kpi label="延迟 p50 / p95" value={`${ms(data.latency_p50_ms)} / ${ms(data.latency_p95_ms)}`} />
             <Kpi label="Token / 估算成本" value={data.tokens.toLocaleString()} sub={`¥${data.cost.toFixed(4)}`} />
             <Kpi label="用户反馈" value={(data.feedback.up ?? 0) + (data.feedback.down ?? 0) + (data.feedback.correction ?? 0)}

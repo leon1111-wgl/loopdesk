@@ -121,3 +121,16 @@ def test_concurrent_handoffs_cannot_open_two_tickets(settings, ask, login, monke
         out = business_tools.handoff_to_human(ctx, {"reason": "并发的第二次请求"})
         assert out["already_queued"] is True, "the unique index rejected the second insert"
         assert _handoffs(db, conversation_id) == 1
+
+
+def test_dashboard_reports_the_queue_and_first_response(client, ask, login):
+    emma, mia, admin = login("customer@leon.demo"), login("agent@leon.demo"), login("admin@leon.demo")
+    ask(login("customer2@leon.demo"), "转人工")
+    ask(emma, "转人工")
+    queue = client.get("/api/metrics/overview", headers=admin).json()["handoff_queue"]
+    assert queue["waiting"] == 2 and queue["avg_first_response_s"] is None
+    ticket_id = client.get("/api/handoffs", headers=mia).json()[1]["ticket_id"]
+    client.post(f"/api/handoffs/{ticket_id}/reply", json={"content": "您好"}, headers=mia)
+    queue = client.get("/api/metrics/overview", headers=admin).json()["handoff_queue"]
+    assert (queue["waiting"], queue["in_progress"], queue["handoffs"]) == (1, 1, 2)
+    assert queue["avg_first_response_s"] is not None and queue["longest_wait_s"] >= 0

@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import Approval, EvalRun, Feedback, Run, Span
+from ..models import Approval, EvalRun, Feedback, Message, Run, Span, Ticket
 from ..security import Principal, require_staff
 from .common import as_utc
 
@@ -39,6 +39,37 @@ def _by_prompt_version(runs) -> dict:
             "avg_tokens": round(sum(r.prompt_tokens + r.completion_tokens for r in items) / len(items), 1),
         }
     return out
+
+
+def _handoff_stats(db: Session, tenant_id: int, since: datetime) -> dict:
+    """Contact-centre view of human takeover: who is waiting now, and how fast people answer."""
+    now = datetime.now(timezone.utc)
+    live = db.execute(select(Ticket).where(Ticket.tenant_id == tenant_id, Ticket.kind == "handoff",
+                                           Ticket.status.in_(("open", "in_progress")))).scalars().all()
+    waiting = [t for t in live if t.status == "open"]
+    recent = db.execute(select(Ticket).where(Ticket.tenant_id == tenant_id, Ticket.kind == "handoff",
+                                             Ticket.created_at >= since)).scalars().all()
+    conversation_ids = {t.conversation_id for t in recent if t.conversation_id}
+    replies: dict[int, list[datetime]] = {}
+    if conversation_ids:
+        for conversation_id, created in db.execute(
+            select(Message.conversation_id, Message.created_at)
+            .where(Message.conversation_id.in_(conversation_ids), Message.role == "agent")
+        ).all():
+            replies.setdefault(conversation_id, []).append(as_utc(created))
+    first_response = []
+    for t in recent:  # first human reply after this ticket was opened
+        opened = as_utc(t.created_at)
+        later = [r for r in replies.get(t.conversation_id, []) if r >= opened]
+        if later:
+            first_response.append((min(later) - opened).total_seconds())
+    return {
+        "waiting": len(waiting),
+        "in_progress": len(live) - len(waiting),
+        "longest_wait_s": int(max(((now - as_utc(t.created_at)).total_seconds() for t in waiting), default=0)),
+        "handoffs": len(recent),
+        "avg_first_response_s": int(sum(first_response) / len(first_response)) if first_response else None,
+    }
 
 
 @router.get("/api/metrics/overview")
@@ -84,6 +115,7 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         "resolution_rate": round(statuses.get("completed", 0) / total, 4) if total else None,
         "handoff_rate": round(statuses.get("handoff", 0) / total, 4) if total else None,
         "pending_approvals": pending,
+        "handoff_queue": _handoff_stats(db, tenant_id, since),
         "latency_p50_ms": _pct(latencies, 0.5),
         "latency_p95_ms": _pct(latencies, 0.95),
         "tokens": sum(r.prompt_tokens + r.completion_tokens for r in runs),
