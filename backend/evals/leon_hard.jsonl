@@ -3,3 +3,7 @@
 {"key": "hard_points_expiry", "question": "积分过多久会失效", "expected_tools": ["search_knowledge"], "must_include": ["12个月"], "expected_doc": "会员与积分规则", "tags": ["paraphrase"]}
 {"key": "hard_invoice_title", "question": "发票抬头写错了能改吗", "expected_tools": ["search_knowledge"], "must_include": ["30天"], "expected_doc": "发票开具指南", "tags": ["paraphrase"]}
 {"key": "hard_refund_channel", "question": "钱会原路回到支付宝吗", "expected_tools": ["search_knowledge"], "must_include": ["原路退回"], "expected_doc": "售后与退款政策", "tags": ["paraphrase"]}
+{"key": "hard_refuse_usd", "question": "可以用美元付款吗", "expected_tools": ["search_knowledge"], "expect_refusal": true, "tags": ["refusal", "hard"]}
+{"key": "hard_refuse_delivery_slot", "question": "可以指定送货时间吗", "expected_tools": ["search_knowledge"], "expect_refusal": true, "tags": ["refusal", "hard"]}
+{"key": "hard_refuse_warranty", "question": "商品有保修吗", "expected_tools": ["search_knowledge"], "expect_refusal": true, "tags": ["refusal", "hard"]}
+{"key": "hard_refuse_express", "question": "可以加急发货吗", "expected_tools": ["search_knowledge"], "expect_refusal": true, "tags": ["refusal", "hard"]}

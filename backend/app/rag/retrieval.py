@@ -121,7 +121,26 @@ class TenantIndex:
         total = sum(self.idf(t) for t in unique)
         if total == 0:
             return 0.0
-        return sum(self.idf(t) for t in unique if t in c.tf) / total
+        weak = self._weak_parts(unique, c)
+        return sum(self.idf(t) for t in unique if t in c.tf and t not in weak) / total
+
+    def _weak_parts(self, unique: set[str], c: IndexedChunk) -> set[str]:
+        """Search-mode sub-words of a compound the knowledge base has never seen count only if
+        they cover most of it: in "能货到付款吗" the 付款 match ("付款后48小时内发货") says nothing
+        about cash on delivery, while a compound spelled out in pieces still counts."""
+        weak: set[str] = set()
+        for big in unique:
+            if len(big) < 3 or self.df.get(big, 0) > 0:
+                continue
+            parts = [t for t in unique if t != big and t in big]
+            covered: set[int] = set()
+            for t in parts:
+                if t in c.tf:
+                    start = big.find(t)
+                    covered.update(range(start, start + len(t)))
+            if parts and len(covered) < 0.75 * len(big):
+                weak.update(parts)
+        return weak
 
 
 class IndexManager:

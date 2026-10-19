@@ -99,3 +99,11 @@ def test_return_shipping_fee_is_segmented_like_the_policy_documents():
 
     assert tokenize("退货运费谁出") == ["退货", "运费"]
     assert "货运" not in tokenize("金卡会员每月享受2次免费退货运费")
+
+
+def test_unknown_compound_is_not_covered_by_its_sub_word(client, login):
+    # "货到付款" is not in the knowledge base; "付款" is ("付款后48小时内发货").
+    r = client.post("/api/kb/search", json={"query": "能货到付款吗", "scope": "customer"}, headers=login("admin@leon.demo"))
+    assert not any(h["passes_threshold"] for h in r.json()["hits"]), "a sub-word alone must not carry an unknown compound"
+    r = client.post("/api/kb/search", json={"query": "付款后多久发货", "scope": "customer"}, headers=login("admin@leon.demo"))
+    assert any(h["passes_threshold"] for h in r.json()["hits"]), "the same sub-word on its own still counts"
