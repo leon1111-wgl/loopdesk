@@ -1,0 +1,5 @@
+{"key": "hard_quality_issue", "question": "收到货发现是坏的怎么办", "expected_tools": ["search_knowledge"], "must_include": ["15天"], "expected_doc": "售后与退款政策", "tags": ["paraphrase"]}
+{"key": "hard_dispatch_time", "question": "下单后多长时间能寄出", "expected_tools": ["search_knowledge"], "must_include": ["48小时"], "expected_doc": "配送与物流说明", "tags": ["paraphrase"]}
+{"key": "hard_points_expiry", "question": "积分过多久会失效", "expected_tools": ["search_knowledge"], "must_include": ["12个月"], "expected_doc": "会员与积分规则", "tags": ["paraphrase"]}
+{"key": "hard_invoice_title", "question": "发票抬头写错了能改吗", "expected_tools": ["search_knowledge"], "must_include": ["30天"], "expected_doc": "发票开具指南", "tags": ["paraphrase"]}
+{"key": "hard_refund_channel", "question": "钱会原路回到支付宝吗", "expected_tools": ["search_knowledge"], "must_include": ["原路退回"], "expected_doc": "售后与退款政策", "tags": ["paraphrase"]}

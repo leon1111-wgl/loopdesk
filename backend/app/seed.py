@@ -171,6 +171,9 @@ def seed_demo(db: Session, embedder: Embedder) -> bool:
         db.add_all(fixture_refunds(spec["slug"], tenant.id))
         db.commit()
         load_eval_cases(db, tenant, EVAL_DIR / f"{spec['slug']}_default.jsonl")
+        # "hard" suite: paraphrases the offline lexical embedder is known to miss; run with
+        # --suite hard, deliberately outside the CI gate (it measures headroom, not regressions).
+        load_eval_cases(db, tenant, EVAL_DIR / f"{spec['slug']}_hard.jsonl", suite="hard")
     return True
 
 
