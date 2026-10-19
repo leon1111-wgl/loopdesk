@@ -2,7 +2,8 @@ name: Load benchmark
 
 # Manual only: numbers from shared CI runners are for comparing setups on the same
 # machine within one run, not absolute capacity. The load generator runs on the same
-# 4-vCPU runner as the server, so multi-worker results include that contention.
+# 4-vCPU runner as the server, so multi-worker results include that contention. Each
+# setup gets its own database, and the benchmark warms up before it measures.
 on:
   workflow_dispatch:
     inputs:
@@ -28,7 +29,7 @@ jobs:
       run:
         working-directory: backend
     env:
-      PG_URL: postgresql+psycopg://loopdesk:loopdesk@localhost:5432/loopdesk_bench
+      PG_BASE: postgresql+psycopg://loopdesk:loopdesk@localhost:5432
       DURATION: ${{ inputs.duration }}
     steps:
       - uses: actions/checkout@v4
@@ -40,10 +41,13 @@ jobs:
       - run: pip install -r requirements.txt "psycopg[binary]>=3.2"
       - name: SQLite (WAL), 1 worker
         run: python -m app.evals.load_bench --concurrency 1,4,16 --duration "$DURATION" --report sqlite-w1.json
+      - name: Separate PostgreSQL databases per setup
+        run: |
+          for db in bench_w1 bench_w4; do PGPASSWORD=loopdesk psql -h localhost -U loopdesk -d loopdesk_bench -c "CREATE DATABASE $db"; done
       - name: PostgreSQL, 1 worker
-        run: python -m app.evals.load_bench --database-url "$PG_URL" --workers 1 --concurrency 1,4,16 --duration "$DURATION" --report pg-w1.json
+        run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w1" --workers 1 --concurrency 1,4,16 --duration "$DURATION" --report pg-w1.json
       - name: PostgreSQL, 4 workers
-        run: python -m app.evals.load_bench --database-url "$PG_URL" --workers 4 --concurrency 1,4,16 --duration "$DURATION" --report pg-w4.json
+        run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w4" --workers 4 --concurrency 1,4,16 --duration "$DURATION" --report pg-w4.json
       - name: Summary
         run: |
           python - >> "$GITHUB_STEP_SUMMARY" <<'EOF'

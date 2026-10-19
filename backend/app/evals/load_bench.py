@@ -141,6 +141,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=1, help="uvicorn worker processes")
     parser.add_argument("--database-url", help="defaults to a fresh SQLite file")
     parser.add_argument("--cache", choices=["off", "on"], default="off", help="answer cache for repeated FAQs")
+    parser.add_argument("--warmup", type=float, default=5.0,
+                        help="seconds of unmeasured traffic first, so every worker has loaded jieba and built its index")
     parser.add_argument("--report")
     args = parser.parse_args(argv)
 
@@ -152,12 +154,14 @@ def main(argv: list[str] | None = None) -> int:
         for email in {e for e, _ in QUESTIONS}:
             r = httpx.post(f"{base}/api/auth/login", json={"email": email, "password": "loopdesk-demo"}, timeout=10)
             tokens[email] = r.json()["token"]
+        if args.warmup > 0:  # steady state, not start-up: each worker process warms its own caches
+            _run_level(base, tokens, max(int(c) for c in args.concurrency.split(",")), args.warmup)
         levels = [_run_level(base, tokens, int(c), args.duration) for c in args.concurrency.split(",")]
     finally:
         proc.terminate()
         proc.wait(timeout=10)
     report = {"database": database_url.split(":", 1)[0], "workers": args.workers, "cache": args.cache,
-              "duration_s": args.duration, "levels": levels}
+              "duration_s": args.duration, "warmup_s": args.warmup, "levels": levels}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if args.report:
         Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2))
