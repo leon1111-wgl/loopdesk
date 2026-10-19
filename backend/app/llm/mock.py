@@ -21,6 +21,13 @@ from ..textutil import ORDER_ID_RE, estimate_tokens, expand_query, split_sentenc
 from .base import ChatResult, LLMMessage, LLMProvider, StreamEvent, ToolCall, ToolSpec, Usage
 
 _HANDOFF = re.compile(r"人工|真人|投诉|转接")
+# "不用转人工，帮我查下物流" mentions 人工 but asks for the opposite. Negated requests are cut
+# out before matching, the way a real model reads them; otherwise the offline model (the
+# demo path and the eval baseline) inflates the handoff rate.
+_NEG = r"(?:不用|不要|别|无需|不需要|不必|甭)(?:帮我|给我)?"
+_NEGATED_HANDOFF = re.compile(
+    rf"{_NEG}(?:转接|转到|转|找|接)?(?:人工客服|人工|真人)|{_NEG}转接|不是要?投诉"
+)
 _REFUND = re.compile(r"退款|退钱|退货|退掉")
 _SHIPMENT = re.compile(r"物流|快递|到哪|发货了吗|配送|运单|什么时候到")
 _TICKET = re.compile(r"报修|故障|坏了|工单|无法使用|打不开|不工作|失灵|连不上")
@@ -32,6 +39,10 @@ REFUSAL = (
     "抱歉，知识库中没有找到与该问题直接相关的依据。"
     "为避免给出不准确的信息，建议您转人工客服确认。"
 )
+
+
+def wants_human(text: str) -> bool:
+    return bool(_HANDOFF.search(_NEGATED_HANDOFF.sub("", text)))
 
 
 def _loads(text: str) -> dict[str, Any]:
@@ -99,7 +110,7 @@ class MockLLM(LLMProvider):
             return name in available and name not in called
 
         order_match = ORDER_ID_RE.search(text)
-        if _HANDOFF.search(text) and can("handoff_to_human"):
+        if wants_human(text) and can("handoff_to_human"):
             return "handoff_to_human", {"reason": text[:120]}
 
         if order_match:

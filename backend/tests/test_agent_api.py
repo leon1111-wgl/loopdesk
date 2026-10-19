@@ -286,3 +286,19 @@ def test_staff_see_usage_routing_and_guardrail_rules(ask, login):
     _, events = ask(login("agent@leon.demo"), INJECTION)
     assert by_type(events, "guardrail")[0]["matches"]
     assert {"prompt_tokens", "completion_tokens", "cost", "model", "route_tier"} <= set(events[-1])
+
+
+# ---------------------------------------------------------------- handoff intent
+def test_offline_model_reads_negated_handoff_requests():
+    from app.llm.mock import wants_human
+
+    for text in ("不用转人工，帮我查下物流", "别给我转人工", "不需要转接，我自己看", "无需人工", "不是要投诉，问问而已"):
+        assert not wants_human(text), text
+    for text in ("给我转人工", "我不要机器人，要真人", "你们服务太差，我要投诉", "人工客服在吗"):
+        assert wants_human(text), text
+
+
+def test_negated_handoff_request_is_answered_not_handed_off(ask, login):
+    _, events = ask(login("customer@leon.demo"), "不用转人工，帮我查下 SO20261008002 物流")
+    assert [e["name"] for e in by_type(events, "tool_call")] == ["get_order", "track_shipment"]
+    assert by_type(events, "final")[0]["status"] == "completed"
