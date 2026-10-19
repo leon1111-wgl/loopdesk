@@ -11,7 +11,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket
@@ -279,16 +279,25 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             "status": status, "refund_id": None, "order_id": checked["order_id"], "amount": amount,
             "message": f"（演练）退款申请已受理，退款金额 ¥{amount:.2f} 将按原支付方式退回。",
         }
-    order = ctx.db.get(Order, checked["order_id"])
+    # Claim the order in one conditional UPDATE. The precheck above is a read: two requests
+    # for the same order (a double click, a retry) can both pass it, and both used to pay
+    # out. Only one UPDATE can move the order out of a refundable state; SQLite serialises
+    # writers and PostgreSQL re-checks the condition after the row lock.
+    claimed = ctx.db.execute(
+        update(Order).where(Order.id == checked["order_id"], Order.status.in_(REFUNDABLE))
+        .values(status="refunding").execution_options(synchronize_session="fetch")
+    ).rowcount
+    if claimed != 1:
+        ctx.db.rollback()
+        raise ToolError("该订单已有一笔退款正在处理，请勿重复提交")
     refund = Refund(
-        tenant_id=ctx.tenant.id, order_id=order.id, amount=amount,
+        tenant_id=ctx.tenant.id, order_id=checked["order_id"], amount=amount,
         reason=str(args.get("reason") or "")[:500], approval_id=ctx.approval_id,
     )
-    order.status = "refunding"
     ctx.db.add(refund)
     ctx.db.commit()
     return {
-        "status": status, "refund_id": refund.id, "order_id": order.id, "amount": amount,
+        "status": status, "refund_id": refund.id, "order_id": checked["order_id"], "amount": amount,
         "message": f"退款单 #{refund.id} 已受理，退款金额 ¥{amount:.2f} 将按原支付方式退回。",
     }
 
