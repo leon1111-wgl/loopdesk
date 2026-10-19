@@ -20,7 +20,8 @@ export function setToken(token: string | null) {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  /** body: the parsed JSON error, for endpoints that return more than a message (e.g. a conflict list). */
+  constructor(public status: number, message: string, public body?: Record<string, unknown>) {
     super(message);
   }
 }
@@ -33,10 +34,11 @@ function headers(extra?: HeadersInit): HeadersInit {
 async function parse<T>(res: Response): Promise<T> {
   if (res.ok) return (await res.json()) as T;
   let message = `请求失败（${res.status}）`;
+  let body: Record<string, unknown> | undefined;
   try {
-    const body = await res.json();
-    if (typeof body.detail === "string") message = body.detail;
-    else if (Array.isArray(body.detail)) message = body.detail.map((d: { msg: string }) => d.msg).join("；");
+    body = await res.json();
+    if (typeof body?.detail === "string") message = body.detail;
+    else if (Array.isArray(body?.detail)) message = (body.detail as { msg: string }[]).map((d) => d.msg).join("；");
   } catch {
     /* non-JSON error body */
   }
@@ -44,7 +46,7 @@ async function parse<T>(res: Response): Promise<T> {
     setToken(null);
     window.dispatchEvent(new Event("loopdesk:logout"));
   }
-  throw new ApiError(res.status, message);
+  throw new ApiError(res.status, message, body);
 }
 
 export const api = {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Check, X } from "lucide-react";
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import { useAuth } from "../auth";
 import { Empty, ErrorBanner, Kpi, StatusBadge, pct, time, useLoad } from "../components/ui";
 
@@ -27,6 +27,12 @@ interface Patch {
   content: string;
   status: string;
   created_at: string;
+}
+
+interface PatchConflict {
+  patch_sentence: string;
+  document: string;
+  existing_sentence: string;
 }
 
 interface Stats {
@@ -68,19 +74,31 @@ export default function FlywheelPage() {
   const patches = useLoad(() => api.get<Patch[]>("/api/flywheel/patches"));
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A patch that contradicts the knowledge the corrected answer cited waits for an explicit decision.
+  const [disputed, setDisputed] = useState<{ patch: Patch; reason: string; conflicts: PatchConflict[] } | null>(null);
 
-  async function act(patch: Patch, action: "apply" | "reject") {
+  async function act(patch: Patch, action: "apply" | "reject", acknowledge = false) {
     try {
-      const r = await api.post<{ document_version?: number; conflicts?: number }>(`/api/flywheel/patches/${patch.id}/${action}`);
-      setMessage(action === "apply"
-        ? `补丁 #${patch.id} 已发布到知识库（版本 v${r.document_version}），对应评测用例已激活。` +
-          (r.conflicts ? `注意：补丁与现有知识存在 ${r.conflicts} 处数字冲突，请到「知识库」核对。` : "去评测中心运行回归，确认它从失败变为通过。")
-        : `补丁 #${patch.id} 已驳回`);
+      const r = await api.post<{ document_version?: number; conflicts?: number; eval_case_activated?: boolean }>(
+        `/api/flywheel/patches/${patch.id}/${action}`, action === "apply" ? { acknowledge_conflicts: acknowledge } : {},
+      );
+      setDisputed(null);
+      setMessage(action === "reject"
+        ? `补丁 #${patch.id} 已驳回`
+        : r.eval_case_activated === false
+          ? `补丁 #${patch.id} 已发布（版本 v${r.document_version}）。因为它与原文档冲突，对应评测用例保持候选状态：请先修改原文档，再到评测中心激活。`
+          : `补丁 #${patch.id} 已发布到知识库（版本 v${r.document_version}），对应评测用例已激活。` +
+            (r.conflicts ? `注意：补丁与现有知识存在 ${r.conflicts} 处数字冲突，请到「知识库」核对。` : "去评测中心运行回归，确认它从失败变为通过。"));
       setError(null);
       patches.reload();
       stats.reload();
       feedback.reload();
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && Array.isArray(e.body?.conflicts)) {
+        setDisputed({ patch, reason: e.message, conflicts: e.body.conflicts as PatchConflict[] });
+        setError(null);
+        return;
+      }
       setError(e instanceof Error ? e.message : String(e));
     }
   }
@@ -97,6 +115,25 @@ export default function FlywheelPage() {
         </div>
       </div>
       <ErrorBanner error={error} />
+      {disputed && (
+        <div className="card" role="alert">
+          <div className="card-head"><h3>补丁 #{disputed.patch.id} 与现有知识冲突</h3></div>
+          <div className="card-pad stack">
+            <div className="small">{disputed.reason}</div>
+            {disputed.conflicts.map((c, i) => (
+              <div key={i} className="json small stack" style={{ gap: 4 }}>
+                <div className="quote"><b>补丁</b> {c.patch_sentence}</div>
+                <div className="quote"><b>《{c.document}》</b> {c.existing_sentence}</div>
+              </div>
+            ))}
+            <div className="row">
+              <button className="btn btn-sm btn-danger" onClick={() => act(disputed.patch, "reject")}><X size={14} /> 驳回补丁</button>
+              <button className="btn btn-sm" onClick={() => act(disputed.patch, "apply", true)}>已修改原文档，仍然发布（用例不自动生效）</button>
+              <button className="btn btn-sm btn-text" onClick={() => setDisputed(null)}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
       {message && <div className="notice">{message} <Link to="/evals">前往评测中心 →</Link></div>}
       <div className="grid grid-4">
         <Kpi label="收到反馈" value={(s?.feedback.up ?? 0) + (s?.feedback.down ?? 0) + (s?.feedback.correction ?? 0)}

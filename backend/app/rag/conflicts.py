@@ -13,8 +13,11 @@ Heuristic, deliberately conservative:
    shorter claim has at most one token of its own (numbers and units are removed first).
    The last rule keeps "微信、支付宝 1-3 天" and "银行卡 3-7 天" apart: same wording,
    different subject.
-3. They conflict when they use the same unit but different values.
-Detected conflicts are stored for an administrator to resolve; nothing is blocked.
+3. They conflict when their values differ in the same dimension. Durations are one
+   dimension: minutes, hours and days are converted (24 小时 = 1 天), working days are not
+   (a working day is not 24 hours), so "3 天" against "1-3 个工作日" is flagged for a person.
+Detected conflicts are stored for an administrator to resolve; nothing is blocked here
+(the flywheel blocks a patch that contradicts what the corrected answer cited).
 """
 
 from __future__ import annotations
@@ -36,6 +39,9 @@ MIN_OVERLAP = 0.6
 MAX_OWN_TOKENS = 1
 
 
+_HOURS = {"分钟": 1 / 60, "小时": 1.0, "天": 24.0}  # convertible durations, in hours
+
+
 @dataclass
 class Claim:
     chunk_id: int
@@ -50,8 +56,12 @@ def _normalise_value(raw: str) -> str:
 
 
 def extract_claims(chunk: Chunk) -> list[Claim]:
+    return claims_in_text(chunk.text, chunk.id, chunk.document_id)
+
+
+def claims_in_text(text: str, chunk_id: int = 0, document_id: int = 0) -> list[Claim]:
     claims = []
-    for raw in split_sentences(chunk.text):
+    for raw in split_sentences(text):
         sentence = raw.lstrip("-*• ").strip()
         values: dict[str, set[str]] = {}
         for number, unit in _CLAIM_RE.findall(sentence):
@@ -61,7 +71,7 @@ def extract_claims(chunk: Chunk) -> list[Claim]:
             continue
         tokens = token_set(_NUM_UNIT_RE.sub(" ", sentence))
         if len(tokens) >= MIN_SHARED_TOKENS:
-            claims.append(Claim(chunk.id, chunk.document_id, sentence, values, tokens))
+            claims.append(Claim(chunk_id, document_id, sentence, values, tokens))
     return claims
 
 
@@ -75,8 +85,31 @@ def _same_topic(a: Claim, b: Claim) -> bool:
     )
 
 
-def _conflicting_units(a: Claim, b: Claim) -> list[str]:
-    return [unit for unit in a.values.keys() & b.values.keys() if a.values[unit] != b.values[unit]]
+def _dimension(unit: str) -> str:
+    return "时长" if unit in _HOURS or unit == "个工作日" else unit
+
+
+def _hours(value: str, unit: str) -> str:
+    def fmt(x: float) -> str:
+        return f"{x:g}"
+    return "-".join(fmt(float(part) * _HOURS[unit]) for part in value.split("-")) + "小时"
+
+
+def comparable_values(claim: Claim) -> dict[str, set[str]]:
+    """Values per dimension, in a form that compares across units where that is meaningful."""
+    out: dict[str, set[str]] = {}
+    for unit, values in claim.values.items():
+        for value in values:
+            shown = _hours(value, unit) if unit in _HOURS else f"{value}{unit}"
+            out.setdefault(_dimension(unit), set()).add(shown)
+    return out
+
+
+def conflicting_dimensions(a: Claim, b: Claim) -> dict[str, dict[str, list[str]]]:
+    """Dimensions in which two claims state different values."""
+    va, vb = comparable_values(a), comparable_values(b)
+    return {dim: {"this": sorted(va[dim]), "other": sorted(vb[dim])}
+            for dim in va.keys() & vb.keys() if va[dim] != vb[dim]}
 
 
 def detect_conflicts(db: Session, document: Document) -> int:
@@ -100,15 +133,14 @@ def detect_conflicts(db: Session, document: Document) -> int:
         for b in others:
             if (a.sentence, b.sentence) in seen or not _same_topic(a, b):
                 continue
-            units = _conflicting_units(a, b)
-            if not units:
+            detail = conflicting_dimensions(a, b)
+            if not detail:
                 continue
             seen.add((a.sentence, b.sentence))
             db.add(KnowledgeConflict(
                 tenant_id=document.tenant_id, document_id=a.document_id, chunk_id=a.chunk_id,
                 other_document_id=b.document_id, other_chunk_id=b.chunk_id,
-                sentence=a.sentence, other_sentence=b.sentence,
-                detail={unit: {"this": sorted(a.values[unit]), "other": sorted(b.values[unit])} for unit in units},
+                sentence=a.sentence, other_sentence=b.sentence, detail=detail,
             ))
             found += 1
     db.commit()

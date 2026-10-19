@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session
 
 from ..agent.prompts import KB_PATCH_PROMPT
 from ..llm.base import Embedder, LLMMessage, LLMProvider
-from ..models import Document, EvalCase, EvalRun, Feedback, KBPatch, Message, Run, Span, Tenant, User
+from ..models import Chunk, Document, EvalCase, EvalRun, Feedback, KBPatch, Message, Run, Span, Tenant, User
+from ..rag.conflicts import claims_in_text, conflicting_dimensions, extract_claims
 from ..rag.ingest import ingest_document
 
 REASONS = {
@@ -145,6 +146,47 @@ def submit_feedback(
     return result
 
 
+class PatchConflict(FlywheelError):
+    """The correction states numbers that disagree with the knowledge the corrected answer cited."""
+
+    def __init__(self, conflicts: list[dict]):
+        super().__init__("补丁与被纠正回答所引用的知识存在数字冲突")
+        self.conflicts = conflicts
+
+
+def patch_conflicts(db: Session, patch: KBPatch) -> list[dict]:
+    """Numbers in the correction that disagree with what the corrected answer cited.
+
+    The corrected answer's citations name exactly the knowledge the correction disputes, so
+    this is precise where a tenant-wide topic match would not be. Either the agent was wrong
+    and the source document is still right (reject the patch), or the knowledge is outdated
+    and the source document has to be changed too (a patch alone would leave both versions
+    in the knowledge base, retrievable side by side)."""
+    feedback = db.get(Feedback, patch.feedback_id)
+    message = db.get(Message, feedback.message_id) if feedback else None
+    chunk_ids = {(c.get("meta") or {}).get("chunk_id") for c in ((message.meta or {}).get("citations") or [])} if message else set()
+    cited = []
+    for chunk_id in sorted(i for i in chunk_ids if i):
+        chunk = db.get(Chunk, chunk_id)
+        if chunk is not None and chunk.tenant_id == patch.tenant_id:
+            title = db.get(Document, chunk.document_id).title
+            cited.extend((title, claim) for claim in extract_claims(chunk))
+    found = []
+    for a in claims_in_text(patch.content):
+        # Compare with the cited claims this one overlaps most: "微信…1-2个工作日" is about the
+        # 微信 line, not the 银行卡 line; a generic "3天内到账" ties with both and disputes both.
+        overlap = {id(b): len(a.tokens & b.tokens) for _, b in cited}
+        best = max(overlap.values(), default=0)
+        if best < 2:
+            continue
+        for title, b in cited:
+            detail = conflicting_dimensions(a, b) if overlap[id(b)] == best else {}
+            if detail:
+                found.append({"patch_sentence": a.sentence, "document": title, "existing_sentence": b.sentence,
+                              "detail": detail})
+    return found
+
+
 def _claim(db: Session, patch: KBPatch, status: str, reviewer: User) -> None:
     """Move a proposed patch to its decision in one conditional UPDATE: of two reviewers
     acting on the same patch at once, exactly one wins."""
@@ -158,7 +200,14 @@ def _claim(db: Session, patch: KBPatch, status: str, reviewer: User) -> None:
         raise FlywheelError("该补丁已处理")
 
 
-def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder) -> Document:
+def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder,
+                acknowledge_conflicts: bool = False) -> tuple[Document, list[dict]]:
+    """Publish a patch. A patch that contradicts the knowledge the corrected answer cited needs
+    an explicit acknowledgement, and even then its eval case is not activated: a wrong
+    correction must not certify itself by becoming a regression test."""
+    conflicts = patch_conflicts(db, patch)
+    if conflicts and not acknowledge_conflicts:
+        raise PatchConflict(conflicts)
     # Start from the latest committed state (the caller's session has already read), and
     # write first: on SQLite the claim takes the write lock, so concurrent publishers take
     # turns; on PostgreSQL the tenant row lock below does the same. Publishing is rare, so
@@ -178,11 +227,12 @@ def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder)
         visibility="public", source=PATCH_DOC_SOURCE, created_by=reviewer.id, document=document,
     )
     patch.document_id = document.id
-    for case in db.execute(select(EvalCase).where(EvalCase.feedback_id == patch.feedback_id)).scalars():
-        if case.status == "candidate":
-            case.status = "active"
+    if not conflicts:
+        for case in db.execute(select(EvalCase).where(EvalCase.feedback_id == patch.feedback_id)).scalars():
+            if case.status == "candidate":
+                case.status = "active"
     db.commit()
-    return document
+    return document, conflicts
 
 
 def reject_patch(db: Session, patch: KBPatch, reviewer: User) -> None:

@@ -15,7 +15,7 @@ def test_conflicting_document_is_flagged_on_both_sides(client, login):
     assert len(conflicts) == 1
     c = conflicts[0]
     assert c["other_document"]["title"] == "售后与退款政策"
-    assert c["detail"] == {"个工作日": {"this": ["1-2"], "other": ["1-3"]}}
+    assert c["detail"] == {"时长": {"this": ["1-2个工作日"], "other": ["1-3个工作日"]}}
     docs = {d["title"]: d["conflicts"] for d in client.get("/api/kb/documents", headers=admin).json()}
     assert docs["到账补充说明"] == 1 and docs["售后与退款政策"] == 1
 
@@ -49,12 +49,36 @@ def test_deleting_a_document_clears_its_conflicts(client, login):
     assert client.get("/api/kb/conflicts?status_filter=all", headers=admin).json() == []
 
 
-def test_flywheel_patch_that_contradicts_policy_reports_the_conflict(client, ask, login):
+def test_flywheel_patch_that_contradicts_policy_needs_an_acknowledgement(client, ask, login):
     _, events = ask(login("customer@leon.demo"), "退款多久能到账？")
     message_id = by_type(events, "final")[0]["message_id"]
     feedback = client.post(f"/api/messages/{message_id}/feedback", json={
         "rating": "correction", "reason_category": "knowledge_outdated",
         "correction": "微信支付、支付宝退款预计1-2个工作日到账。",
     }, headers=login("agent@leon.demo")).json()
-    applied = client.post(f"/api/flywheel/patches/{feedback['patch_id']}/apply", headers=login("admin@leon.demo")).json()
-    assert applied["conflicts"] == 1, "the admin is told the patch contradicts the existing policy"
+    admin = login("admin@leon.demo")
+    blocked = client.post(f"/api/flywheel/patches/{feedback['patch_id']}/apply", headers=admin)
+    assert blocked.status_code == 409
+    conflicts = blocked.json()["conflicts"]
+    assert [c["existing_sentence"] for c in conflicts] == ["微信支付、支付宝退款预计1-3个工作日到账。"], \
+        "compared with the line it is about, not with the bank card line"
+    applied = client.post(f"/api/flywheel/patches/{feedback['patch_id']}/apply", json={"acknowledge_conflicts": True},
+                          headers=admin).json()
+    assert applied["conflicts"] == 1 and applied["eval_case_activated"] is False
+
+
+def test_a_correction_in_other_units_is_caught_and_cannot_certify_itself(client, ask, login):
+    # Review round 2, N-014: "3天" was not compared with "个工作日", the patch was published next to
+    # the policy, and its eval case went active with must_include "3天".
+    _, events = ask(login("customer@leon.demo"), "退款多久能到账啊")
+    message_id = by_type(events, "final")[0]["message_id"]
+    feedback = client.post(f"/api/messages/{message_id}/feedback", json={
+        "rating": "correction", "reason_category": "knowledge_outdated", "correction": "退款审核通过后3天内原路到账。",
+    }, headers=login("agent@leon.demo")).json()
+    admin = login("admin@leon.demo")
+    blocked = client.post(f"/api/flywheel/patches/{feedback['patch_id']}/apply", headers=admin)
+    assert blocked.status_code == 409
+    assert {c["detail"]["时长"]["other"][0] for c in blocked.json()["conflicts"]} == {"1-3个工作日", "3-7个工作日"}
+    client.post(f"/api/flywheel/patches/{feedback['patch_id']}/apply", json={"acknowledge_conflicts": True}, headers=admin)
+    case = next(c for c in client.get("/api/evals/cases", headers=admin).json() if c["id"] == feedback["eval_case_id"])
+    assert case["status"] == "candidate", "a disputed correction must not lock itself into the regression gate"

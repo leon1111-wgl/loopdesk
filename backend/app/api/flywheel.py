@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..flywheel.service import FlywheelError, apply_patch, flywheel_stats, reject_patch
+from ..flywheel.service import FlywheelError, PatchConflict, apply_patch, flywheel_stats, reject_patch
 from ..rag.conflicts import open_conflict_counts
 from ..models import EvalCase, Feedback, KBPatch, User
 from ..security import Principal, require_admin, require_staff
@@ -49,16 +51,27 @@ def list_patches(principal: Principal = Depends(require_staff), db: Session = De
             for p in rows]
 
 
+class ApplyIn(BaseModel):
+    acknowledge_conflicts: bool = False  # the reviewer has seen the conflicts and publishes anyway
+
+
 @router.post("/patches/{patch_id}/apply")
-def apply(patch_id: int, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+def apply(patch_id: int, body: ApplyIn | None = None, principal: Principal = Depends(require_admin),
+          db: Session = Depends(get_db)):
     patch = get_owned(db, KBPatch, patch_id, principal.tenant.id)
     try:
-        document = apply_patch(db, patch, principal.user, get_services().embedder)
+        document, cited = apply_patch(db, patch, principal.user, get_services().embedder,
+                                      acknowledge_conflicts=bool(body and body.acknowledge_conflicts))
+    except PatchConflict as exc:
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={
+            "detail": "补丁与被纠正回答所引用的知识存在数字冲突。如果是坐席纠错有误，请驳回；如果知识已经过期，"
+                      "请同时修改原文档，再确认发布。", "conflicts": exc.conflicts})
     except FlywheelError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     conflicts = open_conflict_counts(db, principal.tenant.id).get(document.id, 0)
     return {"patch_id": patch.id, "status": patch.status, "document_id": document.id,
-            "document_version": document.version, "conflicts": conflicts}
+            "document_version": document.version, "conflicts": conflicts,
+            "cited_conflicts": len(cited), "eval_case_activated": not cited}
 
 
 @router.post("/patches/{patch_id}/reject")
