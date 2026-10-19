@@ -15,3 +15,6 @@ frontend/dist/
 .DS_Store
 .claude/
 _local/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
