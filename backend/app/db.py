@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -22,6 +22,10 @@ def init_engine(database_url: str) -> Engine:
     global _engine, _SessionLocal
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     _engine = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
+    if database_url.startswith("sqlite"):
+        # SQLite ignores foreign keys unless asked; enforce them so local runs and tests
+        # catch the same integrity errors PostgreSQL would.
+        event.listen(_engine, "connect", lambda conn, _record: conn.execute("PRAGMA foreign_keys=ON"))
     _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 

@@ -83,7 +83,9 @@ def _copy_trace(sandbox: Session, db: Session, run_id: str | None) -> None:
     run = sandbox.get(Run, run_id) if run_id else None
     if run is None:
         return
-    db.add(_clone(run))
+    copy = _clone(run)
+    copy.conversation_id = None  # multi-turn cases use a sandbox-only conversation
+    db.add(copy)
     db.flush()
     for span in sandbox.execute(select(Span).where(Span.run_id == run_id).order_by(Span.id)).scalars():
         data = {c.key: getattr(span, c.key) for c in Span.__table__.columns if c.key != "id"}
