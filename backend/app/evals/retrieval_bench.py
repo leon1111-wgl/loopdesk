@@ -79,6 +79,11 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - benchmark 
             started = time.perf_counter()
             index_manager.get(db, tenant.id)
             build_s = time.perf_counter() - started
+            signature = []  # the per-search freshness check (two aggregate queries)
+            for _ in range(args.queries):
+                started = time.perf_counter()
+                index_manager.signature(db, tenant.id)
+                signature.append((time.perf_counter() - started) * 1000)
             latencies = []
             for n in range(args.queries):
                 started = time.perf_counter()
@@ -92,7 +97,8 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - benchmark 
             index_manager.get(db, tenant.id)
             rebuild_s = time.perf_counter() - started
             row = {"chunks": current, "index_build_s": round(build_s, 2), "rebuild_after_edit_s": round(rebuild_s, 2),
-                   "p50_ms": round(statistics.median(latencies), 1), "p95_ms": round(_percentile(latencies, 0.95), 1)}
+                   "p50_ms": round(statistics.median(latencies), 1), "p95_ms": round(_percentile(latencies, 0.95), 1),
+                   "freshness_check_ms": round(statistics.median(signature), 2)}
             results.append(row)
             print(json.dumps(row, ensure_ascii=False), flush=True)
     if args.report:

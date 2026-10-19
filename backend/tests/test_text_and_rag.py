@@ -198,3 +198,42 @@ def test_a_rebuilt_index_never_reuses_the_tokens_of_another_text(client, login):
     assert any(h["document_id"] == second["id"] and h["bm25_rank"] for h in search("折叠自行车有多重")), \
         "found by its own words, not only by its vector"
     assert not any(h["document_id"] == second["id"] for h in search("手表能潜水吗"))
+
+
+def test_every_worker_sees_a_knowledge_change_through_one_cheap_lookup(client, login):
+    # The freshness check used to count the tenant's chunks and sum its document versions on
+    # every search (2.6 ms at 50,000 chunks, twice per chat request). It is now one primary-key
+    # lookup of a version that each chunk change bumps in its own transaction.
+    from sqlalchemy import event, select
+
+    from app.db import get_engine, new_session
+    from app.models import Tenant
+    from app.rag.retrieval import IndexManager, index_manager
+
+    admin = login("admin@leon.demo")
+    other_worker = IndexManager()
+    with new_session() as db:
+        tenant_id = db.execute(select(Tenant.id).where(Tenant.slug == "leon")).scalar_one()
+        before = other_worker.get(db, tenant_id)
+        statements = []
+        listener = lambda *args: statements.append(args[2])  # noqa: E731 - the statement text
+        event.listen(get_engine(), "before_cursor_execute", listener)
+        try:
+            version = index_manager.signature(db, tenant_id)
+        finally:
+            event.remove(get_engine(), "before_cursor_execute", listener)
+        assert len(statements) == 1 and "kb_version" in statements[0]
+
+    doc = client.post("/api/kb/documents/text", headers=admin,
+                      json={"title": "甲", "content": "## 手表\n- 防水手表支持潜水五十米。"}).json()
+    with new_session() as db:
+        assert index_manager.signature(db, tenant_id) != version
+        after_create = other_worker.get(db, tenant_id)
+        assert after_create is not before and after_create.n == before.n + doc["chunk_count"]
+    client.put(f"/api/kb/documents/{doc['id']}", headers=admin, json={
+        "title": "甲", "content": "## 手表\n- 防水手表支持潜水一百米。", "visibility": "public", "version": doc["version"]})
+    with new_session() as db:
+        assert any("一百米" in c.text for c in other_worker.get(db, tenant_id).chunks)
+    client.delete(f"/api/kb/documents/{doc['id']}", headers=admin)
+    with new_session() as db:
+        assert other_worker.get(db, tenant_id).n == before.n

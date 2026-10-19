@@ -23,11 +23,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..llm.base import Embedder
-from ..models import Chunk, Document
+from ..models import Chunk, Document, Tenant
 from ..textutil import canonical_query, expand_query, tokenize
 
 RRF_K = 60
@@ -166,14 +166,11 @@ class IndexManager:
         self._lock = threading.Lock()
 
     def signature(self, db: Session, tenant_id: int) -> tuple:
-        """Changes whenever the tenant's chunks or document versions change."""
-        chunk_stats = db.execute(
-            select(func.count(Chunk.id), func.max(Chunk.id)).where(Chunk.tenant_id == tenant_id)
-        ).one()
-        version_sum = db.execute(
-            select(func.coalesce(func.sum(Document.version), 0)).where(Document.tenant_id == tenant_id)
-        ).scalar_one()
-        return (chunk_stats[0], chunk_stats[1], version_sum)
+        """Changes whenever the tenant's chunks change: one primary-key lookup. It used to count
+        the chunks and sum the document versions on every search, 2.6 ms at 50,000 chunks
+        (SQLite) and two more round trips on PostgreSQL, twice per chat request (here and in
+        the answer cache key)."""
+        return (db.execute(select(Tenant.kb_version).where(Tenant.id == tenant_id)).scalar_one(),)
 
     def get(self, db: Session, tenant_id: int) -> TenantIndex:
         signature = self.signature(db, tenant_id)

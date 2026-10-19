@@ -34,6 +34,9 @@ class Tenant(Base):
     # After-sales windows in days since delivery: no-reason returns, then quality problems only.
     return_window_days: Mapped[int] = mapped_column(Integer, default=7, server_default="7")
     quality_window_days: Mapped[int] = mapped_column(Integer, default=15, server_default="15")
+    # Bumped in the same transaction as every change to the tenant's chunks: the retrieval index
+    # and the answer cache compare it instead of counting the chunks on every search.
+    kb_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

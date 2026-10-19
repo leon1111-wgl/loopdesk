@@ -64,10 +64,18 @@ def ingest_document(
         )
     document.chunk_count = len(drafts)
     document.flagged_chunks = flagged
+    _bump_kb_version(db, tenant_id)
     db.commit()
     index_manager.invalidate(tenant_id)
     detect_conflicts(db, document)
     return document
+
+
+def _bump_kb_version(db: Session, tenant_id: int) -> None:
+    """Part of the chunk change's transaction, so every process sees the new version exactly
+    when it can see the new chunks."""
+    db.execute(update(Tenant).where(Tenant.id == tenant_id).values(kb_version=Tenant.kb_version + 1)
+               .execution_options(synchronize_session=False))
 
 
 class StaleDocument(Exception):
@@ -105,6 +113,7 @@ def edit_document(db: Session, document: Document, *, title: str, content: str, 
 
 def delete_document(db: Session, document: Document) -> None:
     db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    _bump_kb_version(db, document.tenant_id)
     db.execute(delete(KnowledgeConflict).where(
         (KnowledgeConflict.document_id == document.id) | (KnowledgeConflict.other_document_id == document.id)))
     tenant_id = document.tenant_id
