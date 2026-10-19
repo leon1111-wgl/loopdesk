@@ -362,3 +362,19 @@ class ChannelEvent(Base):
     event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
+
+class AuditLog(Base):
+    """Who changed what in a tenant's configuration and knowledge: risk limits, documents,
+    published corrections, the regression gate, personal-data erasure. What the agent does
+    is audited by runs, spans and approvals; this covers the administrators."""
+
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    action: Mapped[str] = mapped_column(String(64))
+    target: Mapped[str] = mapped_column(String(100), default="")  # e.g. "document:12"
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    request_id: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+

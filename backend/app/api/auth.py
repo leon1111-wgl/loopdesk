@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
+from ..audit import changes, record
 from ..db import get_db
 from ..models import Tenant, User
 from ..security import (Principal, create_token, get_principal, rate_limiter, require_admin, require_staff,
@@ -101,6 +102,7 @@ def get_tenant(principal: Principal = Depends(require_staff)) -> dict:
 @router.patch("/tenant")
 def patch_tenant(body: TenantPatch, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     tenant = db.get(Tenant, principal.tenant.id)
+    before = tenant_out(tenant)
     if body.auto_refund_limit is not None:
         tenant.auto_refund_limit = body.auto_refund_limit
     if body.ticket_sla_hours is not None:
@@ -109,6 +111,9 @@ def patch_tenant(body: TenantPatch, principal: Principal = Depends(require_admin
         tenant.return_window_days = body.return_window_days
     if body.quality_window_days is not None:
         tenant.quality_window_days = body.quality_window_days
+    diff = changes(before, tenant_out(tenant))
+    if diff:  # risk limits and after-sales windows decide whether money moves without a person
+        record(db, principal, "tenant.update", f"tenant:{tenant.id}", changes=diff)
     db.commit()
     return tenant_out(tenant)
 
@@ -122,4 +127,8 @@ def erase_personal_data(user_id: int, principal: Principal = Depends(require_adm
     target = get_owned(db, User, user_id, principal.tenant.id)
     if target.id == principal.user.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "不能抹除自己的账号")
-    return {"user_id": target.id, "erased": erase_user(db, target.id)}
+    erased = erase_user(db, target.id)
+    # The entry names the account by id only: its e-mail and name are what was just erased.
+    record(db, principal, "user.erase", f"user:{target.id}", erased=erased)
+    db.commit()
+    return {"user_id": target.id, "erased": erased}

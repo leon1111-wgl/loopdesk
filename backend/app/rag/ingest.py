@@ -75,7 +75,7 @@ class StaleDocument(Exception):
 
 
 def edit_document(db: Session, document: Document, *, title: str, content: str, visibility: str,
-                  embedder: Embedder, base_version: int) -> Document:
+                  embedder: Embedder, base_version: int) -> tuple[Document, str]:
     """Replace a document's text as its next version, re-chunked, re-indexed and re-checked for
     conflicts (an edit that removes a conflicting sentence closes that conflict).
 
@@ -83,7 +83,8 @@ def edit_document(db: Session, document: Document, *, title: str, content: str, 
     the next one, so of two administrators editing the same version one saves and the other
     is told to reload instead of silently overwriting. The claim also takes SQLite's write
     lock; on PostgreSQL the tenant row lock serialises the edit with flywheel publishing,
-    which rewrites the patch document from what it reads."""
+    which rewrites the patch document from what it reads. Returns the document and the text
+    it replaced (read after the claim, so it is exactly the base version's)."""
     db.commit()
     db.execute(select(Tenant.id).where(Tenant.id == document.tenant_id).with_for_update())
     claimed = db.execute(
@@ -93,9 +94,11 @@ def edit_document(db: Session, document: Document, *, title: str, content: str, 
     if claimed != 1:
         db.rollback()
         raise StaleDocument
-    return ingest_document(db, tenant_id=document.tenant_id, title=title, content=content, embedder=embedder,
-                           visibility=visibility, source=document.source, document=document,
-                           version=base_version + 1)
+    previous = db.execute(select(Document.content).where(Document.id == document.id)).scalar_one()
+    document = ingest_document(db, tenant_id=document.tenant_id, title=title, content=content, embedder=embedder,
+                               visibility=visibility, source=document.source, document=document,
+                               version=base_version + 1)
+    return document, previous
 
 
 def delete_document(db: Session, document: Document) -> None:

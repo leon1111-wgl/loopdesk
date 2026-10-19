@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..audit import record
 from ..db import get_db
 from ..flywheel.service import FlywheelError, PatchConflict, apply_patch, flywheel_stats, reject_patch
 from ..rag.conflicts import open_conflict_counts
@@ -68,6 +69,9 @@ def apply(patch_id: int, body: ApplyIn | None = None, principal: Principal = Dep
                       "请先在「知识库」中编辑原文档，再确认发布。", "conflicts": exc.conflicts})
     except FlywheelError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    record(db, principal, "flywheel.patch.apply", f"patch:{patch.id}", content=patch.content[:500],
+           document_version=document.version, acknowledged_conflicts=len(cited))
+    db.commit()
     conflicts = open_conflict_counts(db, principal.tenant.id).get(document.id, 0)
     return {"patch_id": patch.id, "status": patch.status, "document_id": document.id,
             "document_version": document.version, "conflicts": conflicts,
@@ -81,6 +85,8 @@ def reject(patch_id: int, principal: Principal = Depends(require_admin), db: Ses
         reject_patch(db, patch, principal.user)
     except FlywheelError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    record(db, principal, "flywheel.patch.reject", f"patch:{patch.id}", content=patch.content[:500])
+    db.commit()
     return {"patch_id": patch.id, "status": patch.status}
 
 

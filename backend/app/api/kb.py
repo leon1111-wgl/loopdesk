@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..audit import changes, record, text_diff
 from ..db import get_db
 from ..models import Chunk, Document, KnowledgeConflict
 from ..rag.chunking import UnsupportedFile, parse_upload
@@ -73,6 +74,9 @@ def create_text_document(body: TextDocIn, principal: Principal = Depends(require
         db, tenant_id=principal.tenant.id, title=body.title, content=body.content,
         embedder=get_services().embedder, visibility=body.visibility, source="manual", created_by=principal.user.id,
     )
+    record(db, principal, "kb.document.create", f"document:{document.id}", title=document.title,
+           visibility=document.visibility, version=document.version)
+    db.commit()
     return _with_conflicts(db, document)
 
 
@@ -100,6 +104,9 @@ async def upload_document(
         db, tenant_id=principal.tenant.id, title=name, content=text, embedder=get_services().embedder,
         visibility=visibility, source=file.filename or "", created_by=principal.user.id, pages=pages,
     )
+    record(db, principal, "kb.document.create", f"document:{document.id}", title=document.title,
+           visibility=document.visibility, version=document.version, file=file.filename or "")
+    db.commit()
     return _with_conflicts(db, document)
 
 
@@ -109,18 +116,29 @@ def update_document(document_id: int, body: DocumentEditIn, principal: Principal
     document = get_owned(db, Document, document_id, principal.tenant.id)
     if db.execute(select(Chunk.id).where(Chunk.document_id == document.id, Chunk.page.is_not(None)).limit(1)).first():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "PDF 文档的片段带页码，请上传新版本文件，不支持在线编辑")
+    before = {"title": document.title, "visibility": document.visibility}
     try:
-        document = edit_document(db, document, title=body.title, content=body.content, visibility=body.visibility,
-                                 embedder=get_services().embedder, base_version=body.version)
+        document, previous = edit_document(db, document, title=body.title, content=body.content,
+                                           visibility=body.visibility, embedder=get_services().embedder,
+                                           base_version=body.version)
     except StaleDocument:
         raise HTTPException(status.HTTP_409_CONFLICT, "文档已被其他人修改，请重新打开后再编辑") from None
+    record(db, principal, "kb.document.update", f"document:{document.id}", title=document.title,
+           from_version=body.version, to_version=document.version,
+           changes=changes(before, {"title": document.title, "visibility": document.visibility}),
+           diff=text_diff(previous, document.content))
+    db.commit()
     return _with_conflicts(db, document)
 
 
 @router.delete("/documents/{document_id}")
 def remove_document(document_id: int, principal: Principal = Depends(require_admin),
                     db: Session = Depends(get_db)) -> dict:
-    delete_document(db, get_owned(db, Document, document_id, principal.tenant.id))
+    document = get_owned(db, Document, document_id, principal.tenant.id)
+    title, version = document.title, document.version
+    delete_document(db, document)
+    record(db, principal, "kb.document.delete", f"document:{document_id}", title=title, version=version)
+    db.commit()
     return {"deleted": document_id}
 
 
@@ -178,5 +196,7 @@ def resolve_conflict(conflict_id: int, body: ResolveIn, principal: Principal = D
     conflict.note = body.note
     conflict.resolved_by = principal.user.id
     conflict.resolved_at = datetime.now(timezone.utc)
+    record(db, principal, "kb.conflict.resolve", f"conflict:{conflict.id}", sentence=conflict.sentence,
+           other_sentence=conflict.other_sentence, note=body.note)
     db.commit()
     return {"id": conflict.id, "status": conflict.status}

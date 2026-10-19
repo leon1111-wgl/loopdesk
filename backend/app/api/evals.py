@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..audit import changes, record
 from ..db import get_db
 from ..agent.prompts import PROMPT_VERSIONS
 from ..evals.runner import run_suite
@@ -54,8 +55,12 @@ def list_cases(principal: Principal = Depends(require_staff), db: Session = Depe
 def update_case(case_id: int, body: CasePatch, principal: Principal = Depends(require_admin),
                 db: Session = Depends(get_db)) -> dict:
     case = get_owned(db, EvalCase, case_id, principal.tenant.id)
-    for field, value in body.model_dump(exclude_none=True).items():
+    updates = body.model_dump(exclude_none=True)
+    diff = changes({field: getattr(case, field) for field in updates}, updates)
+    for field, value in updates.items():
         setattr(case, field, value)
+    if diff:  # the regression gate is a release control: who loosened it, and how
+        record(db, principal, "eval.case.update", f"eval_case:{case.id}", key=case.key, changes=diff)
     db.commit()
     return case_out(case)
 

@@ -13,6 +13,7 @@ import {
   Monitor,
   Moon,
   RefreshCcw,
+  ScrollText,
   Sun,
   X,
 } from "lucide-react";
@@ -30,6 +31,7 @@ const TITLES: Record<string, string> = {
   traces: "链路追踪",
   flywheel: "数据飞轮",
   evals: "评测中心",
+  audit: "操作审计",
 };
 
 interface NavItem {
@@ -104,7 +106,10 @@ export default function Layout() {
           { to: "/evals", label: "评测中心", icon: <FlaskConical size={16} /> },
           { to: "/flywheel", label: "数据飞轮", icon: <RefreshCcw size={16} /> },
         ]],
-        ["运维", [{ to: "/traces", label: "链路追踪", icon: <Activity size={16} /> }]],
+        ["运维", [
+          { to: "/traces", label: "链路追踪", icon: <Activity size={16} /> },
+          ...(user?.role === "admin" ? [{ to: "/audit", label: "操作审计", icon: <ScrollText size={16} /> }] : []),
+        ]],
       ]
     : [["服务", [{ to: "/chat", label: "在线客服", icon: <MessagesSquare size={16} /> }]]];
 

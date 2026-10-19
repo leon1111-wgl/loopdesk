@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { isStaff, useAuth } from "./auth";
 import Layout from "./components/Layout";
 import ApprovalsPage from "./pages/ApprovalsPage";
+import AuditPage from "./pages/AuditPage";
 import ChatPage from "./pages/ChatPage";
 import DashboardPage from "./pages/DashboardPage";
 import EvalsPage from "./pages/EvalsPage";
@@ -31,6 +32,7 @@ export default function App() {
             <Route path="/traces/:runId" element={<TracesPage />} />
             <Route path="/flywheel" element={<FlywheelPage />} />
             <Route path="/evals" element={<EvalsPage />} />
+            {user.role === "admin" && <Route path="/audit" element={<AuditPage />} />}
           </>
         )}
         <Route path="*" element={<Navigate to={staff ? "/dashboard" : "/chat"} replace />} />
