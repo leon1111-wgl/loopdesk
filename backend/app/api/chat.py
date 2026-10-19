@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import queue
 import threading
@@ -157,7 +158,10 @@ def detached(produce: Callable[[], Iterator[dict]]) -> Iterator[dict]:
         finally:
             items.put(done)
 
-    threading.Thread(target=worker, name="loopdesk-run", daemon=True).start()
+    # A new thread starts with an empty context: carry the request id (and tenant / user)
+    # over, or the run's logs and trace lose their link to the request.
+    context = contextvars.copy_context()
+    threading.Thread(target=context.run, args=(worker,), name="loopdesk-run", daemon=True).start()
     while (item := items.get()) is not done:
         yield item
 
