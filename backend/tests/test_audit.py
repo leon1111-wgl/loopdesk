@@ -186,3 +186,72 @@ def test_entries_from_before_signing_can_be_signed_once_by_an_operator(client, l
         assert sign_unsigned(db) == 1
     report = client.get("/api/audit/verify", headers=admin).json()
     assert report["ok"] and report["last_seq"] == 4 and report["unsigned"] == 0
+
+
+def _capture_anchor_log():
+    import io
+    import logging
+
+    from app.observability import JsonFormatter
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter())
+    logging.getLogger("loopdesk.audit").addHandler(handler)
+    return stream, handler
+
+
+def test_cutting_off_the_newest_entries_is_caught_by_the_log_anchors(client, login):
+    # verify() cannot see entries deleted from the end together with a lowered counter. Every
+    # committed entry's number and MAC also go to the log platform; comparing them catches it.
+    import logging
+
+    from sqlalchemy import delete, select, update
+
+    from app.audit import check_anchors, verify
+    from app.db import new_session
+    from app.models import AuditLog, Tenant
+    from app.ops.audit_anchor_check import read_anchors
+
+    admin = login("admin@leon.demo")
+    stream, handler = _capture_anchor_log()
+    try:
+        _three_changes(client, admin)
+    finally:
+        logging.getLogger("loopdesk.audit").removeHandler(handler)
+    anchors = read_anchors(stream.getvalue().splitlines())
+    assert [a["seq"] for a in anchors] == [1, 2, 3]
+    with new_session() as db:
+        tenant_id = db.execute(select(Tenant.id).where(Tenant.slug == "leon")).scalar_one()
+        assert check_anchors(db, anchors)["ok"]
+        db.execute(delete(AuditLog).where(AuditLog.tenant_id == tenant_id, AuditLog.seq == 3))
+        db.execute(update(Tenant).where(Tenant.id == tenant_id).values(audit_seq=2))
+        db.commit()
+        assert verify(db, tenant_id)["ok"], "the blind spot the anchors are for"
+        report = check_anchors(db, anchors)
+    assert not report["ok"] and report["missing"] == [{"tenant_id": tenant_id, "seq": 3}]
+    assert report["counter_behind"] == [tenant_id]
+
+
+def test_an_entry_rolled_back_with_its_change_is_not_anchored(client, login):
+    import logging
+
+    from app.audit import record
+    from app.db import new_session
+    from app.models import Tenant, User
+    from app.security import Principal
+
+    stream, handler = _capture_anchor_log()
+    try:
+        with new_session() as db:
+            tenant = db.query(Tenant).filter_by(slug="leon").one()
+            admin = db.query(User).filter_by(email="admin@leon.demo").one()
+            record(db, Principal(admin, tenant), "tenant.update", f"tenant:{tenant.id}", changes={})
+            db.rollback()
+            record(db, Principal(admin, tenant), "tenant.update", f"tenant:{tenant.id}", changes={})
+            db.commit()
+    finally:
+        logging.getLogger("loopdesk.audit").removeHandler(handler)
+    from app.ops.audit_anchor_check import read_anchors
+    assert [a["seq"] for a in read_anchors(stream.getvalue().splitlines())] == [1], \
+        "the rolled-back number is reused, and only the committed entry is anchored"

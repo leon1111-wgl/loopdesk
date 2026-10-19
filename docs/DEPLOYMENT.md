@@ -33,6 +33,16 @@ docker compose up --build
 - `/api/ready`：就绪检查，确认数据库可连接、表结构已经迁移到最新版本、检索索引已在后台预热完成，否则返回 503。预热让重启后的第一位顾客不必等索引构建（5 万片段约 9 秒）；`LOOPDESK_PREWARM_INDEX=0` 可以关闭，关闭后第一次检索时构建。Dockerfile 中的 `HEALTHCHECK` 和 Kubernetes 的 readinessProbe 都应该指向它。
 - 每个响应都带 `X-Request-ID`。用户报障时只要提供这个 ID，就可以在日志中找到对应的请求，在链路追踪中找到对应的 Agent 运行（trace 详情里会显示 request_id）。
 
+## 审计记录的外部锚点
+
+每条审计记录提交后，会写一行 `"msg": "audit anchor"` 的结构化日志（带租户、编号、签名）。请把应用日志（`LOOPDESK_LOG_FORMAT=json`）送到能写数据库的人改不了的日志平台，并定期对照：
+
+```bash
+cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.audit_anchor_check exported-app.log   # 不一致时退出码为 1
+```
+
+`/api/audit/verify` 能发现被改写和从中间删掉的记录；连同计数器一起删掉最新几条，只有和日志里的锚点对照才能发现。
+
 ## 升级注意
 
 - **迁移 0013（知识版本号）之后，不要让旧版本的实例继续写知识库**：旧版本改片段时不会更新租户的知识版本号，新版本的实例会一直使用旧的检索索引和答案缓存，直到下一次版本号变化。升级时先停掉旧实例（或者升级期间暂停知识库编辑和补丁发布），再启动新版本。

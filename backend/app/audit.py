@@ -11,8 +11,9 @@ and number, keyed with LOOPDESK_AUDIT_KEY, which is not stored in the database. 
 can write to the database but does not hold the key cannot change an entry or delete one from
 the middle without ``verify`` noticing. A plain hash chain in the same database would not
 give that: whoever can edit the rows can recompute the chain. Cutting entries off the end and
-lowering the counter stays undetectable without an outside anchor (export the latest number
-and MAC to a log system regularly).
+lowering the counter is what the outside anchor is for: every committed entry's number and MAC
+also go to the application log (shipped to a log platform the database's writers cannot
+rewrite), and ``check_anchors`` compares those lines with the database.
 """
 
 from __future__ import annotations
@@ -21,10 +22,11 @@ import difflib
 import hashlib
 import hmac
 import json
+import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
-from sqlalchemy import select, update
+from sqlalchemy import event, select, update
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -44,6 +46,7 @@ ACTIONS = {
     "eval.case.update": "修改评测用例",
 }
 MAX_DIFF_CHARS = 4000
+anchor_logger = logging.getLogger("loopdesk.audit")
 
 
 def _key() -> bytes:
@@ -71,7 +74,43 @@ def record(db: Session, principal: Principal, action: str, target: str = "", **d
                      detail=detail, request_id=request_id_var.get(), created_at=datetime.now(timezone.utc), seq=seq)
     entry.mac = _mac(entry)
     db.add(entry)
+    db.info.setdefault("audit_anchors", []).append(entry)
     return entry
+
+
+@event.listens_for(Session, "after_commit")
+def _log_anchors(session: Session) -> None:
+    """Only committed entries are anchored: a rolled-back number is reused by the next entry."""
+    for entry in session.info.pop("audit_anchors", []):
+        anchor_logger.info("audit anchor", extra={"audit_anchor": {
+            "tenant_id": entry.tenant_id, "seq": entry.seq, "mac": entry.mac, "action": entry.action}})
+
+
+@event.listens_for(Session, "after_rollback")
+def _drop_anchors(session: Session) -> None:
+    session.info.pop("audit_anchors", None)
+
+
+def check_anchors(db: Session, anchors: Iterable[dict]) -> dict[str, Any]:
+    """Compare anchor lines from the log platform with the database: an anchored entry that is
+    gone or carries another MAC, or a tenant counter below its highest anchored number, means
+    entries were removed or rewritten, including the newest ones that verify() cannot see."""
+    missing, rewritten, behind, checked = [], [], set(), 0
+    highest: dict[int, int] = {}
+    for anchor in anchors:
+        checked += 1
+        tenant_id, seq = anchor["tenant_id"], anchor["seq"]
+        highest[tenant_id] = max(highest.get(tenant_id, 0), seq)
+        stored = db.execute(select(AuditLog.mac).where(AuditLog.tenant_id == tenant_id, AuditLog.seq == seq)).first()
+        if stored is None:
+            missing.append({"tenant_id": tenant_id, "seq": seq})
+        elif not hmac.compare_digest((stored.mac or "").encode(), str(anchor["mac"]).encode()):
+            rewritten.append({"tenant_id": tenant_id, "seq": seq})
+    for tenant_id, seq in highest.items():
+        if (db.execute(select(Tenant.audit_seq).where(Tenant.id == tenant_id)).scalar_one_or_none() or 0) < seq:
+            behind.add(tenant_id)
+    return {"ok": not missing and not rewritten and not behind, "checked": checked, "missing": missing,
+            "rewritten": rewritten, "counter_behind": sorted(behind)}
 
 
 def verify(db: Session, tenant_id: int) -> dict[str, Any]:

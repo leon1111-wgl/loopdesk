@@ -71,7 +71,7 @@ class JsonFormatter(logging.Formatter):
             "tenant_id": tenant_var.get() or (request_scope_var.get() or {}).get("tenant_id"),
             "user_id": user_var.get() or (request_scope_var.get() or {}).get("user_id"),
         }
-        for key in ("method", "path", "status", "latency_ms", "run_id"):
+        for key in ("method", "path", "status", "latency_ms", "run_id", "audit_anchor"):
             if hasattr(record, key):
                 payload[key] = getattr(record, key)
         if record.exc_info:
