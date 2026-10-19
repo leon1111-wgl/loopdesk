@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import approvals, auth, channels, chat, evals, exports, flywheel, kb, metrics, traces
 from .config import Settings, get_settings, set_settings
-from .db import create_all, init_engine, new_session
+from .db import init_engine, new_session, prepare_database
 from .seed import seed_demo, seed_demo_traffic
 from .services import Services, set_services
 
@@ -46,7 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     check_jwt_secret(settings)
     set_settings(settings)
     init_engine(settings.database_url)
-    create_all()
+    prepare_database(settings.database_url, settings.auto_migrate)
     services = Services(settings)
     set_services(services)
     if settings.seed_demo:

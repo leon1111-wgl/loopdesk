@@ -69,6 +69,7 @@ class Settings:
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"])
     seed_demo: bool = True
     seed_demo_traffic: bool = True
+    auto_migrate: bool = True  # run Alembic migrations at startup (tests use create_all)
 
     # LLM: mock | openai_compat | anthropic
     llm_provider: str = "mock"
@@ -131,6 +132,7 @@ class Settings:
             s.cors_origins = [o.strip() for o in origins.split(",") if o.strip()]
         s.seed_demo = _env_bool("SEED_DEMO", s.seed_demo)
         s.seed_demo_traffic = _env_bool("SEED_DEMO_TRAFFIC", s.seed_demo_traffic)
+        s.auto_migrate = _env_bool("AUTO_MIGRATE", s.auto_migrate)
 
         s.llm_provider = _env("LLM_PROVIDER", s.llm_provider)
         s.llm_preset = _env("LLM_PRESET")

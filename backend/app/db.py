@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
@@ -49,3 +50,37 @@ def create_all() -> None:
     from . import models  # noqa: F401  (register tables)
 
     Base.metadata.create_all(get_engine())
+
+
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+
+def migrate(database_url: str) -> str:
+    """Bring the schema to the latest Alembic revision.
+
+    A database created by an older version with ``create_all()`` has tables but no
+    ``alembic_version`` row; it is completed (missing tables created) and stamped as
+    current instead of being migrated, which would fail on "table already exists".
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect
+
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    tables = set(inspect(get_engine()).get_table_names())
+    if tables and "alembic_version" not in tables:
+        create_all()
+        command.stamp(config, "head")
+        return "stamped"
+    command.upgrade(config, "head")
+    return "upgraded"
+
+
+def prepare_database(database_url: str, auto_migrate: bool = True) -> str:
+    """Production path: Alembic migrations. Tests and throwaway eval DBs: create_all."""
+    if auto_migrate:
+        return migrate(database_url)
+    create_all()
+    return "create_all"

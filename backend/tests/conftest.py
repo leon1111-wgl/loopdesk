@@ -19,6 +19,7 @@ def settings(tmp_path):
     s.jwt_secret = "test-secret-with-at-least-32-bytes!!"
     s.rate_limit_per_minute = 1000
     s.seed_demo_traffic = False
+    s.auto_migrate = False  # fast schema setup; migrations have their own tests
     return s
 
 
@@ -30,8 +31,12 @@ def _reset_database(url: str) -> None:
     from app import models  # noqa: F401
     from app.db import Base
 
+    from sqlalchemy import text
+
     engine = create_engine(url)
     Base.metadata.drop_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
     engine.dispose()
 
 

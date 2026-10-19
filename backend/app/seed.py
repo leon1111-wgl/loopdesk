@@ -205,7 +205,7 @@ def seed_demo_traffic(db: Session, services) -> None:
 
 def main() -> None:  # pragma: no cover - CLI
     from .config import get_settings
-    from .db import create_all, get_engine, init_engine, new_session
+    from .db import get_engine, init_engine, new_session, prepare_database
     from .db import Base
     from .rag.embeddings import build_embedder
 
@@ -216,7 +216,11 @@ def main() -> None:  # pragma: no cover - CLI
     init_engine(settings.database_url)
     if args.reset:
         Base.metadata.drop_all(get_engine())
-    create_all()
+        from sqlalchemy import text
+
+        with get_engine().begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    prepare_database(settings.database_url, settings.auto_migrate)
     with new_session() as db:
         created = seed_demo(db, build_embedder(settings))
     print("seeded demo data" if created else "database already has data; use --reset to rebuild")

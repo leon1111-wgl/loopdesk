@@ -22,7 +22,7 @@ from sqlalchemy import select
 from .agent.business_tools import get_order, search_knowledge, track_shipment
 from .agent.tools import ToolContext, ToolError
 from .config import get_settings
-from .db import create_all, init_engine, new_session
+from .db import init_engine, new_session, prepare_database
 from .models import Tenant, User
 from .services import Services
 
@@ -48,7 +48,7 @@ def build_server():
 
     settings = get_settings()
     init_engine(settings.database_url)
-    create_all()
+    prepare_database(settings.database_url, settings.auto_migrate)
     services = Services(settings)
     server = MCPServer("loopdesk")
 
