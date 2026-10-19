@@ -115,6 +115,9 @@ flowchart LR
     T --> KB[(混合检索<br/>BM25 + 向量 + RRF)]
     T --> BIZ[(订单 / 工单 / 退款)]
     AQ -- 人工决定 --> RT
+    T -- 转人工 --> HQ[(人工接待队列)]
+    API -. 人工处理中的会话直达坐席 .-> HQ
+    HQ -- 结束服务，交还 Agent --> RT
     RT --> TR[(Trace / Span)]
     V --> FB[反馈与纠错] --> FW[数据飞轮]
     FW --> KB
