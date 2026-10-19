@@ -58,6 +58,7 @@ class Tracer:
             buffered = mode == "buffered" or (mode == "auto" and db.get_bind().dialect.name == "postgresql")
         self._buffer: list[Span] | None = [] if buffered else None
         self._usage: list[tuple[str, int, int]] = []  # buffered token usage: (model, prompt, completion)
+        self.tools: list[str] = []  # tool spans of this tracer, in order, whichever write mode is used
 
     @contextmanager
     def span(self, kind: str, name: str, input: dict[str, Any] | None = None):
@@ -83,6 +84,8 @@ class Tracer:
                 completion_tokens=handle.completion_tokens,
             )
             usage = (handle.model or self.run.model, handle.prompt_tokens, handle.completion_tokens)
+            if kind == "tool":
+                self.tools.append(name)
             if self._buffer is not None:
                 self._buffer.append(row)
                 if handle.prompt_tokens or handle.completion_tokens:

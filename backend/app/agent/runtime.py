@@ -477,10 +477,11 @@ class AgentRuntime:
                 final_text = STRICT_FALLBACK
                 yield {"type": "answer_replaced", "text": final_text, "reason": "证据校验未通过（严格模式）"}
 
-        # The tools this run used are read from its spans. With buffered trace writes they are
-        # still in memory: hand them to the session first, and the query's autoflush sees them.
-        tracer.flush()
-        tools_used = [s for s in self._tool_names(run.id)]
+        # The tools this run used decide its status and whether the answer may be cached. They
+        # are tracked in memory (not read back from span rows, which buffered trace writes have
+        # not written yet), plus those from before an approval pause, kept in the run state.
+        tools_used = list(state.get("tools", [])) + tracer.tools
+        state["tools"] = tools_used
         if status is None:
             status = "handoff" if "handoff_to_human" in tools_used else "completed"
         cache_key = state.get("cache_key")
@@ -574,13 +575,6 @@ class AgentRuntime:
             elif m.role == "agent":  # what a person told the customer is context the agent needs after hand-back
                 history.append(LLMMessage(role="assistant", content=f"（人工客服）{m.content}"))
         return history
-
-    def _tool_names(self, run_id: str) -> list[str]:
-        from ..models import Span
-
-        return list(self.db.execute(
-            select(Span.name).where(Span.run_id == run_id, Span.kind == "tool").order_by(Span.id)
-        ).scalars())
 
 
 def answer_cache_created(entry) -> datetime:
