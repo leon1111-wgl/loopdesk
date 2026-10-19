@@ -96,6 +96,7 @@ class Settings:
     refund_window_days: int = 30
     refund_window_max_count: int = 3
     refund_window_max_amount: float = 200.0
+    answer_cache_ttl_hours: float = 24.0  # 0 disables the answer cache
 
     # Channels
     feishu_app_id: str | None = None
@@ -151,6 +152,7 @@ class Settings:
         s.refund_window_days = _env_int("REFUND_WINDOW_DAYS", s.refund_window_days)
         s.refund_window_max_count = _env_int("REFUND_WINDOW_MAX_COUNT", s.refund_window_max_count)
         s.refund_window_max_amount = _env_float("REFUND_WINDOW_MAX_AMOUNT", s.refund_window_max_amount)
+        s.answer_cache_ttl_hours = _env_float("ANSWER_CACHE_TTL_HOURS", s.answer_cache_ttl_hours)
 
         s.feishu_app_id = _env("FEISHU_APP_ID")
         s.feishu_app_secret = _env("FEISHU_APP_SECRET")

@@ -128,7 +128,8 @@ class IndexManager:
         self._cache: dict[int, tuple[tuple, TenantIndex]] = {}
         self._lock = threading.Lock()
 
-    def _signature(self, db: Session, tenant_id: int) -> tuple:
+    def signature(self, db: Session, tenant_id: int) -> tuple:
+        """Changes whenever the tenant's chunks or document versions change."""
         chunk_stats = db.execute(
             select(func.count(Chunk.id), func.max(Chunk.id)).where(Chunk.tenant_id == tenant_id)
         ).one()
@@ -138,7 +139,7 @@ class IndexManager:
         return (chunk_stats[0], chunk_stats[1], version_sum)
 
     def get(self, db: Session, tenant_id: int) -> TenantIndex:
-        signature = self._signature(db, tenant_id)
+        signature = self.signature(db, tenant_id)
         with self._lock:
             cached = self._cache.get(tenant_id)
             if cached and cached[0] == signature:

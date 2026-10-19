@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { Empty, ErrorBanner, Kpi, TOOL_TEXT, ms, pct, useLoad } from "../components/ui";
+import { Empty, ErrorBanner, Kpi, TOOL_TEXT, ms, pct, useLoad, TIER_TEXT } from "../components/ui";
 
 interface Overview {
   runs: number;
@@ -16,6 +16,8 @@ interface Overview {
   verdicts: Record<string, number>;
   tools: Record<string, number>;
   route_tiers: Record<string, number>;
+  cache_hits: number;
+  cache_hit_rate: number | null;
   feedback: Record<string, number>;
   daily: { day: string; runs: number; handoff: number }[];
   last_eval: { id: number; pass_rate: number; total: number } | null;
@@ -72,7 +74,7 @@ export default function DashboardPage() {
       {!data ? <Empty>加载中…</Empty> : (
         <>
           <div className="grid grid-4">
-            <Kpi label="Agent 运行" value={data.runs} sub={`已解决 ${data.status.completed ?? 0} · 转人工 ${data.status.handoff ?? 0}`} />
+            <Kpi label="Agent 运行" value={data.runs} sub={`已解决 ${data.status.completed ?? 0} · 转人工 ${data.status.handoff ?? 0} · 缓存命中 ${pct(data.cache_hit_rate)}`} />
             <Kpi label="自助解决率" value={pct(data.resolution_rate)} sub={`转人工率 ${pct(data.handoff_rate)}`} />
             <Kpi label="平均证据覆盖率" value={pct(data.avg_evidence_coverage)}
               sub={`充分 ${data.verdicts.pass ?? 0} · 部分 ${data.verdicts.warn ?? 0} · 冲突 ${data.verdicts.blocked ?? 0}`} />
@@ -94,8 +96,8 @@ export default function DashboardPage() {
               <div className="card-pad"><Bars data={data.tools} labels={TOOL_TEXT} /></div>
             </div>
             <div className="card">
-              <div className="card-head"><h3>模型路由</h3><span className="faint">简单问题走快模型</span></div>
-              <div className="card-pad"><Bars data={data.route_tiers} labels={{ fast: "快模型", strong: "强模型" }} /></div>
+              <div className="card-head"><h3>模型路由</h3><span className="faint">重复问题走缓存，简单问题走快模型</span></div>
+              <div className="card-pad"><Bars data={data.route_tiers} labels={TIER_TEXT} /></div>
             </div>
           </div>
         </>

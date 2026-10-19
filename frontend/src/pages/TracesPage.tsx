@@ -2,11 +2,12 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { api } from "../api";
-import { Empty, ErrorBanner, Json, Kpi, ROLE_TEXT, StatusBadge, VerdictBadge, ms, time, useLoad } from "../components/ui";
+import { Empty, ErrorBanner, Json, Kpi, ROLE_TEXT, StatusBadge, VerdictBadge, ms, time, useLoad, tierText } from "../components/ui";
 import type { EvidenceItem, RunRow, SpanRow } from "../types";
 
 const KIND_TEXT: Record<string, string> = {
   guardrail: "护栏", router: "路由", llm: "模型", tool: "工具", verify: "校验", approval: "审批", notify: "通知",
+  cache: "缓存",
 };
 
 interface RunDetail extends RunRow {
@@ -30,7 +31,7 @@ function RunDetailView({ runId }: { runId: string }) {
         {data.is_eval && <span className="badge badge-info">评测运行</span>}
       </div>
       <div className="grid grid-4">
-        <Kpi label="状态" value={<StatusBadge status={data.status} />} sub={`${data.steps} 步 · ${data.route_tier === "strong" ? "强模型" : "快模型"} ${data.model}`} />
+        <Kpi label="状态" value={<StatusBadge status={data.status} />} sub={`${data.steps} 步 · ${tierText(data.route_tier)}${data.route_tier === "cache" ? "" : ` ${data.model}`}`} />
         <Kpi label="端到端耗时" value={ms(data.latency_ms)} sub={time(data.created_at)} />
         <Kpi label="Token" value={(data.prompt_tokens + data.completion_tokens).toLocaleString()} sub={`输入 ${data.prompt_tokens} / 输出 ${data.completion_tokens} · ¥${data.cost.toFixed(5)}`} />
         <Kpi label="证据校验" value={<VerdictBadge verdict={data.verdict} coverage={data.evidence_coverage} />} sub="逐句校验覆盖率" />
@@ -121,7 +122,7 @@ export default function TracesPage() {
                 <td className="nowrap">{r.user?.name}</td>
                 <td style={{ maxWidth: 380 }}><div className="ellipsis">{r.input_text}</div></td>
                 <td><StatusBadge status={r.status} /></td>
-                <td className="nowrap"><span className={`badge ${r.route_tier === "strong" ? "badge-info" : ""}`}>{r.route_tier === "strong" ? "强" : "快"}</span> <span className="faint">{r.model}</span></td>
+                <td className="nowrap"><span className={`badge ${r.route_tier === "strong" ? "badge-info" : r.route_tier === "cache" ? "badge-success" : ""}`}>{r.route_tier === "strong" ? "强" : r.route_tier === "cache" ? "缓存" : "快"}</span> <span className="faint">{r.model}</span></td>
                 <td className="mono">{ms(r.latency_ms)}</td>
                 <td className="mono">{r.prompt_tokens + r.completion_tokens}</td>
                 <td><VerdictBadge verdict={r.verdict} coverage={r.evidence_coverage} /></td>

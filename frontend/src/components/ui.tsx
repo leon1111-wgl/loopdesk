@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 
+export const TIER_TEXT: Record<string, string> = { fast: "快模型", strong: "强模型", cache: "答案缓存" };
+export const tierText = (tier?: string | null) => TIER_TEXT[tier ?? ""] ?? tier ?? "—";
+
 export const ROLE_TEXT: Record<string, string> = { admin: "管理员", agent: "客服坐席", customer: "顾客" };
 
 export const TOOL_TEXT: Record<string, string> = {

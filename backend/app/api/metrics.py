@@ -74,6 +74,8 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         "verdicts": dict(verdicts),
         "tools": dict(tool_counts),
         "route_tiers": dict(Counter(r.route_tier for r in runs if r.route_tier)),
+        "cache_hits": sum(1 for r in runs if r.route_tier == "cache"),
+        "cache_hit_rate": round(sum(1 for r in runs if r.route_tier == "cache") / total, 4) if total else None,
         "feedback": dict(feedback),
         "daily": [{"day": k, **v} for k, v in daily.items()],
         "last_eval": {"id": last_eval.id, "pass_rate": last_eval.metrics.get("pass_rate"), "total": last_eval.total}

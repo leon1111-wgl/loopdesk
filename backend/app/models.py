@@ -258,6 +258,24 @@ class EvalCase(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class AnswerCache(Base):
+    """Replayable answers keyed by question + knowledge version + config (see agent/answer_cache.py)."""
+
+    __tablename__ = "answer_cache"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    scope: Mapped[str] = mapped_column(String(16))  # public | staff
+    question: Mapped[str] = mapped_column(String(512), index=True)
+    kb_signature: Mapped[str] = mapped_column(String(128))
+    config: Mapped[str] = mapped_column(String(32))
+    answer: Mapped[str] = mapped_column(Text)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)  # evidence + verification
+    hits: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class EvalRun(Base):
     __tablename__ = "eval_runs"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

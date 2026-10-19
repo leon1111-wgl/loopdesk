@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { FlaskConical, History, PencilLine, Plus, Send, ShieldAlert, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
-import { Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, time, useMediaQuery } from "../components/ui";
+import { Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, time, useMediaQuery, tierText } from "../components/ui";
 import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, Verification } from "../types";
 
 const SUGGESTIONS: Record<string, [string, string][]> = {
@@ -139,7 +139,7 @@ function EventItem({ event }: { event: AgentEvent }) {
         <div className="event">
           <b>完成</b>
           <div className="faint">
-            {event.route_tier === "strong" ? "强模型" : "快模型"} {event.model} · {event.latency_ms}ms ·{" "}
+            {tierText(event.route_tier)} {event.route_tier === "cache" ? "" : event.model} · {event.latency_ms}ms ·{" "}
             {event.prompt_tokens + event.completion_tokens} tokens
           </div>
           <Link to={`/traces/${event.run_id}`} className="small">查看完整链路 →</Link>

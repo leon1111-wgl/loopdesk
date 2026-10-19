@@ -48,6 +48,7 @@ docker compose up --build
 | `MIN_RELEVANCE` | `0.3` | 检索相关度阈值 |
 | `MAX_AGENT_STEPS` | `6` | 单次运行最多调用模型的次数 |
 | `RATE_LIMIT_PER_MINUTE` | `30` | 每个用户每分钟最多发起的对话请求数 |
+| `ANSWER_CACHE_TTL_HOURS` | `24` | 答案缓存的有效期，设为 0 即关闭；知识或配置变化时缓存会自动失效 |
 | `REFUND_WINDOW_DAYS` / `REFUND_WINDOW_MAX_COUNT` / `REFUND_WINDOW_MAX_AMOUNT` | `30` / `3` / `200` | 累计退款风控：窗口天数内同一顾客的退款笔数或累计金额超过上限时，小额退款也转人工审核 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN` | — | 飞书机器人 |
 | `WECOM_WEBHOOK_KEY` | — | 企业微信群机器人（审批提醒） |

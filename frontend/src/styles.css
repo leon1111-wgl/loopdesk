@@ -337,6 +337,7 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
 .kind-guardrail { background: var(--danger); }
 .kind-approval, .kind-notify { background: var(--warning); }
 .kind-router { background: var(--text-3); }
+.kind-cache { background: var(--success); }
 
 /* Mobile-only controls (declared after .icon-btn so they stay hidden); the 780px query turns them on. */
 .nav-toggle, .nav-close, .history-close, .chat-bar, .scrim { display: none; }

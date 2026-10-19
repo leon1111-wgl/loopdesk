@@ -32,6 +32,7 @@ from ..guardrails.pii import PIIReport, mask_pii
 from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.router import ModelRouter
 from ..models import Approval, Conversation, Message, Run, Tenant, User
+from . import answer_cache
 from .prompts import build_system_prompt
 from .tools import Evidence, ToolContext, ToolError, ToolRegistry
 from .tracing import Tracer
@@ -94,6 +95,16 @@ class AgentRuntime:
         if injection.suspicious:
             yield {"type": "guardrail", "name": "prompt_injection", "matches": injection.matches}
 
+        # Answer cache: only for self-contained, PII-free, injection-free first questions.
+        cache_key = None
+        if (self.settings.answer_cache_ttl_hours > 0 and not history and not pii.found
+                and not injection.suspicious and not options.dry_run and not options.inject_hallucination):
+            cache_key = answer_cache.make_key(self.db, self.settings, tenant, user, text)
+            entry = answer_cache.lookup(self.db, cache_key)
+            if entry is not None:
+                yield from self._serve_cached(run, tracer, tenant, user, conversation, pii.masked, entry)
+                return
+
         decision = self.router.route(text, history_turns=len(history) // 2)
         run.model, run.route_tier = decision.model, decision.tier
         with tracer.span("router", "model_router", {"length": len(text), "history_turns": len(history) // 2}) as span:
@@ -105,11 +116,32 @@ class AgentRuntime:
             "models": self.router.candidates(decision),
             "options": {"dry_run": options.dry_run, "inject_hallucination": options.inject_hallucination},
             "elapsed_ms": 0,
+            "cache_key": cache_key.__dict__ if cache_key else None,
         }
         messages = [LLMMessage(role="system", content=build_system_prompt(tenant, user)), *history,
                     LLMMessage(role="user", content=pii.masked)]
         ctx = self._context(tenant, user, run, conversation, options.dry_run, [])
         yield from self._loop(run, tracer, ctx, state, messages, queue=[], started=time.perf_counter())
+
+    def _serve_cached(self, run: Run, tracer: Tracer, tenant: Tenant, user: User,
+                      conversation: Conversation | None, user_text: str, entry) -> Iterator[dict[str, Any]]:
+        started = time.perf_counter()
+        run.model, run.route_tier = "answer-cache", "cache"
+        age = (datetime.now(timezone.utc) - answer_cache_created(entry)).total_seconds()
+        with tracer.span("cache", "answer_cache_hit", {"question": entry.question}) as span:
+            span.set(cache_id=entry.id, hits=entry.hits, age_seconds=int(age), kb_signature=entry.kb_signature)
+        for start in range(0, len(entry.answer), 8):
+            yield {"type": "token", "step": 1, "text": entry.answer[start : start + 8]}
+        verification = (entry.meta or {}).get("verification")
+        if verification:
+            run.evidence_coverage = verification.get("coverage")
+            run.verdict = verification.get("verdict")
+            yield {"type": "verification", **verification}
+        evidence = [Evidence(**e) for e in (entry.meta or {}).get("evidence", [])]
+        ctx = self._context(tenant, user, run, conversation, False, evidence)
+        state = {"user_text": user_text, "steps": 0, "models": [], "options": {}, "elapsed_ms": 0}
+        yield from self._finish(run, tracer, ctx, state, entry.answer, started, status="completed",
+                                extra_meta={"verification": verification, "cached": True})
 
     def resume(self, approval: Approval, decision: str, reviewer: User, comment: str = "") -> list[dict[str, Any]]:
         """Continue a paused run after a human decision. Runs synchronously; the result
@@ -330,6 +362,12 @@ class AgentRuntime:
         tools_used = [s for s in self._tool_names(run.id)]
         if status is None:
             status = "handoff" if "handoff_to_human" in tools_used else "completed"
+        cache_key = state.get("cache_key")
+        if (cache_key and status == "completed" and verification is not None and verification.verdict == "pass"
+                and tools_used and set(tools_used) == {"search_knowledge"}):
+            answer_cache.store(self.db, answer_cache.CacheKey(**cache_key), final_text,
+                               {"evidence": [e.to_dict() for e in ctx.evidence], "verification": verification.to_dict()},
+                               self.settings.answer_cache_ttl_hours)
         citations = [e.to_dict() for e in ctx.evidence if e.kind == "kb"]
         meta = {
             "citations": citations,
@@ -387,6 +425,11 @@ class AgentRuntime:
         return list(self.db.execute(
             select(Span.name).where(Span.run_id == run_id, Span.kind == "tool").order_by(Span.id)
         ).scalars())
+
+
+def answer_cache_created(entry) -> datetime:
+    created = entry.created_at
+    return created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created
 
 
 def collect(events: Iterator[dict[str, Any]]) -> dict[str, Any]:
