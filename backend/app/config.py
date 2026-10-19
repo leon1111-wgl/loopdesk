@@ -91,6 +91,8 @@ class Settings:
     verifier: str = "lexical"  # lexical | llm
     pii_masking: bool = True
     rate_limit_per_minute: int = 30
+    login_attempts_per_email: int = 10  # per minute, against password guessing on one account
+    login_attempts_per_ip: int = 30  # per minute, against spraying many accounts from one client
     # Velocity limits for automatic refunds (anti-abuse): a run of small refunds that each
     # stay under the per-refund limit still goes to a human once these are exceeded.
     refund_window_days: int = 30
@@ -149,6 +151,8 @@ class Settings:
         s.verifier = _env("VERIFIER", s.verifier)
         s.pii_masking = _env_bool("PII_MASKING", s.pii_masking)
         s.rate_limit_per_minute = _env_int("RATE_LIMIT_PER_MINUTE", s.rate_limit_per_minute)
+        s.login_attempts_per_email = _env_int("LOGIN_ATTEMPTS_PER_EMAIL", s.login_attempts_per_email)
+        s.login_attempts_per_ip = _env_int("LOGIN_ATTEMPTS_PER_IP", s.login_attempts_per_ip)
         s.refund_window_days = _env_int("REFUND_WINDOW_DAYS", s.refund_window_days)
         s.refund_window_max_count = _env_int("REFUND_WINDOW_MAX_COUNT", s.refund_window_max_count)
         s.refund_window_max_amount = _env_float("REFUND_WINDOW_MAX_AMOUNT", s.refund_window_max_amount)

@@ -53,6 +53,19 @@ def test_rate_limit(settings, client, login):
     assert codes == [200, 200, 429]
 
 
+def test_login_is_limited_per_client_across_accounts(settings, client):
+    settings.login_attempts_per_ip = 5
+    codes = [client.post("/api/auth/login", json={"email": f"user{i}@leon.demo", "password": "guess"}).status_code
+             for i in range(6)]
+    assert codes == [401] * 5 + [429], "a new email per attempt must not reset the budget"
+
+
+def test_login_limit_per_account_ignores_case_and_whitespace(client):
+    attempts = [" " * (i % 3) + ("Admin@Leon.Demo" if i % 2 else "admin@leon.demo") for i in range(11)]
+    codes = [client.post("/api/auth/login", json={"email": e, "password": "guess"}).status_code for e in attempts]
+    assert codes == [401] * 10 + [429]
+
+
 def test_upload_validation(client, login):
     admin = login("admin@leon.demo")
     bad = client.post("/api/kb/documents/upload", files={"file": ("a.exe", b"MZ", "application/octet-stream")},

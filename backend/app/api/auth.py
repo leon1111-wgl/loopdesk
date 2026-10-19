@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,9 +37,16 @@ def tenant_out(tenant: Tenant) -> dict:
 
 
 @router.post("/auth/login")
-def login(body: LoginIn, db: Session = Depends(get_db)) -> dict:
-    rate_limiter.check(f"login:{body.email.lower()}", 10)
-    user = db.execute(select(User).where(User.email == body.email.strip().lower())).scalar_one_or_none()
+def login(body: LoginIn, request: Request, db: Session = Depends(get_db)) -> dict:
+    settings = get_settings()
+    email = body.email.strip().lower()  # one key per account: " A@x" and "a@x" share the budget
+    # Per client as well, or one attacker can try a few passwords on every account. This is
+    # the TCP peer: behind a reverse proxy run uvicorn with --proxy-headers and
+    # --forwarded-allow-ips=<proxy ip> instead of trusting X-Forwarded-For from anyone.
+    client_ip = request.client.host if request.client else "unknown"
+    rate_limiter.check(f"login-ip:{client_ip}", settings.login_attempts_per_ip)
+    rate_limiter.check(f"login:{email}", settings.login_attempts_per_email)
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "邮箱或密码错误")
     tenant = db.get(Tenant, user.tenant_id)
