@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import approvals, auth, channels, chat, evals, flywheel, kb, metrics, traces
+from .api import approvals, auth, channels, chat, evals, exports, flywheel, kb, metrics, traces
 from .config import Settings, get_settings, set_settings
 from .db import create_all, init_engine, new_session
 from .seed import seed_demo, seed_demo_traffic
@@ -63,7 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,
         allow_methods=["*"], allow_headers=["*"],
     )
-    for module in (auth, chat, kb, approvals, traces, flywheel, evals, metrics, channels):
+    for module in (auth, chat, kb, approvals, traces, flywheel, evals, metrics, exports, channels):
         app.include_router(module.router)
 
     @app.get("/api/health", tags=["meta"])

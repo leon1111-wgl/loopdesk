@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { Download } from "lucide-react";
 import { api } from "../api";
 import { Empty, ErrorBanner, Kpi, TOOL_TEXT, ms, pct, useLoad, TIER_TEXT } from "../components/ui";
 
@@ -60,6 +61,12 @@ function DailyChart({ daily }: { daily: Overview["daily"] }) {
   );
 }
 
+const EXPORTS: [string, string][] = [
+  ["runs", "对话记录"],
+  ["feedback", "反馈"],
+  ["approvals", "审批"],
+];
+
 export default function DashboardPage() {
   const { data, error } = useLoad(() => api.get<Overview>("/api/metrics/overview?days=7"));
   return (
@@ -68,6 +75,14 @@ export default function DashboardPage() {
         <div>
           <h1>运营看板</h1>
           <p>近 7 天的真实对话，不含评测运行。成本按配置的模型单价估算，离线模型的单价仅作示例。</p>
+        </div>
+        <div className="row row-wrap" aria-label="导出近 30 天数据">
+          <span className="faint">导出近 30 天（CSV）</span>
+          {EXPORTS.map(([kind, label]) => (
+            <button key={kind} className="btn btn-sm" onClick={() => api.download(`/api/export/${kind}.csv?days=30`, `loopdesk-${kind}.csv`)}>
+              <Download size={14} aria-hidden="true" /> {label}
+            </button>
+          ))}
         </div>
       </div>
       <ErrorBanner error={error} />

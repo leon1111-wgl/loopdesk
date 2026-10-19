@@ -66,6 +66,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 - 渠道：飞书机器人事件回调（challenge 校验、事件去重、3 秒内先回 200，后台处理失败时记录日志并回复兜底话术）、企业微信群机器人审批提醒。
 - MCP：只读工具通过 MCP 暴露，Claude Desktop、Cursor 等客户端可以直接接入。
 - 运维：Prometheus `/metrics`、Docker、docker-compose（PostgreSQL）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、镜像构建）。
+- 数据导出：对话记录、反馈、审批可按天数导出为 CSV（带 UTF-8 BOM，Excel 打开不乱码；对以 `=` `+` `-` `@` 开头的单元格做转义，防止 CSV 公式注入；按租户隔离，导出的文本是已脱敏的版本）。
 
 ## 架构
 

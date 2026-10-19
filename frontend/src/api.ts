@@ -64,6 +64,18 @@ export const api = {
   del: <T,>(path: string) => fetch(path, { method: "DELETE", headers: headers() }).then((r) => parse<T>(r)),
   upload: <T,>(path: string, form: FormData) =>
     fetch(path, { method: "POST", headers: headers(), body: form }).then((r) => parse<T>(r)),
+  /** Authenticated file download (a plain link cannot send the Authorization header). */
+  download: async (path: string, fallbackName: string) => {
+    const res = await fetch(path, { headers: headers() });
+    if (!res.ok) await parse(res);
+    const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? fallbackName;
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 };
 
 /** POST + Server-Sent Events. EventSource cannot send a body or an Authorization

@@ -146,7 +146,7 @@ while True:
 
 ## 9. 可观测性
 
-每次运行都是一条 trace（`Run`），每一步是一个 span（`Span`）：类型、名称、输入、输出、状态、耗时、token。span 在完成时立即提交，所以运行还在流式输出时，链路页面就能看到已经完成的步骤。成本按 `LOOPDESK_PRICES` 中配置的单价计算。`/metrics` 以 Prometheus 格式输出聚合计数。
+每次运行都是一条 trace（`Run`），每一步是一个 span（`Span`）：类型、名称、输入、输出、状态、耗时、token。span 在完成时立即提交，所以运行还在流式输出时，链路页面就能看到已经完成的步骤。成本按 `LOOPDESK_PRICES` 中配置的单价计算。`/metrics` 以 Prometheus 格式输出聚合计数。运营团队可以在看板中导出近 N 天的对话、反馈和审批（`api/exports.py`），用于质检和复盘。CSV 带 BOM，并对公式前缀做转义，避免顾客输入的 `=HYPERLINK(...)` 在 Excel 里被执行。
 
 ## 10. 已知限制与演进方向
 
