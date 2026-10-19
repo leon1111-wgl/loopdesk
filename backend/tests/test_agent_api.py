@@ -196,3 +196,9 @@ def test_cumulative_refund_amount_limit(settings, ask, login):
     _, events = ask(login("customer@leon.demo"), "订单 SO20260918001 申请退款")
     approval = by_type(events, "approval_required")[0]
     assert "累计退款将达到 ¥39.90" in approval["reason"]
+
+
+def test_order_id_glued_to_chinese_is_recognised(ask, login):
+    _, events = ask(login("customer@leon.demo"), "我订单SO20261008002到哪了")
+    assert [e["name"] for e in by_type(events, "tool_call")] == ["get_order", "track_shipment"]
+    assert "AT1402938475" in by_type(events, "final")[0]["text"]

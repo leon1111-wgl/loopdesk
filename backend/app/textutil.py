@@ -31,7 +31,9 @@ _SENT_RE = re.compile(r"(?<=[。！？!?；;])|\n+")
 _NUM_RE = re.compile(r"(?<![A-Za-z\d.])\d+(?:\.\d+)?(?![\d])")
 _THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3})")
 CITE_RE = re.compile(r"\[(\d{1,2})\]")
-ORDER_ID_RE = re.compile(r"\bSO\d{8,14}\b", re.IGNORECASE)
+# No \b: Python treats CJK characters as word characters, so "订单SO2026…" has no word
+# boundary before "S" and \b silently fails. Explicit look-arounds work next to Chinese.
+ORDER_ID_RE = re.compile(r"(?<![A-Za-z0-9])SO\d{8,14}(?!\d)", re.IGNORECASE)
 
 # Question words and function words that carry no topical signal.
 STOP_TOKENS = {

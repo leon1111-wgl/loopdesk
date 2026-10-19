@@ -74,3 +74,11 @@ def test_query_expansion_folds_variants_and_adds_canonical_terms():
     assert "增值税专用发票" in expanded and expanded.count("增值税专用发票") == 1
     assert "啥时候" not in tokenize("钱啥时候能退回来"), "colloquial question words carry no topic"
     assert expand_query("积分可以怎么抵扣？") == "积分可以怎么抵扣？", "no expansion without a matching phrase"
+
+
+def test_order_ids_are_found_next_to_chinese_text():
+    from app.textutil import ORDER_ID_RE
+
+    for text in ("我订单SO20261008002到哪了", "SO20261008002的物流", "订单 so20261008002 呢", "（SO20261008002）"):
+        assert ORDER_ID_RE.search(text).group(0).upper() == "SO20261008002", text
+    assert ORDER_ID_RE.search("XSO20261008002") is None, "not inside another token"

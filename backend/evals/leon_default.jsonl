@@ -12,6 +12,7 @@
 {"key": "order_lookup", "question": "帮我查一下订单 SO20261008002", "expected_tools": ["get_order"], "must_include": ["已发货", "1299.00"], "tags": ["tool"]}
 {"key": "order_shipment", "question": "SO20261008002 的快递到哪了？", "expected_tools": ["get_order", "track_shipment"], "must_include": ["Atlas快运", "AT1402938475"], "tags": ["tool"]}
 {"key": "order_unshipped", "question": "SO20261012003 发货了吗？什么时候到", "expected_tools": ["get_order", "track_shipment"], "must_include": ["还未发货"], "tags": ["tool"]}
+{"key": "order_id_glued_to_chinese", "question": "我订单SO20261008002到哪了", "expected_tools": ["get_order", "track_shipment"], "must_include": ["Atlas快运", "AT1402938475"], "tags": ["tool", "robustness"]}
 {"key": "order_not_mine", "question": "帮我查一下订单 SO20261003005", "expected_tools": ["get_order"], "must_include": ["无权查看"], "must_not_include": ["降噪耳机", "899"], "tags": ["tool", "security"]}
 {"key": "refund_auto", "question": "订单 SO20260918001 的抱枕不想要了，申请退款", "expected_tools": ["get_order", "search_knowledge", "request_refund"], "expect_approval": false, "must_include": ["39.90"], "tags": ["tool", "hitl"]}
 {"key": "refund_needs_approval", "question": "SO20261008002 我要退款", "expected_tools": ["get_order", "request_refund"], "expect_approval": true, "must_include": ["人工审核"], "tags": ["tool", "hitl"]}
