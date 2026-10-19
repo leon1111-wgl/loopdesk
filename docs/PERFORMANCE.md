@@ -69,7 +69,20 @@ python -m app.evals.load_bench --database-url postgresql+psycopg://... --workers
 
   应用内耗时两者几乎一样，多出的约 41ms 全部在应用之外：客户端与 uvicorn 多进程模式之间的连接处理。每个请求固定约 40ms，是 Nagle 算法和延迟 ACK 相遇的典型特征，但这一点还没有用抓包证实。生产流量会先经过反向代理（连接池、长连接），所以这个数字要在代理后面重测，而不是在应用里调。
 
-- **结论**：生产部署用 PostgreSQL 加多 worker；“合并提交”或异步写链路这类减少提交次数的优化，在 PostgreSQL 上收益会比 SQLite 大，值得在这套环境里重新评估。
+- **结论**：生产部署用 PostgreSQL 加多 worker。只去掉刷盘等待的“异步提交”实测没有收益（见下方实验）；减少语句数和往返次数（合并提交）还没有在 PostgreSQL 上测过，应先用 `pg_stat_statements` 找出大头再决定。
+
+## 实验：PostgreSQL 上链路 span 异步提交（未采用）
+
+假设：PostgreSQL 单请求慢在约 10 次提交都要等 WAL 刷盘，而其中大部分只写链路 span。于是让 span 的提交使用 `SET LOCAL synchronous_commit TO OFF`（业务写入仍同步提交），预期单 worker 吞吐明显上升。
+
+在同一次 CI 运行里对比（PostgreSQL，1 worker，每档 10 秒，先预热）：
+
+| span 提交方式 | 并发 1 | 并发 4 | 并发 16 | 应用内 p50（并发 1） |
+|---|---|---|---|---|
+| 同步（默认） | 38.3 RPS | 46.2 RPS | 41.3 RPS | 24.5ms |
+| 异步 | 37.0 RPS | 43.5 RPS | 39.4 RPS | 25.4ms |
+
+没有任何提升（差异在噪声范围内，略低）。这说明在这套环境里，PostgreSQL 的单请求开销不在 WAL 刷盘，而更可能在每条语句的网络往返和同一台 4 vCPU 机器上的 CPU 争抢。异步提交用持久性换性能，没有收益就不该保留，所以代码已回退。下一步要先用 `pg_stat_statements` 或服务端分段计时找出真正的大头，再决定优化方向。
 
 ## 实验：合并 span 写入（未采用）
 

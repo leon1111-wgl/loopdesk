@@ -89,32 +89,3 @@ def test_responses_carry_server_timing(client):
     r = client.get("/api/health")
     name, _, duration = r.headers["server-timing"].partition(";dur=")
     assert name == "app" and float(duration) >= 0
-
-
-def test_span_commits_skip_the_wal_flush_on_postgresql_only(settings, client, monkeypatch):
-    from sqlalchemy import select, text
-
-    from app.agent.tracing import Tracer
-    from app.db import new_session
-    from app.models import Run, User
-
-    with new_session() as db:
-        user = db.execute(select(User).where(User.email == "customer@leon.demo")).scalar_one()
-        run = Run(tenant_id=user.tenant_id, user_id=user.id, input_text="probe", status="running")
-        db.add(run)
-        db.commit()
-        tracer = Tracer(db, run, settings)
-        postgres = db.get_bind().dialect.name == "postgresql"
-        assert tracer._async_commit is postgres, "SQLite keeps its normal commits"
-        seen, real_commit = [], db.commit
-
-        def commit():
-            if postgres:
-                seen.append(db.execute(text("SHOW synchronous_commit")).scalar())
-            real_commit()
-
-        monkeypatch.setattr(db, "commit", commit)
-        with tracer.span("test", "probe"):
-            pass
-        assert seen == (["off"] if postgres else [])
-

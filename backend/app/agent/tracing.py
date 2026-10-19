@@ -8,7 +8,6 @@ import time
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..config import Settings
@@ -48,11 +47,6 @@ class Tracer:
         self.db = db
         self.run = run
         self.settings = settings
-        # PostgreSQL: span commits do not wait for the WAL flush. They carry trace rows and run
-        # metadata only; business writes (tools, approvals, the final answer) commit on their
-        # own, synchronously, and each synchronous commit makes the earlier ones durable too.
-        # A crash can only lose the last spans of a run that did not finish anyway.
-        self._async_commit = settings.trace_async_commit and db.get_bind().dialect.name == "postgresql"
 
     @contextmanager
     def span(self, kind: str, name: str, input: dict[str, Any] | None = None):
@@ -81,8 +75,6 @@ class Tracer:
             )
             if handle.prompt_tokens or handle.completion_tokens:
                 self.add_usage(handle.model or self.run.model, handle.prompt_tokens, handle.completion_tokens)
-            if self._async_commit:
-                self.db.execute(text("SET LOCAL synchronous_commit TO OFF"))
             self.db.commit()
 
     def add_usage(self, model: str, prompt_tokens: int, completion_tokens: int) -> None:
