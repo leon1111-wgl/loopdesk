@@ -171,6 +171,7 @@ export interface EvalRunRow {
   created_at: string;
   metrics: {
     pass_rate: number;
+    prompt_version?: string;
     checks: Record<string, number | null>;
     by_tag: Record<string, number | null>;
     avg_evidence_coverage: number | null;

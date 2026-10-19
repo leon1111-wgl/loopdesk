@@ -31,6 +31,8 @@ export default function EvalsPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"results" | "cases">("results");
+  const [promptVersion, setPromptVersion] = useState("");
+  const prompts = useLoad(() => api.get<{ default: string; versions: { version: string; characters: number }[] }>("/api/evals/prompts"));
 
   useEffect(() => {
     const id = selected ?? runs.data?.[0]?.id;
@@ -41,7 +43,7 @@ export default function EvalsPage() {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.post<EvalRunRow>("/api/evals/runs", { suite: "default" });
+      const r = await api.post<EvalRunRow>("/api/evals/runs", { suite: "default", prompt_version: promptVersion || null });
       await runs.reload();
       setSelected(r.id);
     } catch (e) {
@@ -64,7 +66,18 @@ export default function EvalsPage() {
           <h1>评测中心</h1>
           <p>每条用例都走真实 Agent 循环（演练模式，不写业务数据），按轨迹打分：工具是否调对、是否触发审批、检索是否命中、回答是否通过证据校验。CI 中通过率低于阈值即阻止合并。</p>
         </div>
-        {admin && <button className="btn btn-primary" disabled={busy} onClick={runSuite}><Play size={15} /> {busy ? "运行中…" : "运行回归评测"}</button>}
+        {admin && (
+          <div className="row">
+            <label className="row small muted">
+              Prompt 版本
+              <select className="select" style={{ width: 150 }} value={promptVersion} onChange={(e) => setPromptVersion(e.target.value)} aria-label="评测使用的 Prompt 版本">
+                <option value="">默认（{prompts.data?.default ?? "v1"}）</option>
+                {prompts.data?.versions.map((v) => <option key={v.version} value={v.version}>{v.version} · {v.characters} 字</option>)}
+              </select>
+            </label>
+            <button className="btn btn-primary" disabled={busy} onClick={runSuite}><Play size={15} /> {busy ? "运行中…" : "运行回归评测"}</button>
+          </div>
+        )}
       </div>
       <ErrorBanner error={error ?? runs.error} />
       {m && detail && (
@@ -103,7 +116,7 @@ export default function EvalsPage() {
         {tab === "results" && runs.data && runs.data.length > 0 && (
           <select className="select" style={{ width: 260 }} value={detail?.id ?? ""} onChange={(e) => setSelected(Number(e.target.value))}>
             {runs.data.map((r) => (
-              <option key={r.id} value={r.id}>#{r.id} · {pct(r.metrics.pass_rate)} · {r.triggered_by} · {time(r.created_at)}</option>
+              <option key={r.id} value={r.id}>#{r.id} · {pct(r.metrics.pass_rate)} · Prompt {r.metrics.prompt_version ?? "v1"} · {r.triggered_by} · {time(r.created_at)}</option>
             ))}
           </select>
         )}

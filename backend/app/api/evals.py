@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
+from ..agent.prompts import PROMPT_VERSIONS
 from ..evals.runner import run_suite
 from ..models import EvalCase, EvalResult, EvalRun
 from ..security import Principal, rate_limiter, require_admin, require_staff
@@ -25,6 +26,7 @@ class CasePatch(BaseModel):
 
 class RunIn(BaseModel):
     suite: str = "default"
+    prompt_version: str | None = None
 
 
 def case_out(c: EvalCase) -> dict:
@@ -61,7 +63,10 @@ def update_case(case_id: int, body: CasePatch, principal: Principal = Depends(re
 @router.post("/runs")
 def start_run(body: RunIn, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     rate_limiter.check(f"eval:{principal.tenant.id}", 6)
-    run = run_suite(db, get_services(), principal.tenant, body.suite, triggered_by=principal.user.name)
+    if body.prompt_version and body.prompt_version not in PROMPT_VERSIONS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"未知的 Prompt 版本：{body.prompt_version}")
+    run = run_suite(db, get_services(), principal.tenant, body.suite, triggered_by=principal.user.name,
+                    prompt_version=body.prompt_version)
     return eval_run_out(run)
 
 
@@ -81,3 +86,13 @@ def get_run(run_id: int, principal: Principal = Depends(require_staff), db: Sess
         {"case_id": r.case_id, "case_key": r.case_key, "passed": r.passed, "checks": r.checks, "answer": r.answer,
          "tools_called": r.tools_called, "latency_ms": r.latency_ms, "run_id": r.run_id} for r in results
     ]}
+
+
+@router.get("/prompts")
+def list_prompts(principal: Principal = Depends(require_staff)) -> dict:
+    settings = get_services().settings
+    return {
+        "default": settings.prompt_version,
+        "canary": {"version": settings.prompt_canary_version, "percent": settings.prompt_canary_percent},
+        "versions": [{"version": v, "characters": len(t), "template": t} for v, t in PROMPT_VERSIONS.items()],
+    }

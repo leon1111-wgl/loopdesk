@@ -34,7 +34,7 @@ from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.router import ModelRouter
 from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
-from .prompts import build_system_prompt
+from .prompts import build_system_prompt, choose_prompt_version
 from .tools import Evidence, ToolContext, ToolError, ToolRegistry
 from .tracing import Tracer
 from .verifier import verify_answer
@@ -58,6 +58,7 @@ class ResumeError(RuntimeError):
 class RunOptions:
     dry_run: bool = False
     inject_hallucination: bool = False
+    prompt_version: str | None = None  # force a version (offline A/B); otherwise default/canary
 
 
 @dataclass
@@ -105,11 +106,17 @@ class AgentRuntime:
         if injection.suspicious:
             yield {"type": "guardrail", "name": "prompt_injection", "matches": injection.matches}
 
+        # Prompt version: forced (offline A/B) > canary split by conversation > default.
+        prompt_version = options.prompt_version or choose_prompt_version(
+            self.settings.prompt_version, self.settings.prompt_canary_version, self.settings.prompt_canary_percent,
+            f"conversation:{conversation.id}" if conversation else f"run:{run.id}",
+        )
+
         # Answer cache: only for self-contained, PII-free, injection-free first questions.
         cache_key = None
         if (self.settings.answer_cache_ttl_hours > 0 and not history and not pii.found
                 and not injection.suspicious and not options.dry_run and not options.inject_hallucination):
-            cache_key = answer_cache.make_key(self.db, self.settings, tenant, user, text)
+            cache_key = answer_cache.make_key(self.db, self.settings, tenant, user, text, prompt_version)
             entry = answer_cache.lookup(self.db, cache_key)
             if entry is not None:
                 yield from self._serve_cached(run, tracer, tenant, user, conversation, pii.masked, entry)
@@ -118,7 +125,7 @@ class AgentRuntime:
         decision = self.router.route(text, history_turns=len(history) // 2)
         run.model, run.route_tier = decision.model, decision.tier
         with tracer.span("router", "model_router", {"length": len(text), "history_turns": len(history) // 2}) as span:
-            span.set(tier=decision.tier, model=decision.model, reasons=decision.reasons)
+            span.set(tier=decision.tier, model=decision.model, reasons=decision.reasons, prompt_version=prompt_version)
 
         state: dict[str, Any] = {
             "user_text": pii.masked,
@@ -127,8 +134,9 @@ class AgentRuntime:
             "options": {"dry_run": options.dry_run, "inject_hallucination": options.inject_hallucination},
             "elapsed_ms": 0,
             "cache_key": cache_key.__dict__ if cache_key else None,
+            "prompt_version": prompt_version,
         }
-        messages = [LLMMessage(role="system", content=build_system_prompt(tenant, user)), *history,
+        messages = [LLMMessage(role="system", content=build_system_prompt(tenant, user, version=prompt_version)), *history,
                     LLMMessage(role="user", content=pii.masked)]
         ctx = self._context(tenant, user, run, conversation, options.dry_run, [])
         try:

@@ -23,6 +23,24 @@ def _pct(values: list[int], q: float) -> int:
     return ordered[min(len(ordered) - 1, round(q * (len(ordered) - 1)))]
 
 
+def _by_prompt_version(runs) -> dict:
+    """Canary read-out: compare outcomes of each prompt version on live traffic."""
+    groups: dict[str, list] = {}
+    for r in runs:
+        groups.setdefault((r.state or {}).get("prompt_version") or "v1", []).append(r)
+    out = {}
+    for version, items in sorted(groups.items()):
+        coverages = [r.evidence_coverage for r in items if r.evidence_coverage is not None]
+        out[version] = {
+            "runs": len(items),
+            "handoff_rate": round(sum(1 for r in items if r.status == "handoff") / len(items), 4),
+            "blocked": sum(1 for r in items if r.verdict == "blocked"),
+            "avg_evidence_coverage": round(sum(coverages) / len(coverages), 4) if coverages else None,
+            "avg_tokens": round(sum(r.prompt_tokens + r.completion_tokens for r in items) / len(items), 1),
+        }
+    return out
+
+
 @router.get("/api/metrics/overview")
 def overview(days: int = 7, principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
     since = datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))
@@ -75,6 +93,7 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         "tools": dict(tool_counts),
         "route_tiers": dict(Counter(r.route_tier for r in runs if r.route_tier)),
         "cache_hits": sum(1 for r in runs if r.route_tier == "cache"),
+        "prompt_versions": _by_prompt_version(runs),
         "cache_hit_rate": round(sum(1 for r in runs if r.route_tier == "cache") / total, 4) if total else None,
         "feedback": dict(feedback),
         "daily": [{"day": k, **v} for k, v in daily.items()],

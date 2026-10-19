@@ -108,6 +108,9 @@ class Settings:
     refund_window_max_count: int = 3
     refund_window_max_amount: float = 200.0
     answer_cache_ttl_hours: float = 24.0  # 0 disables the answer cache
+    prompt_version: str = "v1"
+    prompt_canary_version: str | None = None
+    prompt_canary_percent: float = 0.0
 
     # Channels
     feishu_app_id: str | None = None
@@ -166,6 +169,9 @@ class Settings:
         s.refund_window_max_count = _env_int("REFUND_WINDOW_MAX_COUNT", s.refund_window_max_count)
         s.refund_window_max_amount = _env_float("REFUND_WINDOW_MAX_AMOUNT", s.refund_window_max_amount)
         s.answer_cache_ttl_hours = _env_float("ANSWER_CACHE_TTL_HOURS", s.answer_cache_ttl_hours)
+        s.prompt_version = _env("PROMPT_VERSION", s.prompt_version)
+        s.prompt_canary_version = _env("PROMPT_CANARY_VERSION", s.prompt_canary_version)
+        s.prompt_canary_percent = _env_float("PROMPT_CANARY_PERCENT", s.prompt_canary_percent)
 
         s.feishu_app_id = _env("FEISHU_APP_ID")
         s.feishu_app_secret = _env("FEISHU_APP_SECRET")

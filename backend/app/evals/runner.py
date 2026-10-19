@@ -120,7 +120,9 @@ def score_case(case: EvalCase, summary: dict) -> tuple[bool, dict, str, list[str
     return all(checks.values()), checks, answer, tools
 
 
-def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", triggered_by: str = "manual") -> EvalRun:
+def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", triggered_by: str = "manual",
+              prompt_version: str | None = None) -> EvalRun:
+    prompt_version = prompt_version or services.settings.prompt_version
     cases = db.execute(
         select(EvalCase).where(EvalCase.tenant_id == tenant.id, EvalCase.suite == suite, EvalCase.status == "active")
         .order_by(EvalCase.id)
@@ -143,7 +145,7 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
         user = _resolve_user(sandbox, sandbox_tenant, case)
         started = time.perf_counter()
         summary = collect(services.runtime(sandbox).start(tenant=sandbox_tenant, user=user, text=case.question,
-                                                          options=RunOptions(dry_run=True)))
+                                                          options=RunOptions(dry_run=True, prompt_version=prompt_version)))
         latency = int((time.perf_counter() - started) * 1000)
         passed, checks, answer, tools = score_case(case, summary)
         done = summary.get("done") or {}
@@ -182,6 +184,7 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
         "latency_p95_ms": _percentile(latencies, 0.95),
         "total_tokens": tokens,
         "estimated_cost": round(cost, 6),
+        "prompt_version": prompt_version,
         "diff": diff_runs(db, previous, eval_run) if previous else None,
     }
     eval_run.status = "finished"

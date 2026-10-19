@@ -19,6 +19,7 @@ interface Overview {
   route_tiers: Record<string, number>;
   cache_hits: number;
   cache_hit_rate: number | null;
+  prompt_versions: Record<string, { runs: number; handoff_rate: number; blocked: number; avg_evidence_coverage: number | null; avg_tokens: number }>;
   feedback: Record<string, number>;
   daily: { day: string; runs: number; handoff: number }[];
   last_eval: { id: number; pass_rate: number; total: number } | null;
@@ -114,6 +115,24 @@ export default function DashboardPage() {
               <div className="card-head"><h3>模型路由</h3><span className="faint">重复问题走缓存，简单问题走快模型</span></div>
               <div className="card-pad"><Bars data={data.route_tiers} labels={TIER_TEXT} /></div>
             </div>
+          </div>
+          <div className="card table-wrap">
+            <div className="card-head"><h3>Prompt 版本对比</h3><span className="faint">灰度期间按会话稳定分流，比较各版本在真实对话中的表现</span></div>
+            <table className="table">
+              <thead><tr><th>版本</th><th>运行次数</th><th>转人工率</th><th>证据冲突</th><th>平均证据覆盖率</th><th>平均 Token</th></tr></thead>
+              <tbody>
+                {Object.entries(data.prompt_versions).map(([version, v]) => (
+                  <tr key={version}>
+                    <td className="mono">{version}</td>
+                    <td>{v.runs}</td>
+                    <td>{pct(v.handoff_rate)}</td>
+                    <td>{v.blocked}</td>
+                    <td>{pct(v.avg_evidence_coverage)}</td>
+                    <td className="mono">{v.avg_tokens}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </>
       )}

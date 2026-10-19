@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from ..config import Settings
 from ..models import AnswerCache, Tenant, User
 from ..rag.retrieval import index_manager
-from .prompts import SYSTEM_PROMPT
+from .prompts import DEFAULT_PROMPT_VERSION, PROMPT_VERSIONS
 
 _STRIP = re.compile(r"[\s，。！？、；：,.!?;:“”\"'‘’（）()【】\[\]…—\-~～]+")
 
@@ -41,9 +41,10 @@ def normalize_question(text: str) -> str:
     return _STRIP.sub("", unicodedata.normalize("NFKC", text).lower())
 
 
-def config_fingerprint(settings: Settings) -> str:
+def config_fingerprint(settings: Settings, prompt_version: str = DEFAULT_PROMPT_VERSION) -> str:
     raw = "|".join([settings.llm_provider, settings.llm_model_strong, settings.llm_model_fast,
-                    settings.embedding_provider, str(settings.min_relevance), SYSTEM_PROMPT])
+                    settings.embedding_provider, str(settings.min_relevance), prompt_version,
+                    PROMPT_VERSIONS.get(prompt_version, "")])
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -56,10 +57,11 @@ class CacheKey:
     config: str
 
 
-def make_key(db: Session, settings: Settings, tenant: Tenant, user: User, question: str) -> CacheKey:
+def make_key(db: Session, settings: Settings, tenant: Tenant, user: User, question: str,
+             prompt_version: str = DEFAULT_PROMPT_VERSION) -> CacheKey:
     signature = ":".join(str(part) for part in index_manager.signature(db, tenant.id))
     scope = "staff" if user.role in ("admin", "agent") else "public"
-    return CacheKey(tenant.id, scope, normalize_question(question), signature, config_fingerprint(settings))
+    return CacheKey(tenant.id, scope, normalize_question(question), signature, config_fingerprint(settings, prompt_version))
 
 
 def _where(key: CacheKey):
