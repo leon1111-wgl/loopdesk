@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+from functools import lru_cache
 
 try:
     import jieba
@@ -78,6 +79,19 @@ def _bigram_tokens(text: str) -> list[str]:
 
 def tokenize(text: str) -> list[str]:
     """Tokens for BM25 and overlap scoring. Single CJK characters and stop words are dropped."""
+    if len(text) > _CACHE_MAX_CHARS:
+        return list(_tokenize(text))
+    return list(_tokenize_cached(text))
+
+
+# One answer tokenizes the same knowledge-base sentences several times (retrieval, answer
+# extraction, the verifier), and jieba is the largest CPU cost per request. Segmentation
+# is a pure function of the text once the dictionary is loaded at import, so it is
+# memoised; long texts (whole documents at ingest) are not, to bound memory.
+_CACHE_MAX_CHARS = 2000
+
+
+def _tokenize(text: str) -> tuple[str, ...]:
     if jieba is None:
         raw = _bigram_tokens(text)
     else:
@@ -89,7 +103,10 @@ def tokenize(text: str) -> list[str]:
         if len(t) == 1 and _CJK_RE.match(t):
             continue
         tokens.append(t)
-    return tokens
+    return tuple(tokens)
+
+
+_tokenize_cached = lru_cache(maxsize=4096)(_tokenize)
 
 
 # Query normalisation for how customers actually type. Variant characters are folded, and

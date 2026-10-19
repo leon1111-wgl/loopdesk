@@ -107,3 +107,13 @@ def test_unknown_compound_is_not_covered_by_its_sub_word(client, login):
     assert not any(h["passes_threshold"] for h in r.json()["hits"]), "a sub-word alone must not carry an unknown compound"
     r = client.post("/api/kb/search", json={"query": "付款后多久发货", "scope": "customer"}, headers=login("admin@leon.demo"))
     assert any(h["passes_threshold"] for h in r.json()["hits"]), "the same sub-word on its own still counts"
+
+
+def test_tokenize_cache_hands_out_copies():
+    from app.textutil import tokenize
+
+    first = tokenize("退款多久能到账")
+    first.append("被调用方改掉")
+    assert tokenize("退款多久能到账") == ["退款", "到账"], "a caller mutating its list must not poison the cache"
+    long_text = "退款到账" * 600  # longer than the cache limit: still tokenized, just not cached
+    assert tokenize(long_text)[:2] == ["退款", "到账"]
