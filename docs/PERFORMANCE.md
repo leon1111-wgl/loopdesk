@@ -60,7 +60,15 @@ python -m app.evals.load_bench --database-url postgresql+psycopg://... --workers
 - **PostgreSQL 单请求更慢**：一次请求大约提交 10 次（每个 span 完成即提交），每次都是一次网络往返加 WAL 刷盘，所以单 worker 时吞吐不到 SQLite 的一半。
 - **但高并发时更稳**：没有全库单写者锁，并发 16 时 PostgreSQL 单 worker 的 p99（470ms）只有 SQLite（1299ms）的三分之一多一点。
 - **多 worker 才能用上多核**：PostgreSQL 4 个 worker 在并发 16 时吞吐是单 worker 的 2.3 倍，p99 再减半，是三种配置里最好的。本机 SQLite 也有同样的趋势：并发 4 时 4 个 worker 比 1 个多 40%（153 → 215 RPS），但 SQLite 的写锁限制了上限。
-- **一个没解释清楚的现象**：CI 上 PostgreSQL 4 workers 在并发 1 时，每个请求固定多出约 43ms（p50 67ms，单 worker 是 24ms），两次运行都出现，预热和独立数据库都没消除；本机（macOS、SQLite）没有这个现象（4 workers 并发 1 为 163 RPS）。在加上服务端分段计时之前，不对原因下结论。
+- **并发 1 时 4 workers 反而慢：时间不在应用里**。CI 上 PostgreSQL 4 workers 在并发 1 时每个请求固定多出约 41ms，预热和独立数据库都没消除，本机（macOS、SQLite）也复现不了。为了定位，给每个响应加了 `Server-Timing: app;dur=…`（应用内耗时），压测同时报告客户端和应用内的分位数。第三次运行的结果：
+
+  | 配置（并发 1） | 客户端 p50 | 应用内 p50 |
+  |---|---|---|
+  | PostgreSQL，1 worker | 15.1ms | 14.4ms |
+  | PostgreSQL，4 workers | 57.1ms | 16.1ms |
+
+  应用内耗时两者几乎一样，多出的约 41ms 全部在应用之外：客户端与 uvicorn 多进程模式之间的连接处理。每个请求固定约 40ms，是 Nagle 算法和延迟 ACK 相遇的典型特征，但这一点还没有用抓包证实。生产流量会先经过反向代理（连接池、长连接），所以这个数字要在代理后面重测，而不是在应用里调。
+
 - **结论**：生产部署用 PostgreSQL 加多 worker；“合并提交”或异步写链路这类减少提交次数的优化，在 PostgreSQL 上收益会比 SQLite 大，值得在这套环境里重新评估。
 
 ## 实验：合并 span 写入（未采用）
