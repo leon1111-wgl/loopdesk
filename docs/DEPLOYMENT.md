@@ -80,6 +80,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 | `PROMPT_CANARY_VERSION` / `PROMPT_CANARY_PERCENT` | — / `0` | 灰度：按会话哈希把指定比例的对话稳定地分给候选版本；比例改回 0 即回滚 |
 | `ANSWER_CACHE_TTL_HOURS` | `24` | 答案缓存的有效期，设为 0 即关闭；知识或配置变化时缓存会自动失效 |
 | `REFUND_WINDOW_DAYS` / `REFUND_WINDOW_MAX_COUNT` / `REFUND_WINDOW_MAX_AMOUNT` | `30` / `3` / `200` | 累计退款风控：窗口天数内同一顾客的退款笔数或累计金额超过上限时，小额退款也转人工审核 |
+| `TRACE_ASYNC_COMMIT` | `1` | 仅 PostgreSQL：链路 span 的提交不等待 WAL 刷盘（`SET LOCAL synchronous_commit TO OFF`）。退款、工单、审批和最终回答仍是同步提交，任何一次同步提交都会让之前的异步提交一起落盘；崩溃最多丢失一次未完成运行的最后几个 span |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN` | — | 飞书机器人 |
 | `WECOM_WEBHOOK_KEY` | — | 企业微信群机器人（审批提醒） |
 
