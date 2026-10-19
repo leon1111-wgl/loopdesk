@@ -102,3 +102,19 @@ def test_upload_validation(client, login):
     ok = client.post("/api/kb/documents/upload", files={"file": ("售后补充.md", "## 以旧换新\n- 以旧换新仅限手机品类。".encode())},
                      data={"visibility": "public"}, headers=admin)
     assert ok.status_code == 200 and ok.json()["chunk_count"] == 1
+
+
+def test_formatted_phone_numbers_never_reach_storage_in_plain_text(ask, login):
+    from sqlalchemy import select
+
+    from app.db import new_session
+    from app.models import Message, Run, Span, Ticket
+
+    ask(login("customer@leon.demo"), "扫地机器人坏了，开不了机，联系电话 +86 138-1234-5678，尽快处理")
+    with new_session() as db:
+        stored = [m.content for m in db.execute(select(Message)).scalars()]
+        stored += [r.input_text for r in db.execute(select(Run)).scalars()]
+        stored += [t.description for t in db.execute(select(Ticket)).scalars()]
+        stored += [str(s.input) + str(s.output) for s in db.execute(select(Span)).scalars()]
+    assert any("138****5678" in s for s in stored), "the masked form is what gets stored"
+    assert not any("1234-5678" in s or "12345678" in s for s in stored)
