@@ -1,0 +1,62 @@
+name: Load benchmark
+
+# Manual only: numbers from shared CI runners are for comparing setups on the same
+# machine within one run, not absolute capacity. The load generator runs on the same
+# 4-vCPU runner as the server, so multi-worker results include that contention.
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: Seconds per concurrency level
+        default: "10"
+
+jobs:
+  bench:
+    name: SQLite vs PostgreSQL, 1 and 4 workers
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: loopdesk
+          POSTGRES_PASSWORD: loopdesk
+          POSTGRES_DB: loopdesk_bench
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U loopdesk" --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      PG_URL: postgresql+psycopg://loopdesk:loopdesk@localhost:5432/loopdesk_bench
+      DURATION: ${{ inputs.duration }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt "psycopg[binary]>=3.2"
+      - name: SQLite (WAL), 1 worker
+        run: python -m app.evals.load_bench --concurrency 1,4,16 --duration "$DURATION" --report sqlite-w1.json
+      - name: PostgreSQL, 1 worker
+        run: python -m app.evals.load_bench --database-url "$PG_URL" --workers 1 --concurrency 1,4,16 --duration "$DURATION" --report pg-w1.json
+      - name: PostgreSQL, 4 workers
+        run: python -m app.evals.load_bench --database-url "$PG_URL" --workers 4 --concurrency 1,4,16 --duration "$DURATION" --report pg-w4.json
+      - name: Summary
+        run: |
+          python - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json
+          print("| Setup | Concurrency | RPS | p50 ms | p95 ms | p99 ms | Errors |")
+          print("|---|---|---|---|---|---|---|")
+          for name, path in (("SQLite, 1 worker", "sqlite-w1.json"), ("PostgreSQL, 1 worker", "pg-w1.json"),
+                             ("PostgreSQL, 4 workers", "pg-w4.json")):
+              for level in json.load(open(path))["levels"]:
+                  print(f"| {name} | {level['concurrency']} | {level['rps']} | {level['p50_ms']} | {level['p95_ms']} "
+                        f"| {level['p99_ms']} | {level['error_rate']} |")
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: load-bench
+          path: backend/*-w*.json

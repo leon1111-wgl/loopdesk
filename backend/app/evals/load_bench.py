@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import socket
 import statistics
 import subprocess
@@ -51,12 +52,21 @@ def _percentile(values: list[float], q: float) -> float:
     return ordered[min(len(ordered) - 1, round(q * (len(ordered) - 1)))]
 
 
+def _prepare_database(database_url: str) -> None:
+    """Migrate and seed once, before any worker starts: with --workers N every worker would
+    otherwise run the migrations and the seed at the same time. Non-destructive: an
+    existing database keeps its data (the seed skips it)."""
+    subprocess.run([sys.executable, "-m", "app.seed"], cwd=BACKEND_DIR, check=True, stdout=subprocess.DEVNULL,
+                   env={**os.environ, "LOOPDESK_DATABASE_URL": database_url, "LOOPDESK_SEED_DEMO_TRAFFIC": "0"})
+
+
 def _start_server(database_url: str, workers: int, cache_hours: float) -> tuple[subprocess.Popen, str]:
     port = _free_port()
     env = {
         **os.environ,
         "LOOPDESK_DATABASE_URL": database_url,
-        "LOOPDESK_SEED_DEMO": "1",
+        "LOOPDESK_SEED_DEMO": "0",  # seeded by _prepare_database; non-demo mode needs a real secret
+        "LOOPDESK_JWT_SECRET": secrets.token_urlsafe(48),
         "LOOPDESK_SEED_DEMO_TRAFFIC": "0",
         "LOOPDESK_RATE_LIMIT_PER_MINUTE": "1000000",
         "LOOPDESK_MOCK_STREAM_DELAY": "0",
@@ -135,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     database_url = args.database_url or f"sqlite:///{Path(tempfile.mkdtemp()) / 'load.db'}"
+    _prepare_database(database_url)
     proc, base = _start_server(database_url, args.workers, 24.0 if args.cache == "on" else 0.0)
     try:
         tokens = {}
