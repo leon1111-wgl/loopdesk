@@ -302,3 +302,28 @@ def test_negated_handoff_request_is_answered_not_handed_off(ask, login):
     _, events = ask(login("customer@leon.demo"), "不用转人工，帮我查下 SO20261008002 物流")
     assert [e["name"] for e in by_type(events, "tool_call")] == ["get_order", "track_shipment"]
     assert by_type(events, "final")[0]["status"] == "completed"
+
+
+def test_repeated_handoff_reuses_the_open_ticket_and_keeps_the_queue_position(ask, login):
+    from app.models import Ticket
+
+    def open_handoffs(db):
+        return db.execute(select(Ticket).where(Ticket.kind == "handoff", Ticket.status == "open")).scalars().all()
+
+    with new_session() as db:
+        before = len(open_handoffs(db))
+    customer = login("customer@leon.demo")
+    conversation_id, first = ask(customer, "我要投诉，转人工")
+    position = by_type(first, "tool_result")[0]["output"]["queue_position"]
+    assert position == before + 1
+
+    _, other = ask(login("customer2@leon.demo"), "给我转人工")
+    assert by_type(other, "tool_result")[0]["output"]["queue_position"] == position + 1
+
+    _, again = ask(customer, "转人工！", conversation_id=conversation_id)
+    output = by_type(again, "tool_result")[0]["output"]
+    assert output["queue_position"] == position, "someone queued behind me must not push me back"
+    assert output["already_queued"] is True and "无需重复" in output["message"]
+    with new_session() as db:
+        mine = [t for t in open_handoffs(db) if t.conversation_id == conversation_id]
+        assert len(mine) == 1, "a repeated request must not open a second ticket"
