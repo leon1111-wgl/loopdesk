@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - benchmark 
     from ..db import init_engine, new_session, prepare_database
     from ..models import Chunk, Document, Tenant
     from ..rag.embeddings import pack
+    from ..rag.ingest import ingest_document
     from ..rag.retrieval import hybrid_search, index_manager
     from ..seed import seed_demo
     from ..services import Services
@@ -74,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - benchmark 
                 db.commit()
                 current += batch
             index_manager.invalidate(tenant.id)
+            index_manager._tokens.pop(tenant.id, None)  # cold: every chunk is tokenized
             started = time.perf_counter()
             index_manager.get(db, tenant.id)
             build_s = time.perf_counter() - started
@@ -83,8 +85,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - benchmark 
                 hybrid_search(db, tenant.id, QUESTIONS[n % len(QUESTIONS)], services.embedder, {"public"},
                               top_k=4, min_relevance=settings.min_relevance)
                 latencies.append((time.perf_counter() - started) * 1000)
-            row = {"chunks": current, "index_build_s": round(build_s, 2), "p50_ms": round(statistics.median(latencies), 1),
-                   "p95_ms": round(_percentile(latencies, 0.95), 1)}
+            # An administrator edits one document: the next search pays for the rebuild.
+            ingest_document(db, tenant_id=tenant.id, title=f"补充说明 {current}", content="## 补充\n- 退款进度可在订单详情中查看。",
+                            embedder=services.embedder)
+            started = time.perf_counter()
+            index_manager.get(db, tenant.id)
+            rebuild_s = time.perf_counter() - started
+            row = {"chunks": current, "index_build_s": round(build_s, 2), "rebuild_after_edit_s": round(rebuild_s, 2),
+                   "p50_ms": round(statistics.median(latencies), 1), "p95_ms": round(_percentile(latencies, 0.95), 1)}
             results.append(row)
             print(json.dumps(row, ensure_ascii=False), flush=True)
     if args.report:

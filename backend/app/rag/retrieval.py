@@ -29,7 +29,6 @@ from sqlalchemy.orm import Session
 from ..llm.base import Embedder
 from ..models import Chunk, Document
 from ..textutil import canonical_query, expand_query, tokenize
-from .embeddings import unpack
 
 RRF_K = 60
 MIN_SIMILARITY = 1e-6  # below this a vector score is rounding noise (float32), not similarity
@@ -84,7 +83,7 @@ class TenantIndex:
     vector scores as one matrix product. The first versions looped over every chunk in Python:
     at 20,000 chunks a search took about 390 ms (python -m app.evals.retrieval_bench)."""
 
-    def __init__(self, chunks: list[IndexedChunk], vectors: list[list[float]] | None = None):
+    def __init__(self, chunks: list[IndexedChunk], vectors=None):
         self.chunks = chunks
         self.n = len(chunks)
         self.avgdl = (sum(c.length for c in chunks) / self.n) if self.n else 0.0
@@ -95,7 +94,8 @@ class TenantIndex:
             for token, tf in c.tf.items():
                 self.postings[token].append((i, tf))
         # float32, as stored: 20,000 x 512 is 40 MB, where per-chunk Python lists took several times that
-        self.matrix = np.asarray(vectors or [], dtype=np.float32).reshape(self.n, -1) if self.n else None
+        self.matrix = (np.asarray(vectors, dtype=np.float32).reshape(self.n, -1)
+                       if self.n and vectors is not None else None)
         self.visibility = np.array([c.visibility for c in chunks], dtype=object)
 
     def idf(self, token: str) -> float:
@@ -154,8 +154,15 @@ class TenantIndex:
 
 
 class IndexManager:
+    """Per-tenant index, rebuilt when the tenant's chunks change. A rebuild reuses the tokens
+    of every chunk it has seen before (re-indexing a document creates new chunk rows, so only
+    those are tokenized again): tokenizing was most of a rebuild, about 10 s at 50,000 chunks."""
+
     def __init__(self) -> None:
         self._cache: dict[int, tuple[tuple, TenantIndex]] = {}
+        # tenant -> {(chunk id, hash of its text): (term frequencies, length)}. The text is part
+        # of the key because SQLite can hand a deleted row's id to a new row.
+        self._tokens: dict[int, dict[tuple[int, int], tuple[Counter, int]]] = {}
         self._lock = threading.Lock()
 
     def signature(self, db: Session, tenant_id: int) -> tuple:
@@ -180,9 +187,16 @@ class IndexManager:
             .where(Chunk.tenant_id == tenant_id)
             .order_by(Chunk.id)
         ).all()
-        chunks, vectors = [], []
+        chunks, blobs = [], []
+        previous = self._tokens.get(tenant_id, {})
+        seen: dict[tuple[int, int], tuple[Counter, int]] = {}
         for chunk, title, visibility in rows:
-            tokens = tokenize(f"{chunk.heading}\n{chunk.text}")
+            text = f"{chunk.heading}\n{chunk.text}"
+            key = (chunk.id, hash(text))
+            if key not in previous:
+                tokens = tokenize(text)
+                previous[key] = (Counter(tokens), len(tokens))
+            seen[key] = tf, length = previous[key]
             chunks.append(
                 IndexedChunk(
                     chunk_id=chunk.id,
@@ -193,19 +207,35 @@ class IndexManager:
                     page=chunk.page,
                     visibility=visibility,
                     flagged=chunk.flagged_injection,
-                    tf=Counter(tokens),
-                    length=len(tokens),
+                    tf=tf,
+                    length=length,
                 )
             )
-            vectors.append(unpack(chunk.embedding))
-        index = TenantIndex(chunks, vectors)
+            blobs.append(chunk.embedding)
+        index = TenantIndex(chunks, _matrix(blobs))
         with self._lock:
             self._cache[tenant_id] = (signature, index)
+            self._tokens[tenant_id] = seen  # chunks that no longer exist drop out
         return index
 
     def invalidate(self, tenant_id: int) -> None:
         with self._lock:
             self._cache.pop(tenant_id, None)
+
+
+def _matrix(blobs: list[bytes]):
+    """Stored float32 vectors straight into one matrix. Rows of another length (the embedding
+    model was changed without re-indexing) are left at zero, i.e. never similar."""
+    if not blobs:
+        return None
+    width = max(set(map(len, blobs)), key=[len(b) for b in blobs].count)  # the usual row size
+    if all(len(b) == width for b in blobs):
+        return np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), -1).copy()
+    matrix = np.zeros((len(blobs), width // 4), dtype=np.float32)
+    for i, blob in enumerate(blobs):
+        if len(blob) == width:
+            matrix[i] = np.frombuffer(blob, dtype=np.float32)
+    return matrix
 
 
 index_manager = IndexManager()

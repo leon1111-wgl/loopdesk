@@ -49,6 +49,7 @@ def client(settings, monkeypatch):
 
     _reset_database(settings.database_url)
     index_manager._cache.clear()
+    index_manager._tokens.clear()
     rate_limiter._hits.clear()
     # On PostgreSQL login attempts are counted in fixed one-minute windows; a test that crossed
     # a minute boundary saw its count reset (a 401 where the limit expects a 429). Pin the clock.

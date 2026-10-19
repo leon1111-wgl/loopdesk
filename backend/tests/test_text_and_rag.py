@@ -168,3 +168,33 @@ def test_the_index_ranks_exactly_like_a_full_scan(client):
                 got, expected = index.vector(qvec, allowed, 12), _scan_vector(index, qvec, allowed, 12)
                 assert [i for i, _ in got] == [i for i, _ in expected], question
                 assert all(abs(a - b) < 1e-5 for (_, a), (_, b) in zip(got, expected))
+
+
+def test_a_rebuilt_index_never_reuses_the_tokens_of_another_text(client, login):
+    # Rebuilds reuse each chunk's tokens. SQLite can give a new chunk the id of a deleted one,
+    # so the cache is keyed by the text too: the new chunk must be searched by its own words.
+    from sqlalchemy import select
+
+    from app.db import new_session
+    from app.models import Chunk
+
+    admin = login("admin@leon.demo")
+
+    def search(query):
+        return client.post("/api/kb/search", json={"query": query}, headers=admin).json()["hits"]
+
+    first = client.post("/api/kb/documents/text", headers=admin,
+                        json={"title": "甲", "content": "## 手表\n- 防水手表支持潜水五十米。"}).json()
+    assert any(h["document_id"] == first["id"] for h in search("手表能潜水吗"))
+    with new_session() as db:
+        old_ids = set(db.execute(select(Chunk.id).where(Chunk.document_id == first["id"])).scalars())
+    client.delete(f"/api/kb/documents/{first['id']}", headers=admin)
+    second = client.post("/api/kb/documents/text", headers=admin,
+                         json={"title": "乙", "content": "## 自行车\n- 折叠自行车重量十二公斤。"}).json()
+    with new_session() as db:
+        new_ids = set(db.execute(select(Chunk.id).where(Chunk.document_id == second["id"])).scalars())
+        if db.get_bind().dialect.name == "sqlite":
+            assert old_ids & new_ids, "the scenario needs a reused id (SQLite without AUTOINCREMENT)"
+    assert any(h["document_id"] == second["id"] and h["bm25_rank"] for h in search("折叠自行车有多重")), \
+        "found by its own words, not only by its vector"
+    assert not any(h["document_id"] == second["id"] for h in search("手表能潜水吗"))
