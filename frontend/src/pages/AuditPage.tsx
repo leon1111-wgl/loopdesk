@@ -38,8 +38,11 @@ const LABEL: Record<string, string> = {
   erased: "抹除的记录",
 };
 
+const VALUE: Record<string, string> = { public: "公开", internal: "仅内部", active: "生效", candidate: "候选", archived: "已归档" };
+
 function show(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "string" && VALUE[value]) return VALUE[value];
   if (Array.isArray(value)) return value.map(show).join("、");
   if (typeof value === "object") return Object.entries(value).map(([k, v]) => `${k} ${show(v)}`).join("，");
   return String(value);
