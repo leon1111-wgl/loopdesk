@@ -135,7 +135,7 @@ export default function Layout() {
                 >
                   {item.icon}
                   {item.label}
-                  {item.count ? <span className="count">{item.count}</span> : null}
+                  {item.count ? <span className="count">{item.count}<span className="sr-only"> 条待处理</span></span> : null}
                 </NavLink>
               ))}
             </div>
@@ -173,7 +173,7 @@ export default function Layout() {
           </div>
           <div className="row">
             <span className="badge">演示环境<span className="hide-compact"> · 数据均为虚构</span></span>
-            <button className="icon-btn" title={`主题：${themeLabel}（点击切换）`} aria-label="切换主题" onClick={() => setTheme(nextTheme)}>
+            <button className="icon-btn" title={`主题：${themeLabel}（点击切换）`} aria-label={`切换主题，当前：${themeLabel}`} onClick={() => setTheme(nextTheme)}>
               {theme === "light" ? <Sun size={16} /> : theme === "dark" ? <Moon size={16} /> : <Monitor size={16} />}
             </button>
           </div>

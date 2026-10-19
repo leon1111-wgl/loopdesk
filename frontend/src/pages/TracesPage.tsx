@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { api } from "../api";
-import { Empty, ErrorBanner, Json, Kpi, ROLE_TEXT, StatusBadge, VerdictBadge, ms, time, useLoad, tierText } from "../components/ui";
+import { Empty, ErrorBanner, Json, Kpi, ROLE_TEXT, StatusBadge, VerdictBadge, ms, pressable, time, useLoad, tierText } from "../components/ui";
 import type { EvidenceItem, RunRow, SpanRow } from "../types";
 
 const KIND_TEXT: Record<string, string> = {
@@ -51,7 +51,7 @@ function RunDetailView({ runId }: { runId: string }) {
         <div className="card-head"><h3>执行时间线（{data.spans.length} 个 span）</h3><span className="faint">点击展开输入输出</span></div>
         {data.spans.map((s) => (
           <div key={s.id}>
-            <div className="span-row" onClick={() => setOpen(open === s.id ? null : s.id)}>
+            <div className="span-row" role="button" aria-expanded={open === s.id} {...pressable(() => setOpen(open === s.id ? null : s.id))}>
               <span className={`badge ${s.status === "ok" ? "" : s.status === "rejected" ? "badge-warning" : "badge-danger"}`}>{KIND_TEXT[s.kind] ?? s.kind}</span>
               <span className="ellipsis"><b>{s.name}</b> {s.prompt_tokens + s.completion_tokens > 0 && <span className="faint">· {s.prompt_tokens + s.completion_tokens} tokens</span>}</span>
               <div className="bar-track"><div className={`span-bar kind-${s.kind}`} style={{ width: `${(s.latency_ms / maxLatency) * 100}%` }} /></div>
@@ -117,7 +117,7 @@ export default function TracesPage() {
           <thead><tr><th>时间</th><th>用户</th><th>输入</th><th>状态</th><th>模型</th><th>耗时</th><th>Token</th><th>证据</th></tr></thead>
           <tbody>
             {data?.items.map((r) => (
-              <tr key={r.id} className="clickable" onClick={() => navigate(`/traces/${r.id}`)}>
+              <tr key={r.id} className="clickable" {...pressable(() => navigate(`/traces/${r.id}`))}>
                 <td className="faint nowrap">{time(r.created_at)}</td>
                 <td className="nowrap">{r.user?.name}</td>
                 <td style={{ maxWidth: 380 }}><div className="ellipsis">{r.input_text}</div></td>

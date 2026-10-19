@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { FlaskConical, History, PencilLine, Plus, Send, ShieldAlert, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
-import { Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, time, useMediaQuery, tierText } from "../components/ui";
+import { Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
 import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, Verification } from "../types";
 
 const SUGGESTIONS: Record<string, [string, string][]> = {
@@ -61,7 +61,7 @@ function AnswerText({ text, citations, verification }: { text: string; citations
           const ref = Number(m[1]);
           const ev = byRef.get(ref);
           nodes.push(
-            <span className="cite" key={`${i}-${m.index}`}>
+            <span className="cite" key={`${i}-${m.index}`} tabIndex={0}>
               {ref}
               <span className="tip">
                 <b>{ev ? `《${ev.title}》` : "引用不存在"}</b>
@@ -245,7 +245,7 @@ export default function ChatPage() {
   }, [waiting, conversationId, loadMessages]);
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    bottom.current?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "end" });
   }, [messages, live, pendingUser]);
 
   // Same focus handling as the navigation drawer in Layout: focus moves into the list
@@ -338,7 +338,8 @@ export default function ChatPage() {
         </div>
         {conversations.length === 0 && <div className="empty">暂无历史对话</div>}
         {conversations.map((c) => (
-          <div key={c.id} className={`convo-item ${c.id === conversationId ? "active" : ""}`} onClick={() => openConversation(`/chat/${c.id}`)}>
+          <div key={c.id} className={`convo-item ${c.id === conversationId ? "active" : ""}`} role="link"
+            aria-current={c.id === conversationId ? "page" : undefined} {...pressable(() => openConversation(`/chat/${c.id}`))}>
             <div className="title ellipsis">{c.title}</div>
             <div className="row faint" style={{ marginTop: 2 }}>
               {time(c.updated_at)}
@@ -406,10 +407,10 @@ export default function ChatPage() {
                         <span className="faint">{m.feedback.rating === "correction" ? "已纠错" : m.feedback.rating === "up" ? "已标记有用" : "已标记无用"}</span>
                       ) : (
                         <>
-                          <button className="icon-btn" title="有帮助" onClick={() => rate(m, "up")}><ThumbsUp size={14} /></button>
-                          <button className="icon-btn" title="没帮助" onClick={() => rate(m, "down")}><ThumbsDown size={14} /></button>
+                          <button className="icon-btn" title="有帮助" aria-label="有帮助" onClick={() => rate(m, "up")}><ThumbsUp size={14} /></button>
+                          <button className="icon-btn" title="没帮助" aria-label="没帮助" onClick={() => rate(m, "down")}><ThumbsDown size={14} /></button>
                           {staff && (
-                            <button className="icon-btn" title="纠错（进入数据飞轮）" onClick={() => setCorrecting(m)}><PencilLine size={14} /></button>
+                            <button className="icon-btn" title="纠错（进入数据飞轮）" aria-label="纠错（进入数据飞轮）" onClick={() => setCorrecting(m)}><PencilLine size={14} /></button>
                           )}
                         </>
                       )}

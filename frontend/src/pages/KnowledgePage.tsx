@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { AlertTriangle, Check, FilePlus2, Search, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import { Drawer, Empty, ErrorBanner, Modal, time, useLoad } from "../components/ui";
+import { Drawer, Empty, ErrorBanner, Modal, pressable, time, useLoad } from "../components/ui";
 import type { DocumentRow } from "../types";
 
 interface DocDetail extends DocumentRow {
@@ -225,7 +225,7 @@ export default function KnowledgePage() {
           <thead><tr><th>标题</th><th>可见范围</th><th>片段数</th><th>注入检测</th><th>知识冲突</th><th>版本</th><th>更新时间</th></tr></thead>
           <tbody>
             {data?.map((d) => (
-              <tr key={d.id} className="clickable" onClick={() => open(d.id)}>
+              <tr key={d.id} className="clickable" {...pressable(() => open(d.id))}>
                 <td><b>{d.title}</b> <span className="faint">{d.source}</span></td>
                 <td>{d.visibility === "public" ? <span className="badge badge-primary">公开</span> : <span className="badge badge-info">仅内部</span>}</td>
                 <td>{d.chunk_count}</td>

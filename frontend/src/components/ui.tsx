@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { X } from "lucide-react";
 
 export const TIER_TEXT: Record<string, string> = { fast: "快模型", strong: "强模型", cache: "答案缓存" };
@@ -60,7 +60,7 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
   }, [onClose]);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="card modal" role="dialog" aria-label={title}>
+      <div className="card modal" role="dialog" aria-modal="true" aria-label={title}>
         <div className="card-head">
           <h2>{title}</h2>
           <button className="icon-btn" onClick={onClose} aria-label="关闭">
@@ -75,6 +75,7 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
 }
 
 export function Drawer({ title, onClose, children }: { title: ReactNode; onClose: () => void; children: ReactNode }) {
+  const titleId = useId();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -83,9 +84,9 @@ export function Drawer({ title, onClose, children }: { title: ReactNode; onClose
   return (
     <>
       <div className="drawer-backdrop" onClick={onClose} />
-      <aside className="drawer" role="dialog">
+      <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <div className="card-head" style={{ position: "sticky", top: 0, background: "var(--surface)", zIndex: 1 }}>
-          <div style={{ minWidth: 0 }}>{title}</div>
+          <div id={titleId} style={{ minWidth: 0 }}>{title}</div>
           <button className="icon-btn" onClick={onClose} aria-label="关闭">
             <X size={18} />
           </button>
@@ -188,6 +189,22 @@ export function useTheme(): [Theme, (t: Theme) => void] {
   }, []);
   return [theme, update];
 }
+
+/** Keyboard support for a clickable element that cannot be a <button> (table rows, list
+ * items): focusable with Tab, activated with Enter or Space like a button. */
+export function pressable(onPress: () => void) {
+  return {
+    tabIndex: 0,
+    onClick: onPress,
+    onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
+      if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+      e.preventDefault();
+      onPress();
+    },
+  };
+}
+
+export const prefersReducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /** Track a CSS media query, e.g. the 780px breakpoint where the sidebar becomes a drawer. */
 export function useMediaQuery(query: string): boolean {
