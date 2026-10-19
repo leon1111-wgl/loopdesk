@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..db import get_db
 from ..models import Tenant, User
-from ..security import Principal, create_token, get_principal, rate_limiter, require_admin, verify_password
+from ..security import (Principal, create_token, get_principal, rate_limiter, require_admin, require_staff,
+                        verify_password)
 from ..seed import DEMO_PASSWORD, TENANTS
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -81,7 +82,8 @@ def demo_accounts() -> dict:
 
 
 @router.get("/tenant")
-def get_tenant(principal: Principal = Depends(get_principal)) -> dict:
+def get_tenant(principal: Principal = Depends(require_staff)) -> dict:
+    """Staff only: the settings include risk controls (the automatic refund limit)."""
     return tenant_out(principal.tenant)
 
 

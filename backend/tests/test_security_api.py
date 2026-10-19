@@ -152,3 +152,44 @@ def test_formatted_phone_numbers_never_reach_storage_in_plain_text(ask, login):
         stored += [str(s.input) + str(s.output) for s in db.execute(select(Span)).scalars()]
     assert any("138****5678" in s for s in stored), "the masked form is what gets stored"
     assert not any("1234-5678" in s or "12345678" in s for s in stored)
+
+
+# ---------------------------------------------------------------- permission matrix
+# Reviewed on purpose. Any route not listed here must demand a login, and anything a
+# customer may call is listed below; a new endpoint cannot become public by accident.
+PUBLIC_ROUTES = {
+    ("GET", "/api/health"), ("GET", "/api/ready"),
+    ("GET", "/metrics"),  # aggregate counters only, no tenant data; restrict at the network layer
+    ("POST", "/api/auth/login"), ("GET", "/api/auth/demo-accounts"),
+    ("POST", "/api/channels/feishu/{tenant_slug}/events"),  # authenticated by Feishu's verification token
+}
+CUSTOMER_ROUTES = {
+    ("GET", "/api/auth/me"), ("GET", "/api/conversations"), ("POST", "/api/conversations"),
+    ("GET", "/api/conversations/{conversation_id}/messages"),
+    ("POST", "/api/conversations/{conversation_id}/stream"), ("POST", "/api/chat"),
+    ("POST", "/api/messages/{message_id}/feedback"),
+}
+
+
+def test_every_route_is_public_on_purpose_or_requires_the_right_role(client, login):
+    import re
+
+    customer = login("customer@leon.demo")
+    seen = set()
+    for path, operations in client.app.openapi()["paths"].items():
+        for method in operations:
+            route = (method.upper(), path)
+            seen.add(route)
+            url = re.sub(r"\{[^}]+\}", "1", path)
+            if route not in PUBLIC_ROUTES:
+                assert client.request(route[0], url, json={}).status_code == 401, f"{route} answers without a login"
+            if route not in PUBLIC_ROUTES | CUSTOMER_ROUTES:
+                code = client.request(route[0], url, json={}, headers=customer).status_code
+                assert code == 403, f"{route} answers a customer with {code}"
+    assert PUBLIC_ROUTES | CUSTOMER_ROUTES <= seen, "the lists name routes that no longer exist"
+
+
+def test_feishu_webhook_fails_closed_outside_the_demo(settings, client):
+    settings.seed_demo, settings.feishu_verification_token = False, None
+    r = client.post("/api/channels/feishu/leon/events", json={"type": "url_verification", "challenge": "x"})
+    assert r.status_code == 503

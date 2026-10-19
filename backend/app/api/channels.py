@@ -17,6 +17,10 @@ async def feishu_events(tenant_slug: str, request: Request, background: Backgrou
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "暂不支持加密事件，请在飞书开放平台关闭 Encrypt Key")
     settings = get_services().settings
     expected = settings.feishu_verification_token
+    if not expected and not settings.seed_demo:
+        # Fail closed: without the token anyone who knows the URL could post fake customer
+        # messages. The demo accepts unsigned events so the channel can be tried locally.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "飞书渠道未配置 verification token")
     token = body.get("token") or (body.get("header") or {}).get("token") or ""
     if expected and not hmac.compare_digest(str(token), expected):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "verification token 不匹配")
