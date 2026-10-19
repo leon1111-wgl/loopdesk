@@ -36,8 +36,11 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 <td><img src="docs/assets/retrieval.png" alt="检索调试器"><br><b>检索调试器</b>：BM25 名次、向量名次、RRF 分数、相关度阈值、注入样本屏蔽</td>
 </tr>
 <tr>
-<td><img src="docs/assets/dashboard.png" alt="运营看板"><br><b>运营看板</b>：自助解决率、转人工率、证据覆盖率、延迟、Token 与成本</td>
+<td><img src="docs/assets/dashboard.png" alt="运营看板"><br><b>运营看板</b>：自助解决率、转人工率、证据覆盖率、缓存命中率、Prompt 版本对比，支持导出 CSV</td>
 <td><img src="docs/assets/dashboard-dark.png" alt="深色模式"><br><b>深色模式</b>：跟随系统，也可以手动切换</td>
+</tr>
+<tr>
+<td colspan="2"><img src="docs/assets/mobile-approvals.png" alt="手机端审批" width="260"> <img src="docs/assets/mobile-nav.png" alt="手机端导航" width="260"><br><b>手机端</b>：窄屏下用抽屉式导航，审批卡片改为单列，主管在手机上也能处理审批</td>
 </tr>
 </table>
 

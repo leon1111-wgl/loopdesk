@@ -182,6 +182,7 @@ DEMO_TRAFFIC = [
     ("customer2@leon.demo", ["帮我查一下订单 SO20261008002"]),
     ("customer2@leon.demo", ["你们这服务太差了，我要投诉，给我转人工！"]),
     ("agent@leon.demo", ["一线客服最多可以发放多少钱的补偿券？"]),
+    ("customer2@leon.demo", ["七天无理由退货有什么条件？"]),  # repeat of Emma's first question: answer-cache hit
     ("customer@iris.demo", ["P1故障多久响应？"]),
 ]
 
