@@ -147,3 +147,62 @@ def test_a_correction_published_anyway_stays_on_the_list_until_the_policy_is_edi
     assert len(resolved) == 2 and all("已修改" in c["note"] for c in resolved)
     _, events = ask(login("customer@leon.demo"), "退款多久能到账啊")
     assert by_type(events, "final")[0]["status"] == "completed"
+
+
+def test_editing_a_document_reindexes_it_and_rechecks_its_conflicts(client, ask, login):
+    admin = login("admin@leon.demo")
+    created = client.post("/api/kb/documents/text", json=CONFLICTING, headers=admin).json()
+    assert created["conflicts"] == 1
+    edited = client.put(f"/api/kb/documents/{created['id']}", headers=admin, json={
+        "title": "到账补充说明", "content": "## 到账\n- 微信支付、支付宝退款预计1-3个工作日到账，节假日顺延。",
+        "visibility": "public", "version": created["version"]}).json()
+    assert edited["version"] == created["version"] + 1 and edited["conflicts"] == 0
+    assert client.get("/api/kb/conflicts", headers=admin).json() == []
+    hits = client.post("/api/kb/search", json={"query": "节假日顺延"}, headers=admin).json()["hits"]
+    assert any("节假日顺延" in h["text"] for h in hits), "the new text is searchable"
+    _, events = ask(login("customer@leon.demo"), "微信退款多久能到账？")
+    assert by_type(events, "final")[0]["status"] == "completed"
+
+
+def test_an_edit_made_on_an_old_version_is_refused_instead_of_overwriting(client, login):
+    admin = login("admin@leon.demo")
+    doc = client.post("/api/kb/documents/text", json=CONFLICTING, headers=admin).json()
+    body = {"title": "到账补充说明", "visibility": "public", "version": doc["version"]}
+    first = client.put(f"/api/kb/documents/{doc['id']}", json={**body, "content": "第一位管理员的修改。"}, headers=admin)
+    second = client.put(f"/api/kb/documents/{doc['id']}", json={**body, "content": "第二位管理员的修改。"}, headers=admin)
+    assert first.status_code == 200 and second.status_code == 409
+    assert "第一位" in client.get(f"/api/kb/documents/{doc['id']}", headers=admin).json()["content"]
+    assert client.put(f"/api/kb/documents/{doc['id']}", json={**body, "content": "x"},
+                      headers=login("agent@leon.demo")).status_code == 403
+
+
+def test_concurrent_edits_of_one_version_save_exactly_once(client, login):
+    import threading
+
+    from app.db import new_session
+    from app.models import Document
+    from app.rag.ingest import StaleDocument, edit_document
+    from app.services import get_services
+
+    admin = login("admin@leon.demo")
+    doc = client.post("/api/kb/documents/text", json=CONFLICTING, headers=admin).json()
+    barrier, results = threading.Barrier(2, timeout=10), []
+
+    def save(text):
+        with new_session() as db:
+            document = db.get(Document, doc["id"])
+            barrier.wait()
+            try:
+                edit_document(db, document, title=document.title, content=text, visibility="public",
+                              embedder=get_services().embedder, base_version=doc["version"])
+                results.append("saved")
+            except StaleDocument:
+                results.append("stale")
+
+    threads = [threading.Thread(target=save, args=(f"管理员{i}的修改。",)) for i in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results) == ["saved", "stale"]
+    assert client.get(f"/api/kb/documents/{doc['id']}", headers=admin).json()["version"] == doc["version"] + 1

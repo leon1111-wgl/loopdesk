@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, Check, FilePlus2, Search, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, FilePlus2, Pencil, Search, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { Drawer, Empty, ErrorBanner, Modal, pressable, time, useLoad } from "../components/ui";
@@ -148,6 +148,43 @@ function AddDocModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
   );
 }
 
+function EditDocModal({ doc, onClose, onDone }: { doc: DocDetail; onClose: () => void; onDone: () => void }) {
+  const [title, setTitle] = useState(doc.title);
+  const [content, setContent] = useState(doc.content);
+  const [visibility, setVisibility] = useState(doc.visibility);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      // The version this edit was made on: if someone saved in between, the server refuses
+      // instead of overwriting their change.
+      await api.put(`/api/kb/documents/${doc.id}`, { title, content, visibility, version: doc.version });
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title={`编辑《${doc.title}》`} onClose={onClose}
+      footer={<><button className="btn" onClick={onClose}>取消</button><button className="btn btn-primary" disabled={busy || !title.trim() || !content.trim()} onClick={submit}>保存为 v{doc.version + 1}</button></>}>
+      <label className="field">标题<input className="input" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+      <label className="field">内容（保存后重新切分、索引，并重新检查知识冲突）
+        <textarea className="textarea" style={{ minHeight: 280 }} value={content} onChange={(e) => setContent(e.target.value)} />
+      </label>
+      <label className="field">可见范围
+        <select className="select" value={visibility} onChange={(e) => setVisibility(e.target.value as DocDetail["visibility"])}>
+          <option value="public">公开：顾客和员工都能检索</option>
+          <option value="internal">内部：只有员工能检索</option>
+        </select>
+      </label>
+      <ErrorBanner error={error} />
+    </Modal>
+  );
+}
+
 interface Conflict {
   id: number;
   sentence: string;
@@ -205,6 +242,12 @@ export default function KnowledgePage() {
   const { data, error, reload } = useLoad(() => api.get<DocumentRow[]>("/api/kb/documents"));
   const [detail, setDetail] = useState<DocDetail | null>(null);
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [revision, setRevision] = useState(0); // remounts the conflicts card after a document changes
+  function changed() {
+    reload();
+    setRevision((r) => r + 1);
+  }
 
   async function open(id: number) {
     setDetail(await api.get<DocDetail>(`/api/kb/documents/${id}`));
@@ -213,7 +256,7 @@ export default function KnowledgePage() {
     if (!window.confirm("删除后该文档的所有片段会从索引中移除，确定吗？")) return;
     await api.del(`/api/kb/documents/${id}`);
     setDetail(null);
-    reload();
+    changed();
   }
 
   return (
@@ -244,13 +287,21 @@ export default function KnowledgePage() {
           </tbody>
         </table>
       </div>
-      <ConflictsCard admin={admin} onChange={reload} />
+      <ConflictsCard key={revision} admin={admin} onChange={reload} />
       <RetrievalDebugger />
-      {adding && <AddDocModal onClose={() => setAdding(false)} onDone={() => { setAdding(false); reload(); }} />}
+      {adding && <AddDocModal onClose={() => setAdding(false)} onDone={() => { setAdding(false); changed(); }} />}
+      {editing && detail && <EditDocModal doc={detail} onClose={() => setEditing(false)}
+        onDone={() => { setEditing(false); changed(); open(detail.id); }} />}
       {detail && (
         <Drawer title={<div><h2>{detail.title}</h2><div className="faint">{detail.chunk_count} 个片段 · v{detail.version}</div></div>} onClose={() => setDetail(null)}>
           <div className="stack">
-            {admin && <button className="btn btn-danger" style={{ width: "fit-content" }} onClick={() => remove(detail.id)}><Trash2 size={15} /> 删除文档</button>}
+            {admin && (
+              <div className="row">
+                {detail.chunks.some((c) => c.page) ? <span className="faint small">PDF 文档请上传新版本文件</span>
+                  : <button className="btn" onClick={() => setEditing(true)}><Pencil size={15} /> 编辑</button>}
+                <button className="btn btn-danger" onClick={() => remove(detail.id)}><Trash2 size={15} /> 删除文档</button>
+              </div>
+            )}
             {detail.chunks.map((c) => (
               <div key={c.id} className="json" style={c.flagged_injection ? { outline: "2px solid var(--danger)" } : undefined}>
                 <div className="row faint">#{c.ord} · {c.heading || "（无标题）"}{c.page && ` · 第 ${c.page} 页`}

@@ -9,7 +9,7 @@ from ..db import get_db
 from ..models import Chunk, Document, KnowledgeConflict
 from ..rag.chunking import UnsupportedFile, parse_upload
 from ..rag.conflicts import open_conflict_counts
-from ..rag.ingest import delete_document, ingest_document
+from ..rag.ingest import StaleDocument, delete_document, edit_document, ingest_document
 from ..rag.retrieval import hybrid_search
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
@@ -23,6 +23,10 @@ class TextDocIn(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1, max_length=200_000)
     visibility: str = Field(default="public", pattern="^(public|internal)$")
+
+
+class DocumentEditIn(TextDocIn):
+    version: int  # the version the edit was made on (optimistic locking)
 
 
 class SearchIn(BaseModel):
@@ -96,6 +100,20 @@ async def upload_document(
         db, tenant_id=principal.tenant.id, title=name, content=text, embedder=get_services().embedder,
         visibility=visibility, source=file.filename or "", created_by=principal.user.id, pages=pages,
     )
+    return _with_conflicts(db, document)
+
+
+@router.put("/documents/{document_id}")
+def update_document(document_id: int, body: DocumentEditIn, principal: Principal = Depends(require_admin),
+                    db: Session = Depends(get_db)) -> dict:
+    document = get_owned(db, Document, document_id, principal.tenant.id)
+    if db.execute(select(Chunk.id).where(Chunk.document_id == document.id, Chunk.page.is_not(None)).limit(1)).first():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "PDF 文档的片段带页码，请上传新版本文件，不支持在线编辑")
+    try:
+        document = edit_document(db, document, title=body.title, content=body.content, visibility=body.visibility,
+                                 embedder=get_services().embedder, base_version=body.version)
+    except StaleDocument:
+        raise HTTPException(status.HTTP_409_CONFLICT, "文档已被其他人修改，请重新打开后再编辑") from None
     return _with_conflicts(db, document)
 
 

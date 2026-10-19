@@ -63,6 +63,12 @@ export const api = {
       headers: headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     }).then((r) => parse<T>(r)),
+  put: <T,>(path: string, body: unknown) =>
+    fetch(path, {
+      method: "PUT",
+      headers: headers({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    }).then((r) => parse<T>(r)),
   del: <T,>(path: string) => fetch(path, { method: "DELETE", headers: headers() }).then((r) => parse<T>(r)),
   upload: <T,>(path: string, form: FormData) =>
     fetch(path, { method: "POST", headers: headers(), body: form }).then((r) => parse<T>(r)),
