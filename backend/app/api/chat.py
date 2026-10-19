@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..agent import handoff
 from ..agent.runtime import RunOptions, collect
 from ..config import get_settings
 from ..db import get_db, new_session
@@ -100,7 +101,7 @@ def list_messages(conversation_id: int, principal: Principal = Depends(get_princ
             select(Feedback).where(Feedback.message_id.in_([m.id for m in messages]))
         ).scalars()
     }
-    return {"conversation": conversation_out(conversation),
+    return {"conversation": conversation_out(conversation), "handoff": handoff.state(db, conversation),
             "messages": [message_out(m, feedback.get(m.id)) for m in messages]}
 
 

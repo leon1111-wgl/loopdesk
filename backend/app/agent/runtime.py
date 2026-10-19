@@ -37,6 +37,7 @@ from . import answer_cache
 from .rewrite import is_followup, rewrite_followup
 from ..observability import request_id_var
 from .prompts import build_system_prompt, choose_prompt_version
+from . import handoff
 from .tools import ApprovalNeed, Evidence, ToolContext, ToolError, ToolRegistry
 from .tracing import Tracer
 from .verifier import verify_answer
@@ -94,6 +95,11 @@ class AgentRuntime:
             if conversation.title == "新对话":
                 conversation.title = pii.masked[:30]
             conversation.updated_at = datetime.now(timezone.utc)
+            if conversation.status == "handoff":
+                if handoff.active_ticket(self.db, conversation.id) is not None:
+                    yield from self._forward_to_human(conversation)
+                    return
+                conversation.status = "bot"  # no live ticket behind the flag: the agent takes over again
         run = Run(
             tenant_id=tenant.id, conversation_id=conversation.id if conversation else None, user_id=user.id,
             input_text=pii.masked, is_eval=options.dry_run, status="running",
@@ -511,6 +517,16 @@ class AgentRuntime:
             dry_run=dry_run, evidence=evidence,
         )
 
+    def _forward_to_human(self, conversation: Conversation) -> Iterator[dict[str, Any]]:
+        """A person owns this conversation: keep the message for them and tell the customer
+        where they stand. No run, no model call."""
+        self.db.commit()
+        current = handoff.state(self.db, conversation)
+        yield {"type": "handoff", **(current or {})}
+        yield {"type": "final", "run_id": None, "message_id": None, "text": handoff.notice(current),
+               "status": "handoff", "meta": {"handoff": current}}
+        yield {"type": "done", "run_id": None, "status": "handoff", "latency_ms": 0}
+
     def _history(self, conversation: Conversation | None) -> list[LLMMessage]:
         if conversation is None:
             return []
@@ -518,7 +534,13 @@ class AgentRuntime:
         rows = self.db.execute(
             select(Message).where(Message.conversation_id == conversation.id).order_by(Message.id.desc()).limit(limit)
         ).scalars().all()
-        return [LLMMessage(role=m.role, content=m.content) for m in reversed(rows)]
+        history = []
+        for m in reversed(rows):  # model APIs know only user and assistant turns
+            if m.role in ("user", "assistant"):
+                history.append(LLMMessage(role=m.role, content=m.content))
+            elif m.role == "agent":  # what a person told the customer is context the agent needs after hand-back
+                history.append(LLMMessage(role="assistant", content=f"（人工客服）{m.content}"))
+        return history
 
     def _tool_names(self, run_id: str) -> list[str]:
         from ..models import Span

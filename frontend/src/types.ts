@@ -48,11 +48,12 @@ export interface MessageMeta {
   tools?: string[];
   status?: string;
   approval_id?: number;
+  agent?: string; // name of the person who wrote an "agent" message
 }
 
 export interface ChatMessage {
   id: number;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "agent" | "system"; // agent: a person on the support team
   content: string;
   run_id: string | null;
   meta: MessageMeta;
@@ -60,10 +61,30 @@ export interface ChatMessage {
   feedback?: { rating: string; correction: string } | null;
 }
 
+/** A conversation a person has taken over. position is null once someone is on it. */
+export interface HandoffState {
+  ticket_id: number;
+  status: string;
+  position: number | null;
+  assignee: string | null;
+}
+
+export interface Handoff extends HandoffState {
+  conversation_id: number;
+  channel: string | null;
+  customer: string | null;
+  reason: string;
+  priority: string;
+  created_at: string;
+  waiting_seconds: number;
+  last_message: string;
+}
+
 export type AgentEvent =
   | { type: "run_started"; run_id: string }
   | { type: "guardrail"; name: string; matches?: string[] } // matched rules: staff only
   | { type: "rewrite"; standalone: string; method: string }
+  | ({ type: "handoff" } & Partial<HandoffState>)
   | { type: "token"; step: number; text: string }
   | { type: "step_done"; step: number }
   | { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }

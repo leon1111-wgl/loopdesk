@@ -95,7 +95,7 @@ class Message(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     conversation_id: Mapped[int] = mapped_column(ForeignKey("conversations.id"), index=True)
-    role: Mapped[str] = mapped_column(String(16))  # user | assistant
+    role: Mapped[str] = mapped_column(String(16))  # user | assistant | agent (a person) | system (notice)
     content: Mapped[str] = mapped_column(Text)
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -203,8 +203,10 @@ class Ticket(Base):
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text, default="")
     priority: Mapped[str] = mapped_column(String(16), default="normal")
-    status: Mapped[str] = mapped_column(String(16), default="open")
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open | in_progress | closed
+    assignee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Feedback(Base):

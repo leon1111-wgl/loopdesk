@@ -6,6 +6,7 @@ import ChatPage from "./pages/ChatPage";
 import DashboardPage from "./pages/DashboardPage";
 import EvalsPage from "./pages/EvalsPage";
 import FlywheelPage from "./pages/FlywheelPage";
+import HandoffsPage from "./pages/HandoffsPage";
 import KnowledgePage from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import TracesPage from "./pages/TracesPage";
@@ -24,6 +25,7 @@ export default function App() {
           <>
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/approvals" element={<ApprovalsPage />} />
+            <Route path="/handoffs" element={<HandoffsPage />} />
             <Route path="/knowledge" element={<KnowledgePage />} />
             <Route path="/traces" element={<TracesPage />} />
             <Route path="/traces/:runId" element={<TracesPage />} />

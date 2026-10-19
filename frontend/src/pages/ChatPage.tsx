@@ -4,7 +4,7 @@ import { FlaskConical, History, PencilLine, Plus, Send, ShieldAlert, ThumbsDown,
 import { api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
 import { Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
-import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, Verification } from "../types";
+import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, HandoffState, Verification } from "../types";
 
 const SUGGESTIONS: Record<string, [string, string][]> = {
   leon: [
@@ -102,6 +102,15 @@ function EventItem({ event }: { event: AgentEvent }) {
         <div className="event">
           <b>追问改写</b>
           <div className="faint">结合上文理解为：{event.standalone}</div>
+        </div>
+      );
+    case "handoff":
+      return (
+        <div className="event">
+          <b>已转人工</b>
+          <div className="faint">
+            {event.assignee ? `由 ${event.assignee} 跟进` : event.position ? `排队第 ${event.position} 位` : "等待人工接入"}，这条消息没有交给 Agent。
+          </div>
         </div>
       );
     case "tool_call":
@@ -217,6 +226,7 @@ export default function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [convStatus, setConvStatus] = useState("bot");
+  const [handoff, setHandoff] = useState<HandoffState | null>(null);
   const [input, setInput] = useState("");
   const [live, setLive] = useState<LiveRun | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
@@ -238,9 +248,12 @@ export default function ChatPage() {
     api.get<Conversation[]>("/api/conversations").then(setConversations).catch((e) => setError(e.message));
   }, []);
   const loadMessages = useCallback(async (id: number) => {
-    const r = await api.get<{ conversation: Conversation; messages: ChatMessage[] }>(`/api/conversations/${id}/messages`);
+    const r = await api.get<{ conversation: Conversation; handoff: HandoffState | null; messages: ChatMessage[] }>(
+      `/api/conversations/${id}/messages`,
+    );
     setMessages(r.messages);
     setConvStatus(r.conversation.status);
+    setHandoff(r.handoff);
   }, []);
 
   useEffect(loadConversations, [loadConversations]);
@@ -251,13 +264,15 @@ export default function ChatPage() {
     else setMessages([]);
   }, [conversationId, loadMessages]);
 
-  // Poll while a refund waits for a human decision; the resumed answer lands as a new message.
+  // Poll while a person is involved: a refund waiting for a decision (the resumed answer
+  // lands as a new message) or a conversation handed to a person (their replies arrive here).
   const waiting = messages.length > 0 && messages[messages.length - 1].meta?.status === "waiting_approval";
+  const withPerson = convStatus === "handoff";
   useEffect(() => {
-    if (!waiting || !conversationId) return;
+    if (!(waiting || withPerson) || !conversationId) return;
     const timer = window.setInterval(() => loadMessages(conversationId).catch(() => undefined), 4000);
     return () => window.clearInterval(timer);
-  }, [waiting, conversationId, loadMessages]);
+  }, [waiting, withPerson, conversationId, loadMessages]);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "end" });
@@ -400,10 +415,15 @@ export default function ChatPage() {
               </div>
             </div>
           )}
-          {messages.map((m) => (
+          {messages.map((m) => m.role === "system" ? (
+            <div key={m.id} className="msg-system" role="status">{m.content}</div>
+          ) : (
             <div key={m.id} className={`msg ${m.role}`}>
-              <div className={`avatar ${m.role === "assistant" ? "bot" : "me"}`}>{m.role === "assistant" ? "AI" : user?.name.slice(0, 1)}</div>
+              <div className={`avatar ${m.role === "assistant" ? "bot" : m.role === "agent" ? "human" : "me"}`}>
+                {m.role === "assistant" ? "AI" : m.role === "agent" ? (m.meta.agent ?? "客").slice(0, 1) : user?.name.slice(0, 1)}
+              </div>
               <div className="bubble">
+                {m.role === "agent" && <div className="faint small" style={{ marginBottom: 4 }}>人工客服 {m.meta.agent}</div>}
                 {m.role === "assistant" ? (
                   <AnswerText text={m.content} citations={m.meta.citations ?? []} verification={m.meta.verification} />
                 ) : (
@@ -459,7 +479,15 @@ export default function ChatPage() {
         <div className="composer">
           {error && <div className="error-banner">{error}</div>}
           {notice && <div className="notice" style={{ marginBottom: 8 }}>{notice}</div>}
-          {convStatus === "handoff" && <div className="notice" style={{ marginBottom: 8 }}>该对话已转人工，人工客服会尽快接入。</div>}
+          {withPerson && (
+            <div className="notice" style={{ marginBottom: 8 }} role="status">
+              {handoff?.assignee
+                ? `人工客服 ${handoff.assignee} 正在为您服务，您发送的消息会直接转给对方。`
+                : handoff?.position
+                  ? `已转人工客服，当前排队第 ${handoff.position} 位。您可以继续留言，人工客服接入后会在这里回复。`
+                  : "该对话已转人工，人工客服会尽快接入。"}
+            </div>
+          )}
           <div className="composer-box">
             <textarea className="textarea" value={input} placeholder="输入问题，Enter 发送，Shift+Enter 换行" disabled={busy}
               maxLength={MAX_MESSAGE} aria-describedby={input.length > MAX_MESSAGE * 0.9 ? "message-count" : undefined}

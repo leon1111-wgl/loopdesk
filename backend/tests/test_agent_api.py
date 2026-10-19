@@ -321,9 +321,9 @@ def test_repeated_handoff_reuses_the_open_ticket_and_keeps_the_queue_position(as
     assert by_type(other, "tool_result")[0]["output"]["queue_position"] == position + 1
 
     _, again = ask(customer, "转人工！", conversation_id=conversation_id)
-    output = by_type(again, "tool_result")[0]["output"]
-    assert output["queue_position"] == position, "someone queued behind me must not push me back"
-    assert output["already_queued"] is True and "无需重复" in output["message"]
+    assert not by_type(again, "tool_call"), "the conversation is with a person: the agent stays out"
+    assert by_type(again, "handoff")[0]["position"] == position, "someone queued behind me must not push me back"
+    assert f"当前排队第 {position} 位" in by_type(again, "final")[0]["text"]
     with new_session() as db:
         mine = [t for t in open_handoffs(db) if t.conversation_id == conversation_id]
         assert len(mine) == 1, "a repeated request must not open a second ticket"

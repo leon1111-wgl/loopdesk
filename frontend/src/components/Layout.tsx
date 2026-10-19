@@ -5,6 +5,7 @@ import {
   BookOpen,
   ClipboardCheck,
   FlaskConical,
+  Headset,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -17,13 +18,14 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import { isStaff, useAuth } from "../auth";
-import type { Approval } from "../types";
+import type { Approval, Handoff } from "../types";
 import { Logo, ROLE_TEXT, useMediaQuery, useTheme } from "./ui";
 
 const TITLES: Record<string, string> = {
   dashboard: "运营看板",
   chat: "对话",
   approvals: "审批队列",
+  handoffs: "人工接待",
   knowledge: "知识库",
   traces: "链路追踪",
   flywheel: "数据飞轮",
@@ -42,6 +44,7 @@ export default function Layout() {
   const location = useLocation();
   const staff = isStaff(user);
   const [pending, setPending] = useState(0);
+  const [waiting, setWaiting] = useState(0); // customers waiting for a person
   const [theme, setTheme] = useTheme();
   // Below 780px the sidebar becomes an off-canvas drawer opened from the top bar.
   const compact = useMediaQuery("(max-width: 780px)");
@@ -53,11 +56,16 @@ export default function Layout() {
 
   useEffect(() => {
     if (!staff) return;
-    const load = () =>
+    const load = () => {
       api
         .get<Approval[]>("/api/approvals?status_filter=pending")
         .then((rows) => setPending(rows.length))
         .catch(() => undefined);
+      api
+        .get<Handoff[]>("/api/handoffs")
+        .then((rows) => setWaiting(rows.filter((h) => h.position).length))
+        .catch(() => undefined);
+    };
     load();
     const timer = window.setInterval(load, 8000);
     return () => window.clearInterval(timer);
@@ -89,6 +97,7 @@ export default function Layout() {
           { to: "/dashboard", label: "运营看板", icon: <LayoutDashboard size={16} /> },
           { to: "/chat", label: "对话测试台", icon: <MessagesSquare size={16} /> },
           { to: "/approvals", label: "审批队列", icon: <ClipboardCheck size={16} />, count: pending },
+          { to: "/handoffs", label: "人工接待", icon: <Headset size={16} />, count: waiting },
         ]],
         ["知识与质量", [
           { to: "/knowledge", label: "知识库", icon: <BookOpen size={16} /> },
@@ -159,13 +168,13 @@ export default function Layout() {
             <button
               ref={toggleRef}
               className="icon-btn nav-toggle"
-              aria-label={staff && pending ? `打开导航菜单（${pending} 条待审批）` : "打开导航菜单"}
+              aria-label={staff && pending + waiting ? `打开导航菜单（${pending} 条待审批，${waiting} 位顾客等待人工）` : "打开导航菜单"}
               aria-expanded={drawerOpen}
               aria-controls="app-nav"
               onClick={() => setNavOpen(true)}
             >
               <Menu size={18} />
-              {staff && pending > 0 && <span className="toggle-dot" />}
+              {staff && pending + waiting > 0 && <span className="toggle-dot" />}
             </button>
             <span className="ellipsis crumb-tenant">{user?.tenant.name}</span>
             <span className="crumb-tenant">/</span>

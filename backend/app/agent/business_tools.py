@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 
 from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket
 from ..rag.retrieval import hybrid_search
+from . import handoff
 from .tools import ApprovalNeed, ToolContext, ToolDef, ToolError, ToolRegistry
 
 STATUS_TEXT = {
@@ -318,25 +319,17 @@ def create_ticket(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 
 def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     reason = str(args.get("reason") or "用户要求转人工")[:200]
-    open_handoffs = (Ticket.tenant_id == ctx.tenant.id, Ticket.kind == "handoff", Ticket.status == "open")
-    existing = None
     if ctx.conversation_id:
-        existing = ctx.db.execute(
-            select(Ticket).where(*open_handoffs, Ticket.conversation_id == ctx.conversation_id)
-            .order_by(Ticket.id).limit(1)
-        ).scalar_one_or_none()
-    if existing is not None:
-        # Asking again must not open a second ticket or move the customer behind people who queued later.
-        position = ctx.db.execute(
-            select(func.count(Ticket.id)).where(*open_handoffs, Ticket.id <= existing.id)
-        ).scalar_one()
-        return {
-            "queued": True,
-            "already_queued": True,
-            "queue_position": position,
-            "message": f"您已在人工客服队列中，当前排第 {position} 位，无需重复申请，请稍候。",
-        }
-    waiting = ctx.db.execute(select(func.count(Ticket.id)).where(*open_handoffs)).scalar_one()
+        existing = handoff.active_ticket(ctx.db, ctx.conversation_id)
+        if existing is not None:
+            # Asking again must not open a second ticket or move the customer behind people who
+            # queued later. (The runtime normally keeps the agent out of a conversation that is
+            # with a person; this covers the agent being called anyway.)
+            current = handoff.ticket_state(ctx.db, existing)
+            message = (handoff.notice(current) if current["assignee"] else
+                       f"您已在人工客服队列中，当前排第 {current['position']} 位，无需重复申请，请稍候。")
+            return {"queued": True, "already_queued": True, "queue_position": current["position"], "message": message}
+    waiting = handoff.waiting_ahead(ctx.db, ctx.tenant.id)  # the new ticket is not in it yet
     if not ctx.dry_run:
         if ctx.conversation_id:
             conversation = ctx.db.get(Conversation, ctx.conversation_id)
@@ -348,12 +341,8 @@ def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         ))
         ctx.db.commit()
     position = waiting + 1
-    return {
-        "queued": True,
-        "already_queued": False,
-        "queue_position": position,
-        "message": f"已为您转接人工客服，当前排队第 {position} 位，请稍候。",
-    }
+    return {"queued": True, "already_queued": False, "queue_position": position,
+            "message": handoff.notice({"position": position, "assignee": None})}
 
 
 # ---------------------------------------------------------------- registry
