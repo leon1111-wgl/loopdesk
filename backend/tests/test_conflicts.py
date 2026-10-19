@@ -206,3 +206,13 @@ def test_concurrent_edits_of_one_version_save_exactly_once(client, login):
         thread.join()
     assert sorted(results) == ["saved", "stale"]
     assert client.get(f"/api/kb/documents/{doc['id']}", headers=admin).json()["version"] == doc["version"] + 1
+
+
+def test_the_dashboard_shows_the_conflict_backlog_and_what_it_costs(client, ask, login):
+    admin = login("admin@leon.demo")
+    assert client.get("/api/metrics/overview", headers=admin).json()["knowledge_conflicts"] == \
+        {"open": 0, "oldest_open_s": 0, "handoffs": 0}
+    client.post("/api/kb/documents/text", json=CONFLICTING, headers=admin)
+    ask(login("customer@leon.demo"), "微信退款多久能到账？")
+    backlog = client.get("/api/metrics/overview", headers=admin).json()["knowledge_conflicts"]
+    assert backlog["open"] == 1 and backlog["handoffs"] == 1 and backlog["oldest_open_s"] >= 0

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..agent.outcome import is_refusal
-from ..models import Approval, EvalRun, Feedback, Message, Run, Span, Ticket
+from ..models import Approval, EvalRun, Feedback, KnowledgeConflict, Message, Run, Span, Ticket
 from ..security import Principal, require_staff
 from .common import as_utc
 
@@ -70,6 +70,23 @@ def _handoff_stats(db: Session, tenant_id: int, since: datetime) -> dict:
         "longest_wait_s": int(max(((now - as_utc(t.created_at)).total_seconds() for t in waiting), default=0)),
         "handoffs": len(recent),
         "avg_first_response_s": int(sum(first_response) / len(first_response)) if first_response else None,
+    }
+
+
+def _conflict_backlog(db: Session, tenant_id: int, run_ids: list[int]) -> dict:
+    """Open knowledge conflicts send every question resting on both sides to a person (see
+    rag/conflicts.disputed), so the backlog is an operational number: how many, how old, and
+    how many questions it has handed over in the window."""
+    opened = db.execute(select(KnowledgeConflict.created_at).where(
+        KnowledgeConflict.tenant_id == tenant_id, KnowledgeConflict.status == "open")).scalars().all()
+    now = datetime.now(timezone.utc)
+    handed_over = db.execute(select(func.count(func.distinct(Span.run_id))).where(
+        Span.run_id.in_(run_ids), Span.kind == "guardrail", Span.name == "knowledge_conflict")).scalar_one() \
+        if run_ids else 0
+    return {
+        "open": len(opened),
+        "oldest_open_s": int(max(((now - as_utc(t)).total_seconds() for t in opened), default=0)),
+        "handoffs": handed_over,
     }
 
 
@@ -146,6 +163,7 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         **_conversation_outcomes(db, runs, tenant_id, since),
         "pending_approvals": pending,
         "handoff_queue": _handoff_stats(db, tenant_id, since),
+        "knowledge_conflicts": _conflict_backlog(db, tenant_id, run_ids),
         "latency_p50_ms": _pct(latencies, 0.5),
         "latency_p95_ms": _pct(latencies, 0.95),
         "tokens": sum(r.prompt_tokens + r.completion_tokens for r in runs),

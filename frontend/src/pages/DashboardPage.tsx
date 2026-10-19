@@ -4,6 +4,7 @@ import { api } from "../api";
 import { Empty, ErrorBanner, Kpi, TOOL_TEXT, ms, pct, useLoad, TIER_TEXT } from "../components/ui";
 
 interface Overview {
+  window_days: number;
   runs: number;
   status: Record<string, number>;
   conversations: number;
@@ -12,6 +13,7 @@ interface Overview {
   refusal_rate: number | null;
   pending_approvals: number;
   handoff_queue: { waiting: number; in_progress: number; longest_wait_s: number; handoffs: number; avg_first_response_s: number | null };
+  knowledge_conflicts: { open: number; oldest_open_s: number; handoffs: number };
   latency_p50_ms: number;
   latency_p95_ms: number;
   tokens: number;
@@ -95,6 +97,13 @@ export default function DashboardPage() {
       <ErrorBanner error={error} />
       {!data ? <Empty>加载中…</Empty> : (
         <>
+          {data.knowledge_conflicts.open > 0 && (
+            <div className="notice" role="status">
+              {`知识库有 ${data.knowledge_conflicts.open} 处冲突待核对（最久 ${duration(data.knowledge_conflicts.oldest_open_s)}）。`
+                + `核对之前，同时用到两种说法的问题都会转人工，近 ${data.window_days} 天已有 ${data.knowledge_conflicts.handoffs} 次。`}
+              <Link to="/knowledge">去核对 →</Link>
+            </div>
+          )}
           <div className="grid grid-4">
             <Kpi label="Agent 运行" value={data.runs} sub={`已解决 ${data.status.completed ?? 0} · 转人工 ${data.status.handoff ?? 0} · 缓存命中 ${pct(data.cache_hit_rate)}`} />
             <Kpi label="自助解决率（按会话）" value={pct(data.resolution_rate)}
