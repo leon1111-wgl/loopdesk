@@ -84,6 +84,7 @@ class Settings:
     llm_stream_usage: bool = True  # send stream_options.include_usage (disable if a vendor rejects it)
     anthropic_effort: str = "low"
     mock_stream_delay: float = 0.0  # seconds between streamed chunks of the mock model
+    trace_writes: str = "auto"  # auto (buffered on PostgreSQL, per span on SQLite) | per_span | buffered
 
     # Embeddings: hashing (offline) | openai_compat
     embedding_provider: str = "hashing"
@@ -152,6 +153,9 @@ class Settings:
         s.llm_stream_usage = _env_bool("LLM_STREAM_USAGE", s.llm_stream_usage)
         s.anthropic_effort = _env("ANTHROPIC_EFFORT", s.anthropic_effort)
         s.mock_stream_delay = _env_float("MOCK_STREAM_DELAY", s.mock_stream_delay)
+        s.trace_writes = _env("TRACE_WRITES") or s.trace_writes
+        if s.trace_writes not in ("auto", "per_span", "buffered"):
+            raise ValueError("LOOPDESK_TRACE_WRITES must be auto, per_span or buffered")
 
         s.embedding_provider = _env("EMBEDDING_PROVIDER", s.embedding_provider)
         s.embedding_base_url = _env("EMBEDDING_BASE_URL", s.llm_base_url)

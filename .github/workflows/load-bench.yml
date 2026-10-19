@@ -43,7 +43,11 @@ jobs:
         run: python -m app.evals.load_bench --concurrency 1,4,16 --duration "$DURATION" --report sqlite-w1.json
       - name: Separate PostgreSQL databases per setup
         run: |
-          for db in bench_w1 bench_w4; do PGPASSWORD=loopdesk psql -h localhost -U loopdesk -d loopdesk_bench -c "CREATE DATABASE $db"; done
+          for db in bench_w1_per_span bench_w1 bench_w4; do PGPASSWORD=loopdesk psql -h localhost -U loopdesk -d loopdesk_bench -c "CREATE DATABASE $db"; done
+      - name: PostgreSQL, 1 worker, per-span trace commits (for comparison)
+        env:
+          LOOPDESK_TRACE_WRITES: per_span
+        run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w1_per_span" --workers 1 --concurrency 1,4,16 --duration "$DURATION" --report pg-w1-per-span.json
       - name: PostgreSQL, 1 worker
         run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w1" --workers 1 --concurrency 1,4,16 --duration "$DURATION" --report pg-w1.json
       - name: PostgreSQL, 4 workers
@@ -54,7 +58,8 @@ jobs:
           import json
           print("| Setup | Concurrency | RPS | p50 ms | p99 ms | In-app p50 ms | In-app p99 ms | Errors |")
           print("|---|---|---|---|---|---|---|---|")
-          for name, path in (("SQLite, 1 worker", "sqlite-w1.json"), ("PostgreSQL, 1 worker", "pg-w1.json"),
+          for name, path in (("SQLite, 1 worker", "sqlite-w1.json"),
+                             ("PostgreSQL, 1 worker, per-span trace commits", "pg-w1-per-span.json"), ("PostgreSQL, 1 worker", "pg-w1.json"),
                              ("PostgreSQL, 4 workers", "pg-w4.json")):
               for level in json.load(open(path))["levels"]:
                   print(f"| {name} | {level['concurrency']} | {level['rps']} | {level['p50_ms']} | {level['p99_ms']} "

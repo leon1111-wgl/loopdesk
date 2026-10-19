@@ -1,6 +1,12 @@
 """Trace recorder: every LLM call, retrieval, tool call, guardrail and verification is a
-span. Spans are committed as they finish, so the trace view updates live while a run
-is still streaming."""
+span.
+
+Two ways to write them. Per span (SQLite default): each span is committed as it finishes,
+so the trace view updates live; SQLite has one writer, and short transactions keep its
+tail latency down. Buffered (PostgreSQL default): spans and token usage stay in memory and
+are written at the run's own commit points (finish, pause for approval, failure), which
+removes about two thirds of a request's SQL round trips; the trace appears when the run
+ends. LOOPDESK_TRACE_WRITES=auto|per_span|buffered."""
 
 from __future__ import annotations
 
@@ -43,10 +49,15 @@ class SpanHandle:
 
 
 class Tracer:
-    def __init__(self, db: Session, run: Run, settings: Settings):
+    def __init__(self, db: Session, run: Run, settings: Settings, buffered: bool | None = None):
         self.db = db
         self.run = run
         self.settings = settings
+        if buffered is None:
+            mode = settings.trace_writes
+            buffered = mode == "buffered" or (mode == "auto" and db.get_bind().dialect.name == "postgresql")
+        self._buffer: list[Span] | None = [] if buffered else None
+        self._usage: list[tuple[str, int, int]] = []  # buffered token usage: (model, prompt, completion)
 
     @contextmanager
     def span(self, kind: str, name: str, input: dict[str, Any] | None = None):
@@ -59,23 +70,39 @@ class Tracer:
             raise
         finally:
             latency = int((time.perf_counter() - started) * 1000)
-            self.db.add(
-                Span(
-                    run_id=self.run.id,
-                    tenant_id=self.run.tenant_id,
-                    kind=kind,
-                    name=name,
-                    input=_scrub(input or {}),
-                    output=_scrub(handle.output),
-                    status=handle.status,
-                    latency_ms=latency,
-                    prompt_tokens=handle.prompt_tokens,
-                    completion_tokens=handle.completion_tokens,
-                )
+            row = Span(
+                run_id=self.run.id,
+                tenant_id=self.run.tenant_id,
+                kind=kind,
+                name=name,
+                input=_scrub(input or {}),
+                output=_scrub(handle.output),
+                status=handle.status,
+                latency_ms=latency,
+                prompt_tokens=handle.prompt_tokens,
+                completion_tokens=handle.completion_tokens,
             )
-            if handle.prompt_tokens or handle.completion_tokens:
-                self.add_usage(handle.model or self.run.model, handle.prompt_tokens, handle.completion_tokens)
-            self.db.commit()
+            usage = (handle.model or self.run.model, handle.prompt_tokens, handle.completion_tokens)
+            if self._buffer is not None:
+                self._buffer.append(row)
+                if handle.prompt_tokens or handle.completion_tokens:
+                    self._usage.append(usage)
+            else:
+                self.db.add(row)
+                if handle.prompt_tokens or handle.completion_tokens:
+                    self.add_usage(*usage)
+                self.db.commit()
+
+    def flush(self) -> None:
+        """Buffered mode: hand the spans and token usage collected so far to the session; the
+        caller's commit writes them. The buffer lives outside the session, so a rollback in
+        between (a failing tool) cannot lose it. Per-span mode has nothing to flush."""
+        if self._buffer:
+            self.db.add_all(self._buffer)
+            self._buffer.clear()
+        for usage in self._usage:
+            self.add_usage(*usage)
+        self._usage.clear()
 
     def add_usage(self, model: str, prompt_tokens: int, completion_tokens: int) -> None:
         price_in, price_out = self.settings.price_for(model)

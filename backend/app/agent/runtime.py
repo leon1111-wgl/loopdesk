@@ -175,7 +175,7 @@ class AgentRuntime:
         try:
             yield from self._loop(run, tracer, ctx, state, messages, queue=[], started=time.perf_counter())
         except Exception as exc:  # a bug or a DB error, not a model error (those end the run politely)
-            self._mark_failed(run, exc)
+            self._mark_failed(run, exc, tracer)
             raise
 
     def _serve_cached(self, run: Run, tracer: Tracer, tenant: Tenant, user: User,
@@ -262,7 +262,7 @@ class AgentRuntime:
             events.extend(self._loop(run, tracer, ctx, state, messages, queue, started))
             return events
         except Exception as exc:
-            self._mark_failed(run, exc)
+            self._mark_failed(run, exc, tracer)
             if executed is None:
                 self._reopen(approval, run)
                 raise ResumeError(f"审批执行失败，审批单 #{approval.id} 已退回待处理，可以重新审批。"
@@ -274,10 +274,12 @@ class AgentRuntime:
                                        extra_meta={"status": "completed", "fallback": True}))
             return events
 
-    def _mark_failed(self, run: Run, exc: Exception) -> None:
+    def _mark_failed(self, run: Run, exc: Exception, tracer: Tracer | None = None) -> None:
         """Record an unexpected crash on the run so it never stays "running"."""
         logger.exception("agent run %s failed", run.id)
         self.db.rollback()
+        if tracer is not None:  # the spans up to the crash are what an operator needs most
+            tracer.flush()
         run.status = "failed"
         run.error = f"{type(exc).__name__}: {exc}"[:2000]
         run.finished_at = datetime.now(timezone.utc)
@@ -290,7 +292,8 @@ class AgentRuntime:
         approval.decided_at = None
         run.finished_at = None
         self.db.commit()
-        with Tracer(self.db, run, self.settings).span("approval", "reopened", {"approval_id": approval.id}) as span:
+        with Tracer(self.db, run, self.settings, buffered=False).span(
+                "approval", "reopened", {"approval_id": approval.id}) as span:
             span.status = "error"
             span.set(error=run.error, approval_status="pending")
 
@@ -441,6 +444,7 @@ class AgentRuntime:
             reason=outcome.reason, evidence=[e.to_dict() for e in ctx.evidence],
         )
         self.db.add(approval)
+        tracer.flush()
         self.db.commit()
         with tracer.span("notify", "wecom_approval", {"approval_id": approval.id}) as span:
             span.set(**notify_approval(self.settings, approval, ctx.tenant))
@@ -509,6 +513,7 @@ class AgentRuntime:
         run.output_text = final_text
         run.steps = state["steps"]
         run.latency_ms = state["elapsed_ms"]
+        tracer.flush()
         self.db.commit()
         yield {"type": "final", "run_id": run.id, "message_id": message_id, "text": final_text,
                "status": status, "meta": meta}
