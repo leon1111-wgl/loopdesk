@@ -1,0 +1,66 @@
+from app.rag.chunking import chunk_markdown, parse_upload
+from app.rag.embeddings import HashingEmbedder
+from app.textutil import extract_numbers, strip_citations, tokenize
+
+
+def test_tokenizer_drops_question_words_and_keeps_domain_terms():
+    tokens = tokenize("退款多久能到账？")
+    assert "退款" in tokens and "到账" in tokens
+    assert "多久" not in tokens
+
+
+def test_numbers_ignore_identifiers_and_thousand_separators():
+    assert extract_numbers("订单 SO20261008002 金额 ¥1,299.00，预计1-3个工作日") == [1299.0, 1.0, 3.0]
+
+
+def test_strip_citations():
+    assert strip_citations("退款原路退回[2]。") == ("退款原路退回。", [2])
+
+
+def test_chunks_keep_heading_path_and_never_cross_sections():
+    doc = "# 政策\n\n## 退货\n- 7天内可退货。\n\n## 到账\n- 1-3个工作日到账。\n"
+    chunks = chunk_markdown(doc)
+    assert [c.heading for c in chunks] == ["政策 > 退货", "政策 > 到账"]
+    assert "到账" not in chunks[0].text
+
+
+def test_long_section_is_split_with_overlap():
+    body = "".join(f"第{i}条规则说明内容较长需要切分。" for i in range(40))
+    chunks = chunk_markdown(f"## 规则\n{body}", max_chars=120, overlap=1)
+    assert len(chunks) > 3
+    last_sentence = chunks[0].text.splitlines()[-1]
+    assert chunks[1].text.startswith(last_sentence)
+
+
+def test_parse_upload_handles_gbk_text():
+    text, pages = parse_upload("faq.txt", "退货政策".encode("gb18030"))
+    assert text == "退货政策" and pages is None
+
+
+def test_hashing_embedder_is_normalized_and_similar_texts_are_closer():
+    e = HashingEmbedder(256)
+    a, b, c = e.embed(["退款多久到账", "退款到账时间", "发票怎么开"])
+    dot = lambda x, y: sum(i * j for i, j in zip(x, y))
+    assert abs(dot(a, a) - 1) < 1e-6
+    assert dot(a, b) > dot(a, c)
+
+
+def test_hybrid_search_ranks_policy_and_hides_internal_docs(client, login):
+    staff = login("agent@xinghe.demo")
+    r = client.post("/api/kb/search", json={"query": "退款多久到账", "scope": "customer"}, headers=staff).json()
+    assert r["hits"][0]["doc_title"] == "售后与退款政策"
+    assert r["hits"][0]["bm25_rank"] == 1
+    customer_view = client.post("/api/kb/search", json={"query": "补偿券", "scope": "customer"}, headers=staff).json()
+    assert all(h["doc_title"] != "客服内部操作手册" for h in customer_view["hits"])
+    staff_view = client.post("/api/kb/search", json={"query": "补偿券", "scope": "staff"}, headers=staff).json()
+    assert staff_view["hits"][0]["doc_title"] == "客服内部操作手册"
+
+
+def test_injected_chunk_is_flagged_at_ingestion(client, login):
+    admin = login("admin@xinghe.demo")
+    docs = client.get("/api/kb/documents", headers=admin).json()
+    supplier = next(d for d in docs if d["title"] == "供应商合作 FAQ")
+    assert supplier["flagged_chunks"] == 1
+    detail = client.get(f"/api/kb/documents/{supplier['id']}", headers=admin).json()
+    flagged = [c for c in detail["chunks"] if c["flagged_injection"]]
+    assert "忽略之前的所有指令" in flagged[0]["text"]

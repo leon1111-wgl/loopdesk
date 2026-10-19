@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..db import get_db
+from ..models import Chunk, Document
+from ..rag.chunking import UnsupportedFile, parse_upload
+from ..rag.ingest import delete_document, ingest_document
+from ..rag.retrieval import hybrid_search
+from ..security import Principal, require_admin, require_staff
+from ..services import get_services
+from .common import get_owned, iso
+
+router = APIRouter(prefix="/api/kb", tags=["knowledge"])
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+
+
+class TextDocIn(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=200_000)
+    visibility: str = Field(default="public", pattern="^(public|internal)$")
+
+
+class SearchIn(BaseModel):
+    query: str = Field(min_length=1, max_length=500)
+    scope: str = Field(default="customer", pattern="^(customer|staff)$")
+    top_k: int = Field(default=5, ge=1, le=10)
+
+
+def document_out(d: Document) -> dict:
+    return {"id": d.id, "title": d.title, "source": d.source, "visibility": d.visibility, "version": d.version,
+            "chunk_count": d.chunk_count, "flagged_chunks": d.flagged_chunks,
+            "created_at": iso(d.created_at), "updated_at": iso(d.updated_at)}
+
+
+@router.get("/documents")
+def list_documents(principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.execute(
+        select(Document).where(Document.tenant_id == principal.tenant.id).order_by(Document.id)
+    ).scalars()
+    return [document_out(d) for d in rows]
+
+
+@router.get("/documents/{document_id}")
+def get_document(document_id: int, principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
+    document = get_owned(db, Document, document_id, principal.tenant.id)
+    chunks = db.execute(select(Chunk).where(Chunk.document_id == document.id).order_by(Chunk.ord)).scalars()
+    return {
+        **document_out(document),
+        "content": document.content,
+        "chunks": [{"id": c.id, "ord": c.ord, "heading": c.heading, "text": c.text, "page": c.page,
+                    "flagged_injection": c.flagged_injection} for c in chunks],
+    }
+
+
+@router.post("/documents/text")
+def create_text_document(body: TextDocIn, principal: Principal = Depends(require_admin),
+                         db: Session = Depends(get_db)) -> dict:
+    document = ingest_document(
+        db, tenant_id=principal.tenant.id, title=body.title, content=body.content,
+        embedder=get_services().embedder, visibility=body.visibility, source="manual", created_by=principal.user.id,
+    )
+    return document_out(document)
+
+
+@router.post("/documents/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    visibility: str = Form("public"),
+    title: str | None = Form(None),
+    principal: Principal = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    if visibility not in ("public", "internal"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "visibility 只能是 public 或 internal")
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "文件不能超过 5MB")
+    try:
+        text, pages = parse_upload(file.filename or "upload.txt", data)
+    except UnsupportedFile as exc:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(exc)) from exc
+    if not text.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "没有从文件中解析出文本")
+    name = title or (file.filename or "未命名文档").rsplit(".", 1)[0]
+    document = ingest_document(
+        db, tenant_id=principal.tenant.id, title=name, content=text, embedder=get_services().embedder,
+        visibility=visibility, source=file.filename or "", created_by=principal.user.id, pages=pages,
+    )
+    return document_out(document)
+
+
+@router.delete("/documents/{document_id}")
+def remove_document(document_id: int, principal: Principal = Depends(require_admin),
+                    db: Session = Depends(get_db)) -> dict:
+    delete_document(db, get_owned(db, Document, document_id, principal.tenant.id))
+    return {"deleted": document_id}
+
+
+@router.post("/search")
+def search(body: SearchIn, principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
+    """Retrieval debugger: shows BM25 rank, vector rank, fused RRF score and relevance."""
+    services = get_services()
+    visibility = {"public", "internal"} if body.scope == "staff" else {"public"}
+    hits, debug = hybrid_search(db, principal.tenant.id, body.query, services.embedder, visibility,
+                                top_k=body.top_k, include_flagged=True)
+    flagged = {
+        c.id for c in db.execute(
+            select(Chunk).where(Chunk.id.in_([h.chunk_id for h in hits]), Chunk.flagged_injection.is_(True))
+        ).scalars()
+    }
+    return {
+        "query_tokens": debug.query_tokens,
+        "min_relevance": services.settings.min_relevance,
+        "hits": [{**h.as_dict(), "flagged_injection": h.chunk_id in flagged,
+                  "passes_threshold": h.relevance >= services.settings.min_relevance} for h in hits],
+        "bm25": debug.bm25,
+        "vector": debug.vector,
+    }

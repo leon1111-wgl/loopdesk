@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: loopdesk
+      POSTGRES_PASSWORD: loopdesk
+      POSTGRES_DB: loopdesk
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loopdesk"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      LOOPDESK_DATABASE_URL: postgresql+psycopg://loopdesk:loopdesk@db:5432/loopdesk
+      LOOPDESK_JWT_SECRET: ${LOOPDESK_JWT_SECRET:-change-me-to-a-long-random-string-before-deploying}
+      LOOPDESK_LLM_PROVIDER: ${LOOPDESK_LLM_PROVIDER:-mock}
+      LOOPDESK_LLM_PRESET: ${LOOPDESK_LLM_PRESET:-}
+      LOOPDESK_LLM_API_KEY: ${LOOPDESK_LLM_API_KEY:-}
+      LOOPDESK_LLM_MODEL_STRONG: ${LOOPDESK_LLM_MODEL_STRONG:-mock-strong}
+      LOOPDESK_LLM_MODEL_FAST: ${LOOPDESK_LLM_MODEL_FAST:-mock-fast}
+      LOOPDESK_MOCK_STREAM_DELAY: "0.02"
+      LOOPDESK_CORS_ORIGINS: http://localhost:8000
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

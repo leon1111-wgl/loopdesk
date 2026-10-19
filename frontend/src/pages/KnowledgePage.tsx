@@ -1,0 +1,211 @@
+import { useRef, useState } from "react";
+import { AlertTriangle, FilePlus2, Search, Trash2 } from "lucide-react";
+import { api } from "../api";
+import { useAuth } from "../auth";
+import { Drawer, Empty, ErrorBanner, Modal, time, useLoad } from "../components/ui";
+import type { DocumentRow } from "../types";
+
+interface DocDetail extends DocumentRow {
+  content: string;
+  chunks: { id: number; ord: number; heading: string; text: string; page: number | null; flagged_injection: boolean }[];
+}
+
+interface SearchHit {
+  chunk_id: number;
+  doc_title: string;
+  heading: string;
+  text: string;
+  rrf: number;
+  relevance: number;
+  coverage: number;
+  cosine: number;
+  bm25_rank: number | null;
+  vector_rank: number | null;
+  flagged_injection: boolean;
+  passes_threshold: boolean;
+}
+
+function RetrievalDebugger() {
+  const [query, setQuery] = useState("退款多久能到账");
+  const [scope, setScope] = useState("customer");
+  const [result, setResult] = useState<{ query_tokens: string[]; min_relevance: number; hits: SearchHit[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function run() {
+    try {
+      setResult(await api.post("/api/kb/search", { query, scope, top_k: 6 }));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3>检索调试器</h3>
+        <span className="faint">BM25 + 向量 → RRF 融合 → 相关度阈值</span>
+      </div>
+      <div className="card-pad stack">
+        <div className="row">
+          <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} />
+          <select className="select" style={{ width: 140 }} value={scope} onChange={(e) => setScope(e.target.value)}>
+            <option value="customer">顾客可见范围</option>
+            <option value="staff">员工可见范围</option>
+          </select>
+          <button className="btn btn-primary" onClick={run}><Search size={15} /> 检索</button>
+        </div>
+        <ErrorBanner error={error} />
+        {result && (
+          <>
+            <div className="faint">分词：{result.query_tokens.join(" / ") || "（无）"} · 相关度阈值 {result.min_relevance}</div>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr><th>片段</th><th>BM25 名次</th><th>向量名次</th><th>RRF</th><th>词覆盖</th><th>余弦</th><th>相关度</th></tr>
+                </thead>
+                <tbody>
+                  {result.hits.map((h) => (
+                    <tr key={h.chunk_id} style={{ opacity: h.passes_threshold && !h.flagged_injection ? 1 : 0.5 }}>
+                      <td style={{ maxWidth: 360 }}>
+                        <div><b>{h.doc_title}</b> <span className="faint">{h.heading}</span></div>
+                        <div className="small muted">{h.text.slice(0, 90)}</div>
+                        {h.flagged_injection && <span className="badge badge-danger"><AlertTriangle size={12} /> 注入样本，已屏蔽</span>}
+                        {!h.passes_threshold && <span className="badge">低于阈值，不进入上下文</span>}
+                      </td>
+                      <td>{h.bm25_rank ?? "—"}</td>
+                      <td>{h.vector_rank ?? "—"}</td>
+                      <td className="mono">{h.rrf.toFixed(4)}</td>
+                      <td className="mono">{h.coverage.toFixed(2)}</td>
+                      <td className="mono">{h.cosine.toFixed(2)}</td>
+                      <td><b className="mono">{h.relevance.toFixed(2)}</b></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {result.hits.length === 0 && <Empty>没有命中任何片段</Empty>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AddDocModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [mode, setMode] = useState<"text" | "file">("text");
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [visibility, setVisibility] = useState("public");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const file = useRef<HTMLInputElement>(null);
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      if (mode === "text") await api.post("/api/kb/documents/text", { title, content, visibility });
+      else {
+        const f = file.current?.files?.[0];
+        if (!f) throw new Error("请选择文件");
+        const form = new FormData();
+        form.append("file", f);
+        form.append("visibility", visibility);
+        if (title) form.append("title", title);
+        await api.upload("/api/kb/documents/upload", form);
+      }
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="新增知识文档" onClose={onClose}
+      footer={<><button className="btn" onClick={onClose}>取消</button><button className="btn btn-primary" disabled={busy} onClick={submit}>入库并索引</button></>}>
+      <div className="tabs" style={{ width: "fit-content" }}>
+        <button className={mode === "text" ? "active" : ""} onClick={() => setMode("text")}>粘贴 Markdown</button>
+        <button className={mode === "file" ? "active" : ""} onClick={() => setMode("file")}>上传文件</button>
+      </div>
+      <label className="field">标题<input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={mode === "file" ? "可选，默认使用文件名" : ""} /></label>
+      {mode === "text" ? (
+        <label className="field">内容（按 ## 标题切分章节）
+          <textarea className="textarea" style={{ minHeight: 180 }} value={content} onChange={(e) => setContent(e.target.value)}
+            placeholder={"## 以旧换新\n- 以旧换新活动仅限手机和平板品类。"} />
+        </label>
+      ) : (
+        <label className="field">文件（.md / .txt / .pdf，≤ 5MB）<input ref={file} type="file" accept=".md,.markdown,.txt,.pdf" /></label>
+      )}
+      <label className="field">可见范围
+        <select className="select" value={visibility} onChange={(e) => setVisibility(e.target.value)}>
+          <option value="public">公开：顾客和员工都能检索</option>
+          <option value="internal">内部：只有员工能检索</option>
+        </select>
+      </label>
+      <ErrorBanner error={error} />
+    </Modal>
+  );
+}
+
+export default function KnowledgePage() {
+  const { user } = useAuth();
+  const admin = user?.role === "admin";
+  const { data, error, reload } = useLoad(() => api.get<DocumentRow[]>("/api/kb/documents"));
+  const [detail, setDetail] = useState<DocDetail | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  async function open(id: number) {
+    setDetail(await api.get<DocDetail>(`/api/kb/documents/${id}`));
+  }
+  async function remove(id: number) {
+    if (!window.confirm("删除后该文档的所有片段会从索引中移除，确定吗？")) return;
+    await api.del(`/api/kb/documents/${id}`);
+    setDetail(null);
+    reload();
+  }
+
+  return (
+    <div className="page stack" style={{ gap: 16 }}>
+      <div className="page-head">
+        <div>
+          <h1>知识库</h1>
+          <p>文档按标题切分并保留章节路径；入库时扫描提示注入，命中的片段永远不会进入模型上下文。</p>
+        </div>
+        {admin && <button className="btn btn-primary" onClick={() => setAdding(true)}><FilePlus2 size={16} /> 新增文档</button>}
+      </div>
+      <ErrorBanner error={error} />
+      <div className="card table-wrap">
+        <table className="table">
+          <thead><tr><th>标题</th><th>可见范围</th><th>片段数</th><th>注入检测</th><th>版本</th><th>更新时间</th></tr></thead>
+          <tbody>
+            {data?.map((d) => (
+              <tr key={d.id} className="clickable" onClick={() => open(d.id)}>
+                <td><b>{d.title}</b> <span className="faint">{d.source}</span></td>
+                <td>{d.visibility === "public" ? <span className="badge badge-primary">公开</span> : <span className="badge badge-info">仅内部</span>}</td>
+                <td>{d.chunk_count}</td>
+                <td>{d.flagged_chunks ? <span className="badge badge-danger"><AlertTriangle size={12} /> {d.flagged_chunks} 个片段已屏蔽</span> : <span className="faint">无</span>}</td>
+                <td>v{d.version}</td>
+                <td className="faint">{time(d.updated_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <RetrievalDebugger />
+      {adding && <AddDocModal onClose={() => setAdding(false)} onDone={() => { setAdding(false); reload(); }} />}
+      {detail && (
+        <Drawer title={<div><h2>{detail.title}</h2><div className="faint">{detail.chunk_count} 个片段 · v{detail.version}</div></div>} onClose={() => setDetail(null)}>
+          <div className="stack">
+            {admin && <button className="btn btn-danger" style={{ width: "fit-content" }} onClick={() => remove(detail.id)}><Trash2 size={15} /> 删除文档</button>}
+            {detail.chunks.map((c) => (
+              <div key={c.id} className="json" style={c.flagged_injection ? { outline: "2px solid var(--danger)" } : undefined}>
+                <div className="row faint">#{c.ord} · {c.heading || "（无标题）"}{c.page && ` · 第 ${c.page} 页`}
+                  {c.flagged_injection && <span className="badge badge-danger">疑似提示注入，已屏蔽</span>}
+                </div>
+                <div style={{ whiteSpace: "pre-wrap" }}>{c.text}</div>
+              </div>
+            ))}
+          </div>
+        </Drawer>
+      )}
+    </div>
+  );
+}

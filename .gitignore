@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.db
+*.db-journal
+
+# Node
+node_modules/
+frontend/dist/
+
+# Local config and OS files
+.env
+.DS_Store
+.claude/
+_local/

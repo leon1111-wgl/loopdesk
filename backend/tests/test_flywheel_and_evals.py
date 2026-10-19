@@ -1,0 +1,87 @@
+from tests.conftest import by_type
+
+
+def test_correction_becomes_eval_case_and_kb_patch_and_closes_the_loop(client, ask, login):
+    customer = login("customer@xinghe.demo")
+    agent = login("agent@xinghe.demo")
+    admin = login("admin@xinghe.demo")
+
+    # 1. knowledge gap: the agent refuses
+    conversation_id, events = ask(customer, "以旧换新活动怎么参加？")
+    message_id = by_type(events, "final")[0]["message_id"]
+    assert "没有找到" in by_type(events, "final")[0]["text"]
+
+    # customers may rate but not correct
+    assert client.post(f"/api/messages/{message_id}/feedback", json={"rating": "correction", "correction": "x"},
+                       headers=customer).status_code == 400
+
+    # 2. a support agent writes the correct answer
+    correction = "以旧换新活动仅限手机和平板品类，在商品页点击“以旧换新”提交旧机信息，审核通过后可抵扣50-800元。"
+    r = client.post(f"/api/messages/{message_id}/feedback",
+                    json={"rating": "correction", "correction": correction, "reason_category": "knowledge_gap"},
+                    headers=agent).json()
+    assert r["attribution"] == "knowledge_gap"
+    assert r["eval_case_id"] and r["patch_id"]
+
+    cases = client.get("/api/evals/cases", headers=admin).json()
+    new_case = next(c for c in cases if c["id"] == r["eval_case_id"])
+    assert new_case["status"] == "candidate" and new_case["source"] == "flywheel"
+    assert "800元" in new_case["must_include"]
+
+    # 3. admin applies the patch -> knowledge base re-indexed, case activated
+    applied = client.post(f"/api/flywheel/patches/{r['patch_id']}/apply", headers=admin).json()
+    assert applied["status"] == "applied"
+    assert client.post(f"/api/flywheel/patches/{r['patch_id']}/apply", headers=admin).status_code == 409
+    cases = client.get("/api/evals/cases", headers=admin).json()
+    assert next(c for c in cases if c["id"] == r["eval_case_id"])["status"] == "active"
+
+    # 4. the same question is now answered from the patch, with a citation
+    _, events = ask(customer, "以旧换新活动怎么参加？")
+    final = by_type(events, "final")[0]
+    assert "800元" in final["text"]
+    assert final["meta"]["citations"][0]["title"] == "客服纠错知识补丁"
+
+    # 5. regression suite: the new case passes and nothing else broke
+    run = client.post("/api/evals/runs", json={}, headers=admin).json()
+    assert run["passed"] == run["total"] == 22
+    detail = client.get(f"/api/evals/runs/{run['id']}", headers=admin).json()
+    assert any(res["case_key"] == new_case["key"] and res["passed"] for res in detail["results"])
+
+    stats = client.get("/api/flywheel/stats", headers=admin).json()
+    assert stats["eval_cases"]["from_flywheel"] == 1 and stats["patches"] == {"applied": 1}
+
+
+def test_eval_suite_detects_regressions(settings, client, login):
+    admin = login("admin@xinghe.demo")
+    first = client.post("/api/evals/runs", json={}, headers=admin).json()
+    assert first["metrics"]["pass_rate"] == 1.0
+
+    # Simulate a bad change: shrink the auto-refund limit so a previously automatic refund now needs approval.
+    client.patch("/api/tenant", json={"auto_refund_limit": 10}, headers=admin)
+    second = client.post("/api/evals/runs", json={}, headers=admin).json()
+    assert "refund_auto" in second["metrics"]["diff"]["regressions"]
+    assert second["metrics"]["pass_rate"] < 1.0
+
+
+def test_thumbs_down_is_attributed(client, ask, login):
+    customer = login("customer@xinghe.demo")
+    _, events = ask(customer, "你们老板的私人手机号是多少？")
+    message_id = by_type(events, "final")[0]["message_id"]
+    r = client.post(f"/api/messages/{message_id}/feedback", json={"rating": "down"}, headers=customer).json()
+    assert r["attribution"] == "knowledge_gap" and r["eval_case_id"] is None
+
+
+def test_eval_runs_in_sandbox_and_ignores_live_order_changes(client, ask, login):
+    from app.db import new_session
+    from app.models import Order, Run
+
+    # a real refund changes live data ...
+    ask(login("customer@xinghe.demo"), "订单 SO20260918001 申请退款")
+    with new_session() as db:
+        assert db.get(Order, "SO20260918001").status == "refunding"
+    # ... but the regression suite still sees the fixture state
+    run = client.post("/api/evals/runs", json={}, headers=login("admin@xinghe.demo")).json()
+    assert run["metrics"]["pass_rate"] == 1.0
+    with new_session() as db:
+        assert db.get(Order, "SO20260918001").status == "refunding", "eval must not touch live data"
+        assert db.query(Run).filter(Run.is_eval.is_(True)).count() == run["total"], "eval traces are kept"

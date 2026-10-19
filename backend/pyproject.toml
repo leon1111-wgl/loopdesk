@@ -1,0 +1,27 @@
+[project]
+name = "loopdesk"
+version = "1.0.0"
+description = "证据优先、会自我进化的企业客服 Agent 平台"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "sqlalchemy>=2.0.30",
+    "pydantic>=2.7",
+    "httpx>=0.27",
+    "PyJWT>=2.8",
+    "python-multipart>=0.0.9",
+    "pypdf>=4.2",
+    "jieba>=0.42",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+anthropic = ["anthropic>=0.70"]
+mcp = ["mcp>=2.0"]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning:jieba.*", "ignore::SyntaxWarning"]
