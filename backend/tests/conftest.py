@@ -44,10 +44,15 @@ def _reset_database(url: str) -> None:
 
 
 @pytest.fixture()
-def client(settings):
+def client(settings, monkeypatch):
+    from app.security import shared_rate_limiter
+
     _reset_database(settings.database_url)
     index_manager._cache.clear()
     rate_limiter._hits.clear()
+    # On PostgreSQL login attempts are counted in fixed one-minute windows; a test that crossed
+    # a minute boundary saw its count reset (a 401 where the limit expects a 429). Pin the clock.
+    monkeypatch.setattr(shared_rate_limiter, "clock", lambda: 60_000.0)
     app = create_app(settings)
     with TestClient(app) as c:
         yield c
