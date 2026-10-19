@@ -26,12 +26,12 @@ EVAL_DIR = BASE_DIR / "evals"
 
 TENANTS = [
     {
-        "slug": "xinghe", "name": "星河优选", "industry": "ecommerce", "auto_refund_limit": 50.0, "ticket_sla_hours": 24,
+        "slug": "leon", "name": "Leon优选", "industry": "ecommerce", "auto_refund_limit": 50.0, "ticket_sla_hours": 24,
         "users": [
-            ("admin@xinghe.demo", "许管理", "admin"),
-            ("agent@xinghe.demo", "坐席小周", "agent"),
-            ("customer@xinghe.demo", "林小满", "customer"),
-            ("customer2@xinghe.demo", "周一鸣", "customer"),
+            ("admin@leon.demo", "Leon", "admin"),
+            ("agent@leon.demo", "Mia", "agent"),
+            ("customer@leon.demo", "Emma", "customer"),
+            ("customer2@leon.demo", "Jack", "customer"),
         ],
         "documents": [
             ("refund_policy.md", "售后与退款政策", "public"),
@@ -43,10 +43,10 @@ TENANTS = [
         ],
     },
     {
-        "slug": "qinghe", "name": "青禾云文档", "industry": "saas", "auto_refund_limit": 0.0, "ticket_sla_hours": 8,
+        "slug": "iris", "name": "Iris云文档", "industry": "saas", "auto_refund_limit": 0.0, "ticket_sla_hours": 8,
         "users": [
-            ("admin@qinghe.demo", "青禾管理员", "admin"),
-            ("customer@qinghe.demo", "青禾用户", "customer"),
+            ("admin@iris.demo", "Iris", "admin"),
+            ("customer@iris.demo", "Noah", "customer"),
         ],
         "documents": [
             ("product_faq.md", "产品常见问题", "public"),
@@ -66,13 +66,13 @@ def _orders(customer: User, other: User) -> list[Order]:
         Order(id="SO20260918001", tenant_id=t, customer_id=customer.id, amount=39.9, status="delivered",
               items=[{"name": "云朵抱枕", "qty": 1, "price": 39.9}],
               paid_at=_dt("2026-09-18T10:05:00"), delivered_at=_dt("2026-09-20T15:30:00"),
-              shipment={"carrier": "中通快递", "tracking_no": "ZT7788123401", "events": [
+              shipment={"carrier": "Orion快递", "tracking_no": "OR7788123401", "events": [
                   {"time": "2026-09-18 19:02", "desc": "已揽收（杭州）"},
                   {"time": "2026-09-20 15:30", "desc": "已签收，签收人：本人"}]}),
         Order(id="SO20261008002", tenant_id=t, customer_id=customer.id, amount=1299.0, status="shipped",
               items=[{"name": "扫地机器人 X1", "qty": 1, "price": 1299.0}],
               paid_at=_dt("2026-10-08T09:12:00"),
-              shipment={"carrier": "顺丰速运", "tracking_no": "SF1402938475", "events": [
+              shipment={"carrier": "Atlas快运", "tracking_no": "AT1402938475", "events": [
                   {"time": "2026-10-08 18:20", "desc": "已揽收（深圳）"},
                   {"time": "2026-10-09 06:45", "desc": "已到达杭州转运中心"},
                   {"time": "2026-10-09 14:10", "desc": "派送中，快递员正在派件"}]}),
@@ -84,7 +84,7 @@ def _orders(customer: User, other: User) -> list[Order]:
         Order(id="SO20261003005", tenant_id=t, customer_id=other.id, amount=899.0, status="delivered",
               items=[{"name": "降噪耳机 Pro", "qty": 1, "price": 899.0}],
               paid_at=_dt("2026-10-03T11:11:00"), delivered_at=_dt("2026-10-05T10:00:00"),
-              shipment={"carrier": "顺丰速运", "tracking_no": "SF1400011122", "events": [
+              shipment={"carrier": "Atlas快运", "tracking_no": "AT1400011122", "events": [
                   {"time": "2026-10-05 10:00", "desc": "已签收"}]}),
     ]
 
@@ -92,9 +92,9 @@ def _orders(customer: User, other: User) -> list[Order]:
 def fixture_orders(tenant_slug: str, users_by_email: dict[str, User]) -> list[Order]:
     """Deterministic business data. Also used by the eval sandbox, so evaluations never
     depend on whatever state the live orders are in."""
-    if tenant_slug != "xinghe":
+    if tenant_slug != "leon":
         return []
-    return _orders(users_by_email["customer@xinghe.demo"], users_by_email["customer2@xinghe.demo"])
+    return _orders(users_by_email["customer@leon.demo"], users_by_email["customer2@leon.demo"])
 
 
 def load_eval_cases(db: Session, tenant: Tenant, path: Path, suite: str = "default") -> int:
@@ -145,15 +145,15 @@ def seed_demo(db: Session, embedder: Embedder) -> bool:
 
 
 DEMO_TRAFFIC = [
-    ("customer@xinghe.demo", ["七天无理由退货有什么条件？", "那退款多久能到账？"]),
-    ("customer@xinghe.demo", ["SO20261008002 的快递到哪了？"]),
-    ("customer@xinghe.demo", ["SO20261008002 我要退款"]),
-    ("customer2@xinghe.demo", ["寄到新疆要额外加运费吗？", "积分可以怎么抵扣？"]),
-    ("customer2@xinghe.demo", ["以旧换新活动怎么参加？"]),
-    ("customer2@xinghe.demo", ["帮我查一下订单 SO20261008002"]),
-    ("customer2@xinghe.demo", ["你们这服务太差了，我要投诉，给我转人工！"]),
-    ("agent@xinghe.demo", ["一线客服最多可以发放多少钱的补偿券？"]),
-    ("customer@qinghe.demo", ["P1故障多久响应？"]),
+    ("customer@leon.demo", ["七天无理由退货有什么条件？", "那退款多久能到账？"]),
+    ("customer@leon.demo", ["SO20261008002 的快递到哪了？"]),
+    ("customer@leon.demo", ["SO20261008002 我要退款"]),
+    ("customer2@leon.demo", ["寄到新疆要额外加运费吗？", "积分可以怎么抵扣？"]),
+    ("customer2@leon.demo", ["以旧换新活动怎么参加？"]),
+    ("customer2@leon.demo", ["帮我查一下订单 SO20261008002"]),
+    ("customer2@leon.demo", ["你们这服务太差了，我要投诉，给我转人工！"]),
+    ("agent@leon.demo", ["一线客服最多可以发放多少钱的补偿券？"]),
+    ("customer@iris.demo", ["P1故障多久响应？"]),
 ]
 
 

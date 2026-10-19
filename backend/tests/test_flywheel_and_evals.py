@@ -2,9 +2,9 @@ from tests.conftest import by_type
 
 
 def test_correction_becomes_eval_case_and_kb_patch_and_closes_the_loop(client, ask, login):
-    customer = login("customer@xinghe.demo")
-    agent = login("agent@xinghe.demo")
-    admin = login("admin@xinghe.demo")
+    customer = login("customer@leon.demo")
+    agent = login("agent@leon.demo")
+    admin = login("admin@leon.demo")
 
     # 1. knowledge gap: the agent refuses
     conversation_id, events = ask(customer, "以旧换新活动怎么参加？")
@@ -52,7 +52,7 @@ def test_correction_becomes_eval_case_and_kb_patch_and_closes_the_loop(client, a
 
 
 def test_eval_suite_detects_regressions(settings, client, login):
-    admin = login("admin@xinghe.demo")
+    admin = login("admin@leon.demo")
     first = client.post("/api/evals/runs", json={}, headers=admin).json()
     assert first["metrics"]["pass_rate"] == 1.0
 
@@ -64,7 +64,7 @@ def test_eval_suite_detects_regressions(settings, client, login):
 
 
 def test_thumbs_down_is_attributed(client, ask, login):
-    customer = login("customer@xinghe.demo")
+    customer = login("customer@leon.demo")
     _, events = ask(customer, "你们老板的私人手机号是多少？")
     message_id = by_type(events, "final")[0]["message_id"]
     r = client.post(f"/api/messages/{message_id}/feedback", json={"rating": "down"}, headers=customer).json()
@@ -76,11 +76,11 @@ def test_eval_runs_in_sandbox_and_ignores_live_order_changes(client, ask, login)
     from app.models import Order, Run
 
     # a real refund changes live data ...
-    ask(login("customer@xinghe.demo"), "订单 SO20260918001 申请退款")
+    ask(login("customer@leon.demo"), "订单 SO20260918001 申请退款")
     with new_session() as db:
         assert db.get(Order, "SO20260918001").status == "refunding"
     # ... but the regression suite still sees the fixture state
-    run = client.post("/api/evals/runs", json={}, headers=login("admin@xinghe.demo")).json()
+    run = client.post("/api/evals/runs", json={}, headers=login("admin@leon.demo")).json()
     assert run["metrics"]["pass_rate"] == 1.0
     with new_session() as db:
         assert db.get(Order, "SO20260918001").status == "refunding", "eval must not touch live data"

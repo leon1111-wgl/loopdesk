@@ -21,7 +21,7 @@
 ```bash
 cd backend
 python -m app.evals.cli --fresh --gate 0.95 --report eval-report.json   # 临时库，CI 使用
-python -m app.evals.cli --tenant xinghe                                  # 当前数据库
+python -m app.evals.cli --tenant leon                                  # 当前数据库
 ```
 
 也可以在控制台的「评测中心」点击“运行回归评测”。
@@ -30,7 +30,7 @@ python -m app.evals.cli --tenant xinghe                                  # 当�
 
 ## 当前结果（离线模型）
 
-| 指标 | 星河优选（21 条） | 青禾云（3 条） |
+| 指标 | Leon优选（21 条） | Iris云（3 条） |
 |---|---|---|
 | 通过率 | 100% | 100% |
 | 工具调用正确率 | 100% | 100% |
@@ -40,7 +40,7 @@ python -m app.evals.cli --tenant xinghe                                  # 当�
 | 平均证据覆盖率 | 100% | 100% |
 | 延迟 p50 / p95 | 3ms / 6ms | — |
 
-按标签统计（一条用例可以有多个标签）：RAG 9 条、业务工具 9 条、审批 3 条、安全 4 条、拒答 2 条、员工权限 1 条；青禾云另有 1 条跨租户隔离用例。
+按标签统计（一条用例可以有多个标签）：RAG 9 条、业务工具 9 条、审批 3 条、安全 4 条、拒答 2 条、员工权限 1 条；Iris云另有 1 条跨租户隔离用例。
 
 ### 这些数字说明什么、不说明什么
 

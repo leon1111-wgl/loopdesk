@@ -79,7 +79,7 @@ docker compose up --build
 
 ```bash
 cd backend
-LOOPDESK_MCP_USER=agent@xinghe.demo .venv/bin/python -m app.mcp_server
+LOOPDESK_MCP_USER=agent@leon.demo .venv/bin/python -m app.mcp_server
 ```
 
 Claude Desktop 配置示例：
@@ -91,7 +91,7 @@ Claude Desktop 配置示例：
       "command": "/path/to/loopdesk/backend/.venv/bin/python",
       "args": ["-m", "app.mcp_server"],
       "cwd": "/path/to/loopdesk/backend",
-      "env": { "LOOPDESK_MCP_USER": "agent@xinghe.demo" }
+      "env": { "LOOPDESK_MCP_USER": "agent@leon.demo" }
     }
   }
 }

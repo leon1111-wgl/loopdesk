@@ -4,11 +4,11 @@ Any MCP client (Claude Desktop, Cursor, an internal agent) can then search the
 knowledge base and look up orders with the same permission checks as the web agent.
 Write tools (refunds, tickets) are deliberately not exposed.
 
-    LOOPDESK_MCP_USER=agent@xinghe.demo python -m app.mcp_server
+    LOOPDESK_MCP_USER=agent@leon.demo python -m app.mcp_server
 
 Client config example (Claude Desktop ``mcpServers``):
     "loopdesk": {"command": "/path/to/backend/.venv/bin/python", "args": ["-m", "app.mcp_server"],
-                 "cwd": "/path/to/backend", "env": {"LOOPDESK_MCP_USER": "agent@xinghe.demo"}}
+                 "cwd": "/path/to/backend", "env": {"LOOPDESK_MCP_USER": "agent@leon.demo"}}
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from .services import Services
 
 
 def _call(services: Services, handler, args: dict) -> str:
-    email = os.environ.get("LOOPDESK_MCP_USER", "agent@xinghe.demo")
+    email = os.environ.get("LOOPDESK_MCP_USER", "agent@leon.demo")
     with new_session() as db:
         user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
         if user is None:

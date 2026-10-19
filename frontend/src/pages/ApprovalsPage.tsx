@@ -58,7 +58,7 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
           {kb.map((e) => (
             <div key={e.ref} className="json small">
               <b>[{e.ref}] 《{e.title}》</b> <span className="faint">{e.meta.heading}</span>
-              <div>{e.text}</div>
+              <div style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{e.text}</div>
             </div>
           ))}
           {tools.map((e) => (

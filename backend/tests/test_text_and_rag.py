@@ -46,7 +46,7 @@ def test_hashing_embedder_is_normalized_and_similar_texts_are_closer():
 
 
 def test_hybrid_search_ranks_policy_and_hides_internal_docs(client, login):
-    staff = login("agent@xinghe.demo")
+    staff = login("agent@leon.demo")
     r = client.post("/api/kb/search", json={"query": "退款多久到账", "scope": "customer"}, headers=staff).json()
     assert r["hits"][0]["doc_title"] == "售后与退款政策"
     assert r["hits"][0]["bm25_rank"] == 1
@@ -57,7 +57,7 @@ def test_hybrid_search_ranks_policy_and_hides_internal_docs(client, login):
 
 
 def test_injected_chunk_is_flagged_at_ingestion(client, login):
-    admin = login("admin@xinghe.demo")
+    admin = login("admin@leon.demo")
     docs = client.get("/api/kb/documents", headers=admin).json()
     supplier = next(d for d in docs if d["title"] == "供应商合作 FAQ")
     assert supplier["flagged_chunks"] == 1

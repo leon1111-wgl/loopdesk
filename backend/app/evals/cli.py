@@ -1,6 +1,6 @@
 """Run the regression suite from the command line (used as the CI gate).
 
-    python -m app.evals.cli --tenant xinghe --gate 0.9            # against LOOPDESK_DATABASE_URL
+    python -m app.evals.cli --tenant leon --gate 0.9            # against LOOPDESK_DATABASE_URL
     python -m app.evals.cli --fresh --gate 0.9 --report out.json  # throwaway DB seeded from scratch
 """
 
@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="LoopDesk offline eval")
-    parser.add_argument("--tenant", default="xinghe")
+    parser.add_argument("--tenant", default="leon")
     parser.add_argument("--suite", default="default")
     parser.add_argument("--gate", type=float, default=0.0, help="fail (exit 1) when pass rate is below this")
     parser.add_argument("--fresh", action="store_true", help="use a temporary database seeded with demo data")

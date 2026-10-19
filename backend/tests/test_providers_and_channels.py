@@ -137,7 +137,7 @@ def test_router_sends_high_stakes_to_strong_model():
 
 def test_wecom_notification_dry_run_and_live_payload():
     approval = Approval(id=7, tool_name="request_refund", arguments={"order_id": "SO1", "amount": 1299.0}, reason="超额")
-    tenant = Tenant(name="星河优选")
+    tenant = Tenant(name="Leon优选")
     assert notify_approval(Settings(), approval, tenant)["mode"] == "dry_run"
     sent = {}
 
@@ -154,10 +154,10 @@ def test_wecom_notification_dry_run_and_live_payload():
 
 def test_feishu_url_verification_and_token_check(settings, client):
     settings.feishu_verification_token = "verify-me"
-    ok = client.post("/api/channels/feishu/xinghe/events",
+    ok = client.post("/api/channels/feishu/leon/events",
                      json={"type": "url_verification", "challenge": "abc", "token": "verify-me"})
     assert ok.json() == {"challenge": "abc"}
-    bad = client.post("/api/channels/feishu/xinghe/events",
+    bad = client.post("/api/channels/feishu/leon/events",
                       json={"type": "url_verification", "challenge": "abc", "token": "wrong"})
     assert bad.status_code == 403
 
@@ -173,8 +173,8 @@ def test_feishu_message_event_runs_agent_once(client, monkeypatch):
                               "content": json.dumps({"text": "@_user_1 退款多久能到账？"})}},
     }
     deduper._seen.clear()
-    assert client.post("/api/channels/feishu/xinghe/events", json=event).json() == {"code": 0}
-    assert client.post("/api/channels/feishu/xinghe/events", json=event).json()["msg"] == "duplicate"
+    assert client.post("/api/channels/feishu/leon/events", json=event).json() == {"code": 0}
+    assert client.post("/api/channels/feishu/leon/events", json=event).json()["msg"] == "duplicate"
     assert len(replies) == 1 and replies[0][0] == "om_1"
     assert "1-3个工作日" in replies[0][1]
 
@@ -184,8 +184,8 @@ def test_mcp_server_tools_respect_permissions(settings, client, monkeypatch):
     from app.agent.business_tools import get_order
     from app.services import get_services
 
-    monkeypatch.setenv("LOOPDESK_MCP_USER", "customer@xinghe.demo")
+    monkeypatch.setenv("LOOPDESK_MCP_USER", "customer@leon.demo")
     out = json.loads(mcp_server._call(get_services(), get_order, {"order_id": "SO20261003005"}))
     assert out == {"error": "订单不存在或无权查看"}
-    monkeypatch.setenv("LOOPDESK_MCP_USER", "agent@xinghe.demo")
+    monkeypatch.setenv("LOOPDESK_MCP_USER", "agent@leon.demo")
     assert json.loads(mcp_server._call(get_services(), get_order, {"order_id": "SO20261003005"}))["amount"] == 899.0
