@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -13,6 +15,7 @@ from ..security import Principal, require_staff
 from ..services import get_services
 from .common import get_owned, iso
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
 
 
@@ -62,10 +65,18 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     final = next((e for e in events if e["type"] == "final"), {})
 
+    # The decision has been executed and committed (a refund may have been paid). Telling the
+    # customer on Feishu is best effort: if it fails, the reviewer must not see a 500 and retry
+    # a decision that already took effect; the answer is in the conversation either way.
+    delivery = None
     conversation = db.get(Conversation, approval.conversation_id) if approval.conversation_id else None
     if conversation and conversation.channel == "feishu" and conversation.external_id and final.get("text"):
-        FeishuClient(services.settings).send_to_chat(conversation.external_id, final["text"])
-    return {"approval": approval_out(db, approval), "final": final}
+        try:
+            delivery = FeishuClient(services.settings).send_to_chat(conversation.external_id, final["text"])
+        except Exception:
+            logger.exception("feishu delivery of approval %s failed", approval.id)
+            delivery = {"sent": False, "error": "飞书通知发送失败，结果已写入对话"}
+    return {"approval": approval_out(db, approval), "final": final, "delivery": delivery}
 
 
 @router.get("/{approval_id}")

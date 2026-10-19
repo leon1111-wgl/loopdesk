@@ -18,10 +18,12 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
     setBusy(true);
     setError(null);
     try {
-      const r = await api.post<{ final: { text: string } }>(`/api/approvals/${approval.id}/decide`, { decision, comment });
+      const r = await api.post<{ final: { text: string }; delivery: { sent: boolean; error?: string } | null }>(
+        `/api/approvals/${approval.id}/decide`, { decision, comment });
       const text = r.final?.text ?? "已处理";
       setResult(text);
-      onDecided(`审批单 #${approval.id} 已${decision === "approve" ? "通过并执行" : "驳回"}，已回复顾客：${text}`);
+      const notice = r.delivery && !r.delivery.sent ? `（${r.delivery.error ?? "飞书通知未发出，结果已写入对话"}）` : "";
+      onDecided(`审批单 #${approval.id} 已${decision === "approve" ? "通过并执行" : "驳回"}，已回复顾客：${text}${notice}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

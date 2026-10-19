@@ -118,3 +118,30 @@ def test_unexpected_crash_marks_a_streaming_run_failed(ask, login, monkeypatch):
     with new_session() as db:
         run = db.get(Run, events[0]["run_id"])
         assert run.status == "failed" and "RuntimeError" in run.error
+
+
+def test_a_failed_feishu_notice_does_not_turn_an_executed_approval_into_an_error(client, ask, login, monkeypatch):
+    # The refund is paid and committed before the customer is told on Feishu. A network error
+    # there used to surface as a 500, so the reviewer saw a failure for a decision that had
+    # taken effect (and a retry answered "已处理").
+    import httpx
+
+    from app.channels.feishu import FeishuClient
+    from app.models import Conversation
+
+    customer, conversation_id, approval_id = _pending_refund(ask, login)
+    with new_session() as db:
+        conversation = db.get(Conversation, conversation_id)
+        conversation.channel, conversation.external_id = "feishu", "oc_refund"
+        db.commit()
+
+    def unreachable(self, chat_id, text):
+        raise httpx.ConnectError("feishu unreachable")
+
+    monkeypatch.setattr(FeishuClient, "send_to_chat", unreachable)
+    r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "approve"}, headers=login("admin@leon.demo"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["approval"]["status"] == "approved" and body["delivery"]["sent"] is False
+    with new_session() as db:
+        assert _refund_count(db) == 1
