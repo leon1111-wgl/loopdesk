@@ -158,3 +158,37 @@ def test_a_customer_does_not_see_the_agents_correction_of_their_answer(client, a
     listed = client.get(f"/api/conversations/{conversation_id}/messages", headers=customer).json()["messages"]
     assert all(m["feedback"] is None for m in listed)
     assert "内部口径" not in str(listed)
+
+
+def test_a_correction_retried_after_a_failed_draft_still_creates_its_case_and_patch(client, ask, login, monkeypatch):
+    # Code review: the feedback row (with its de-duplication key) was committed before the patch
+    # was drafted. When drafting failed, the retry found the row and returned no case and no
+    # patch, and the correction was lost unless someone reworded it.
+    from sqlalchemy import func, select
+
+    from app.db import new_session
+    from app.models import EvalCase, Feedback, KBPatch
+    from app.services import get_services
+
+    _, events = ask(login("customer@leon.demo"), "以旧换新活动怎么参加？")
+    message_id = by_type(events, "final")[0]["message_id"]
+    agent = login("agent@leon.demo")
+    body = {"rating": "correction", "reason_category": "knowledge_gap",
+            "correction": "以旧换新活动仅限手机和平板品类，审核通过后可抵扣50-800元。"}
+    provider, calls = get_services().provider, []
+    draft = provider.chat
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("upstream 503")
+        return draft(*args, **kwargs)
+
+    monkeypatch.setattr(provider, "chat", flaky)
+    assert client.post(f"/api/messages/{message_id}/feedback", json=body, headers=agent).status_code == 500
+    retried = client.post(f"/api/messages/{message_id}/feedback", json=body, headers=agent).json()
+    assert retried["eval_case_id"] and retried["patch_id"]
+    with new_session() as db:
+        assert db.execute(select(func.count(Feedback.id)).where(Feedback.rating == "correction")).scalar_one() == 1
+        assert db.execute(select(func.count(EvalCase.id)).where(EvalCase.source == "flywheel")).scalar_one() == 1
+        assert db.execute(select(func.count(KBPatch.id))).scalar_one() == 1

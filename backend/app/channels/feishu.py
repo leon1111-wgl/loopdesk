@@ -156,6 +156,10 @@ def stale_after(settings: Settings) -> timedelta:
     return timedelta(seconds=max(300.0, 2 * settings.run_deadline_seconds))
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def _claim(db: Session, event_id: str, now: datetime, stale_before: datetime):
     """One conditional UPDATE: an unclaimed event, or one whose worker died. Of two workers
     (the event's own task and the sweeper, or two sweepers) exactly one gets it."""
@@ -181,10 +185,13 @@ def _settle(event_id: str, status: str) -> None:
 
 def process_event(services, event_id: str, now: datetime | None = None) -> dict | None:
     """Claim an accepted event and answer it; None when another worker has it. An event whose
-    answer failed got the fallback reply (handle_message) and is settled as failed, not retried."""
-    now = now or datetime.now(timezone.utc)
+    answer failed got the fallback reply (handle_message) and is settled as failed, not retried.
+    ``now`` (a sweep's clock) only decides what counts as stale. The claim is stamped with the
+    moment it is made: a sweep answering a backlog for minutes would otherwise back-date its
+    later claims, and the next sweep would take them over while they are being answered."""
+    now = now or _utcnow()
     with new_session() as db:
-        claimed = _claim(db, event_id, now, now - stale_after(services.settings))
+        claimed = _claim(db, event_id, _utcnow(), now - stale_after(services.settings))
     if claimed is None or not claimed.payload:
         return None
     payload = claimed.payload

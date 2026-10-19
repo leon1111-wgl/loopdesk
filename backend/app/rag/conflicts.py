@@ -137,6 +137,13 @@ def detect_conflicts(db: Session, document: Document) -> int:
         else:
             conflict.status, conflict.note = "resolved", "文档已修改，冲突的句子已不存在"
             conflict.resolved_at = datetime.now(timezone.utc)
+    # A pair an administrator resolved stays resolved while both sentences read the same; a
+    # changed sentence is a new claim and is checked again.
+    for conflict in db.execute(select(KnowledgeConflict).where(
+        KnowledgeConflict.status == "resolved",
+        or_(KnowledgeConflict.document_id == document.id, KnowledgeConflict.other_document_id == document.id),
+    )).scalars():
+        seen.update({(conflict.sentence, conflict.other_sentence), (conflict.other_sentence, conflict.sentence)})
     mine = [c for chunk in chunks if not chunk.flagged_injection for c in extract_claims(chunk)]
     if not mine:
         db.commit()

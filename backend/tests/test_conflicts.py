@@ -216,3 +216,74 @@ def test_the_dashboard_shows_the_conflict_backlog_and_what_it_costs(client, ask,
     ask(login("customer@leon.demo"), "微信退款多久能到账？")
     backlog = client.get("/api/metrics/overview", headers=admin).json()["knowledge_conflicts"]
     assert backlog["open"] == 1 and backlog["handoffs"] == 1 and backlog["oldest_open_s"] >= 0
+
+
+def test_a_resolved_conflict_stays_resolved_when_either_document_is_reindexed(client, ask, login):
+    # Code review: re-detection on every re-index ignored resolved pairs, so an unrelated edit (or
+    # any flywheel publish, which re-indexes the patch document) reopened a conflict an
+    # administrator had settled, and customers were handed to a person again.
+    admin = login("admin@leon.demo")
+    doc = client.post("/api/kb/documents/text", json=CONFLICTING, headers=admin).json()
+    conflict_id = client.get("/api/kb/conflicts", headers=admin).json()[0]["id"]
+    client.post(f"/api/kb/conflicts/{conflict_id}/resolve", json={"note": "补充说明为准"}, headers=admin)
+    current = client.get(f"/api/kb/documents/{doc['id']}", headers=admin).json()
+    client.put(f"/api/kb/documents/{doc['id']}", headers=admin, json={
+        "title": current["title"], "content": current["content"] + "\n\n如有疑问请联系客服。",
+        "visibility": "public", "version": current["version"]})
+    assert client.get("/api/kb/conflicts", headers=admin).json() == []
+    _, events = ask(login("customer@leon.demo"), "微信退款多久能到账？")
+    assert by_type(events, "final")[0]["status"] == "completed"
+    # a changed sentence is a new claim: it is checked again
+    current = client.get(f"/api/kb/documents/{doc['id']}", headers=admin).json()
+    client.put(f"/api/kb/documents/{doc['id']}", headers=admin, json={
+        "title": current["title"], "content": current["content"].replace("1-2个工作日", "1个工作日"),
+        "visibility": "public", "version": current["version"]})
+    assert len(client.get("/api/kb/conflicts", headers=admin).json()) == 1
+
+
+def test_a_document_edit_does_not_stall_the_tenants_chats_on_postgresql(settings, client, login):
+    # Code review: the edit locked the tenant row FOR UPDATE until re-indexing committed. Every
+    # insert that references the tenant (runs, messages, spans) needs FOR KEY SHARE on that row,
+    # which FOR UPDATE blocks, so chats waited for the edit (a remote embedder, a large document).
+    # FOR NO KEY UPDATE still serialises edits with flywheel publishing but lets them through.
+    import threading
+
+    import pytest
+    from sqlalchemy import select, text
+
+    from app.db import new_session
+    from app.models import Document, Run, Tenant, User
+    from app.rag.ingest import edit_document
+    from app.services import get_services
+
+    if not settings.database_url.startswith("postgresql"):
+        pytest.skip("SQLite has one writer by design; the row-lock modes are PostgreSQL's")
+    admin = login("admin@leon.demo")
+    doc = client.post("/api/kb/documents/text", json=CONFLICTING, headers=admin).json()
+    real, embedding, release = get_services().embedder, threading.Event(), threading.Event()
+
+    class SlowEmbedder:  # a remote embedding call that takes a while
+        def embed(self, texts):
+            embedding.set()
+            release.wait(10)
+            return real.embed(texts)
+
+    def edit():
+        with new_session() as db:
+            document = db.get(Document, doc["id"])
+            edit_document(db, document, title=document.title, content=document.content + "\n- 节假日顺延。",
+                          visibility="public", embedder=SlowEmbedder(), base_version=document.version)
+
+    editor = threading.Thread(target=edit)
+    editor.start()
+    try:
+        assert embedding.wait(10)
+        with new_session() as db:  # a chat request of the same tenant starts a run meanwhile
+            db.execute(text("SET LOCAL lock_timeout = '2s'"))
+            tenant = db.execute(select(Tenant).where(Tenant.slug == "leon")).scalar_one()
+            user = db.execute(select(User).where(User.tenant_id == tenant.id)).scalars().first()
+            db.add(Run(tenant_id=tenant.id, user_id=user.id))
+            db.commit()
+    finally:
+        release.set()
+        editor.join()

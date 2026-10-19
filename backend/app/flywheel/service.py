@@ -118,51 +118,57 @@ def submit_feedback(
         attribution=attribution, comment=comment, dedup_key=dedup_key,
     )
     existing = db.execute(select(Feedback).where(Feedback.dedup_key == dedup_key)).scalar_one_or_none()
-    if existing is None:
-        db.add(feedback)
-        try:
-            db.commit()
-        except IntegrityError:  # the same feedback arrived twice at once
-            db.rollback()
-            existing = db.execute(select(Feedback).where(Feedback.dedup_key == dedup_key)).scalar_one()
     if existing is not None:
-        if rating != "correction":
-            existing.rating, existing.comment = rating, comment
-            existing.reason_category, existing.attribution = feedback.reason_category, attribution
-            db.commit()
-        return _feedback_result(db, existing)
-    result: dict = {"feedback_id": feedback.id, "attribution": attribution, "eval_case_id": None, "patch_id": None}
-    if rating != "correction":
-        return result
+        return _repeated(db, existing, feedback)
 
-    asker = db.get(User, run.user_id) if run else None
-    used_search = bool(run) and db.execute(
-        select(func.count(Span.id)).where(Span.run_id == run.id, Span.name == "search_knowledge")
-    ).scalar_one() > 0
-    case = EvalCase(
-        tenant_id=message.tenant_id, key=f"flywheel_{feedback.id}", suite="default", question=question,
-        role=asker.role if asker else "customer", as_user=asker.email if asker else None,
-        expected_tools=["search_knowledge"] if used_search else [], must_include=key_facts(correction),
-        expect_refusal=False, tags=["flywheel", feedback.reason_category], source="flywheel",
-        feedback_id=feedback.id, status="candidate",
-    )
-    db.add(case)
-    db.flush()
-    result["eval_case_id"] = case.id
+    case = patch = None
+    if rating == "correction":
+        asker = db.get(User, run.user_id) if run else None
+        used_search = bool(run) and db.execute(
+            select(func.count(Span.id)).where(Span.run_id == run.id, Span.name == "search_knowledge")
+        ).scalar_one() > 0
+        case = EvalCase(
+            tenant_id=message.tenant_id, suite="default", question=question,
+            role=asker.role if asker else "customer", as_user=asker.email if asker else None,
+            expected_tools=["search_knowledge"] if used_search else [], must_include=key_facts(correction),
+            expect_refusal=False, tags=["flywheel", feedback.reason_category], source="flywheel", status="candidate",
+        )
+        if feedback.reason_category in ("knowledge_gap", "knowledge_outdated", "retrieval_miss"):
+            # Drafted before anything is written: if the model call fails, nothing is left
+            # behind, and the same correction sent again starts over (a committed feedback row
+            # would have made the retry look like a duplicate with no case and no patch).
+            payload = json.dumps({"question": question, "correction": correction.strip()}, ensure_ascii=False)
+            draft = provider.chat(
+                [LLMMessage(role="user", content=KB_PATCH_PROMPT.format(payload=payload))], [], model,
+                {"task": "kb_patch", "temperature": 0},
+            ).content.strip() or f"## {question}\n\n{correction.strip()}"
+            patch = KBPatch(tenant_id=message.tenant_id, title=f"纠错补丁：{question[:40]}", content=draft.strip())
 
-    if feedback.reason_category in ("knowledge_gap", "knowledge_outdated", "retrieval_miss"):
-        payload = json.dumps({"question": question, "correction": correction.strip()}, ensure_ascii=False)
-        draft = provider.chat(
-            [LLMMessage(role="user", content=KB_PATCH_PROMPT.format(payload=payload))], [], model,
-            {"task": "kb_patch", "temperature": 0},
-        ).content.strip() or f"## {question}\n\n{correction.strip()}"
-        patch = KBPatch(tenant_id=message.tenant_id, feedback_id=feedback.id,
-                        title=f"纠错补丁：{question[:40]}", content=draft.strip())
-        db.add(patch)
+    # Feedback, eval case and patch are written in one transaction.
+    db.add(feedback)
+    try:
         db.flush()
-        result["patch_id"] = patch.id
-    db.commit()
-    return result
+        if case is not None:
+            case.key, case.feedback_id = f"flywheel_{feedback.id}", feedback.id
+            db.add(case)
+        if patch is not None:
+            patch.feedback_id = feedback.id
+            db.add(patch)
+        db.commit()
+    except IntegrityError:  # the same feedback arrived twice at once: the first one stands
+        db.rollback()
+        first = db.execute(select(Feedback).where(Feedback.dedup_key == dedup_key)).scalar_one()
+        return _repeated(db, first, feedback)
+    return _feedback_result(db, feedback)
+
+
+def _repeated(db: Session, existing: Feedback, new: Feedback) -> dict:
+    """A rating replaces the user's earlier rating; a repeated correction returns the first one."""
+    if new.rating != "correction":
+        existing.rating, existing.comment = new.rating, new.comment
+        existing.reason_category, existing.attribution = new.reason_category, new.attribution
+        db.commit()
+    return _feedback_result(db, existing)
 
 
 def _feedback_result(db: Session, feedback: Feedback) -> dict:
@@ -242,7 +248,9 @@ def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder,
     # both created a patch document and every later publish failed.
     db.commit()
     _claim(db, patch, "applied", reviewer)
-    db.execute(select(Tenant.id).where(Tenant.id == patch.tenant_id).with_for_update())
+    # FOR NO KEY UPDATE: serialises with other edits and publishes, while inserts that reference
+    # the tenant (a chat's runs, messages, spans) still go through.
+    db.execute(select(Tenant.id).where(Tenant.id == patch.tenant_id).with_for_update(key_share=True))
     document = db.execute(
         select(Document).where(Document.tenant_id == patch.tenant_id, Document.source == PATCH_DOC_SOURCE)
     ).scalar_one_or_none()

@@ -86,7 +86,9 @@ def edit_document(db: Session, document: Document, *, title: str, content: str, 
     which rewrites the patch document from what it reads. Returns the document and the text
     it replaced (read after the claim, so it is exactly the base version's)."""
     db.commit()
-    db.execute(select(Tenant.id).where(Tenant.id == document.tenant_id).with_for_update())
+    # FOR NO KEY UPDATE: serialises with other edits and publishes, while inserts that reference
+    # the tenant (a chat's runs, messages, spans) still go through.
+    db.execute(select(Tenant.id).where(Tenant.id == document.tenant_id).with_for_update(key_share=True))
     claimed = db.execute(
         update(Document).where(Document.id == document.id, Document.version == base_version)
         .values(version=base_version + 1).execution_options(synchronize_session=False)

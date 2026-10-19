@@ -453,3 +453,32 @@ def test_openai_compat_never_retries_past_the_run_deadline():
         provider.chat([LLMMessage(role="user", content="hi")], [], "m", {"deadline": started + 0.5})
     assert clock.monotonic() - started < 1.0, "the 1 s and 2 s back-offs would run past the deadline"
     assert calls["n"] == 1
+
+
+def test_overlapping_sweepers_do_not_answer_the_same_message_twice(client, monkeypatch):
+    # Code review: a sweep stamped every claim with the time the sweep started. One that spent
+    # five minutes answering a backlog had back-dated its latest claim, and the next cron run
+    # took that event over as stale while it was still being answered.
+    from datetime import datetime, timedelta, timezone
+
+    from app.channels import feishu
+    from app.services import get_services
+
+    replies = []
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append(mid) or {"sent": False})
+    for event_id in ("evt-b1", "evt-b2"):
+        _accept_without_answering(event_id)
+    start = datetime.now(timezone.utc) + timedelta(minutes=1)
+    clock = iter([start, start + timedelta(minutes=5)])  # the first sweep reaches evt-b2 five minutes in
+    monkeypatch.setattr(feishu, "_utcnow", lambda: next(clock))
+    answer, overlapping = feishu.handle_message, []
+
+    def slow_answer(services, tenant_slug, parsed):
+        if parsed["event_id"] == "evt-b2":  # cron starts the next sweep meanwhile
+            overlapping.append(feishu.retry_stuck(services, now=start + timedelta(minutes=5, seconds=1)))
+        return answer(services, tenant_slug, parsed)
+
+    monkeypatch.setattr(feishu, "handle_message", slow_answer)
+    assert feishu.retry_stuck(get_services(), now=start) == {"answered": 2, "gave_up": 0}
+    assert overlapping == [{"answered": 0, "gave_up": 0}]
+    assert replies == ["om_evt-b1", "om_evt-b2"]
