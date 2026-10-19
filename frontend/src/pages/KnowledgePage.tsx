@@ -155,6 +155,8 @@ interface Conflict {
   document: { id: number; title: string };
   other_document: { id: number; title: string };
   detail: Record<string, { this: string[]; other: string[] }>;
+  origin: "detected" | "flywheel";
+  note: string;
   created_at: string;
 }
 
@@ -170,7 +172,7 @@ function ConflictsCard({ admin, onChange }: { admin: boolean; onChange: () => vo
     <div className="card">
       <div className="card-head">
         <h3>知识冲突（{data.length}）</h3>
-        <span className="faint">同一规则在两份文档中写了不同的数字，检索时可能拿到任意一份</span>
+        <span className="faint">同一规则在两份文档中写了不同的数字。核对之前，同时用到两种说法的顾客问题会转人工</span>
       </div>
       <div className="card-pad stack">
         {data.map((c) => (
@@ -179,6 +181,7 @@ function ConflictsCard({ admin, onChange }: { admin: boolean; onChange: () => vo
               {Object.entries(c.detail).map(([unit, v]) => (
                 <span key={unit} className="badge badge-warning">{unit}：{v.this.join("、")} ≠ {v.other.join("、")}</span>
               ))}
+              {c.origin === "flywheel" && <span className="badge" title={c.note}>纠错补丁确认发布</span>}
               <span className="spacer" />
               <span className="faint">{time(c.created_at)}</span>
             </div>

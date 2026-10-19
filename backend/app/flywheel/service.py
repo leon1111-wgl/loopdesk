@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from ..agent.prompts import KB_PATCH_PROMPT
 from ..llm.base import Embedder, LLMMessage, LLMProvider
 from ..models import Chunk, Document, EvalCase, EvalRun, Feedback, KBPatch, Message, Run, Span, Tenant, User
-from ..rag.conflicts import claims_in_text, conflicting_dimensions, extract_claims
+from ..rag.conflicts import claims_in_text, conflicting_dimensions, extract_claims, record_published_anyway
 from ..rag.ingest import ingest_document
 
 REASONS = {
@@ -170,20 +170,20 @@ def patch_conflicts(db: Session, patch: KBPatch) -> list[dict]:
         chunk = db.get(Chunk, chunk_id)
         if chunk is not None and chunk.tenant_id == patch.tenant_id:
             title = db.get(Document, chunk.document_id).title
-            cited.extend((title, claim) for claim in extract_claims(chunk))
+            cited.extend((title, chunk, claim) for claim in extract_claims(chunk))
     found = []
     for a in claims_in_text(patch.content):
         # Compare with the cited claims this one overlaps most: "微信…1-2个工作日" is about the
         # 微信 line, not the 银行卡 line; a generic "3天内到账" ties with both and disputes both.
-        overlap = {id(b): len(a.tokens & b.tokens) for _, b in cited}
+        overlap = {id(b): len(a.tokens & b.tokens) for _, _, b in cited}
         best = max(overlap.values(), default=0)
         if best < 2:
             continue
-        for title, b in cited:
+        for title, chunk, b in cited:
             detail = conflicting_dimensions(a, b) if overlap[id(b)] == best else {}
             if detail:
                 found.append({"patch_sentence": a.sentence, "document": title, "existing_sentence": b.sentence,
-                              "detail": detail})
+                              "detail": detail, "document_id": chunk.document_id, "chunk_id": chunk.id})
     return found
 
 
@@ -227,7 +227,9 @@ def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder,
         visibility="public", source=PATCH_DOC_SOURCE, created_by=reviewer.id, document=document,
     )
     patch.document_id = document.id
-    if not conflicts:
+    if conflicts:
+        record_published_anyway(db, document, conflicts, f"补丁 #{patch.id} 经审核人确认后发布")
+    else:
         for case in db.execute(select(EvalCase).where(EvalCase.feedback_id == patch.feedback_id)).scalars():
             if case.status == "candidate":
                 case.status = "active"

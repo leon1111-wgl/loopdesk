@@ -142,7 +142,7 @@ def list_conflicts(status_filter: str = "open", principal: Principal = Depends(r
     titles = {d.id: d.title for d in db.execute(
         select(Document).where(Document.tenant_id == principal.tenant.id)).scalars()}
     return [
-        {"id": c.id, "status": c.status, "sentence": c.sentence, "other_sentence": c.other_sentence,
+        {"id": c.id, "status": c.status, "origin": c.origin, "sentence": c.sentence, "other_sentence": c.other_sentence,
          "document": {"id": c.document_id, "title": titles.get(c.document_id, "（已删除）")},
          "other_document": {"id": c.other_document_id, "title": titles.get(c.other_document_id, "（已删除）")},
          "detail": c.detail, "note": c.note, "created_at": iso(c.created_at), "resolved_at": iso(c.resolved_at)}

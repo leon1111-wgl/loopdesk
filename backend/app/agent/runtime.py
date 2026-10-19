@@ -48,6 +48,7 @@ MAX_STEPS_TEXT = "抱歉，这个问题需要的处理步骤较多。"
 MODEL_ERROR_TEXT = "抱歉，智能客服暂时繁忙，请稍后再试或转人工客服。"
 REFUSAL_TEXT = "抱歉，这个问题我无法处理。"
 DEADLINE_TEXT = "抱歉，这个问题处理时间过长。"
+CONFLICT_TEXT = "抱歉，这个问题涉及的规定正在核对中。"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 TOOL_LABEL = {"request_refund": "退款"}
 
@@ -318,6 +319,9 @@ class AgentRuntime:
                 messages.append(self._tool_message(call, outcome))
                 yield {"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
                        "is_error": outcome.is_error}
+                if call.name == "search_knowledge" and outcome.output.get("disputed"):
+                    yield from self._conflict_handoff(run, tracer, ctx, state, outcome.output["disputed"], started)
+                    return
 
             if self._past_deadline(state):
                 yield from self._deadline_handoff(run, tracer, ctx, state, started)
@@ -443,6 +447,21 @@ class AgentRuntime:
             span.set(steps=state["steps"])
         text = DEADLINE_TEXT + self._fallback_handoff(tracer, ctx, "处理超时")
         yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
+
+    def _conflict_handoff(self, run, tracer, ctx, state, disputed, started) -> Iterator[dict[str, Any]]:
+        """The knowledge this answer would rest on contradicts itself and nobody has checked which
+        side is right. The model would state both versions, and the evidence check passes each
+        sentence on its own, so a person answers until an administrator resolves the conflict.
+        The customer is not shown the two versions; staff testing the agent are."""
+        with tracer.span("guardrail", "knowledge_conflict", {"conflicts": disputed}) as span:
+            span.status = "error"
+        text = CONFLICT_TEXT
+        if ctx.is_staff:
+            pairs = "；".join(f"“{d['sentence']}”与“{d['other_sentence']}”" for d in disputed)
+            text += f"（知识库中有未核对的冲突：{pairs}。请到知识库页面核对。）"
+        text += self._fallback_handoff(tracer, ctx, "知识库对这个问题的说法有冲突，待核对")
+        meta = {"disputed": disputed} if ctx.is_staff else {"citations": []}
+        yield from self._finish(run, tracer, ctx, state, text, started, status="handoff", extra_meta=meta)
 
     def _fallback_handoff(self, tracer: Tracer, ctx: ToolContext, reason: str) -> str:
         """The agent gave up (step limit, model refusal): really hand the customer to a person

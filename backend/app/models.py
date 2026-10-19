@@ -287,6 +287,8 @@ class KnowledgeConflict(Base):
     other_sentence: Mapped[str] = mapped_column(Text)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(16), default="open")  # open | resolved
+    # detected: found on ingestion; flywheel: a reviewer published a correction over it
+    origin: Mapped[str] = mapped_column(String(16), default="detected", server_default="detected")
     resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -15,6 +15,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket
+from ..rag.conflicts import disputed
 from ..rag.retrieval import hybrid_search
 from ..textutil import normalize_width
 from . import handoff
@@ -93,6 +94,12 @@ def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     output: dict[str, Any] = {"query": query, "results": results}
     if not results:
         output["note"] = "知识库中没有足够相关的内容"
+    # Open conflicts with both sides in this evidence: the runtime hands over instead of
+    # letting the model state both versions.
+    conflicts = disputed(ctx.db, ctx.tenant.id, [hit.text for hit in hits])
+    if conflicts:
+        output["disputed"] = [{"conflict_id": c.id, "sentence": c.sentence, "other_sentence": c.other_sentence}
+                              for c in conflicts]
     output["_debug"] = {
         "scope": sorted(scope),
         "query_tokens": debug.query_tokens,

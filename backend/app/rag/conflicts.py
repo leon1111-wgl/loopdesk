@@ -16,16 +16,19 @@ Heuristic, deliberately conservative:
 3. They conflict when their values differ in the same dimension. Durations are one
    dimension: minutes, hours and days are converted (24 小时 = 1 天), working days are not
    (a working day is not 24 hours), so "3 天" against "1-3 个工作日" is flagged for a person.
-Detected conflicts are stored for an administrator to resolve; nothing is blocked here
-(the flywheel blocks a patch that contradicts what the corrected answer cited).
+Detected conflicts are stored for an administrator to resolve. Nothing is blocked at
+ingestion (the flywheel blocks a patch that contradicts what the corrected answer cited),
+but while a conflict is open, a question whose evidence holds both sides goes to a person
+(see ``disputed``): the evidence check passes each of two contradicting sentences on its own.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..models import Chunk, Document, KnowledgeConflict
@@ -40,6 +43,7 @@ MAX_OWN_TOKENS = 1
 
 
 _HOURS = {"分钟": 1 / 60, "小时": 1.0, "天": 24.0}  # convertible durations, in hours
+FLYWHEEL = "flywheel"  # KnowledgeConflict.origin of a conflict a reviewer published a correction over
 
 
 @dataclass
@@ -113,13 +117,27 @@ def conflicting_dimensions(a: Claim, b: Claim) -> dict[str, dict[str, list[str]]
 
 
 def detect_conflicts(db: Session, document: Document) -> int:
-    """Recompute open conflicts between ``document`` and every other document of the tenant."""
-    db.execute(delete(KnowledgeConflict).where(
+    """Recompute open conflicts between ``document`` and every other document of the tenant.
+
+    A conflict a reviewer published a correction over came from comparing the correction with
+    what the corrected answer cited, which wording alone cannot reproduce. It stays open while
+    the document still contains its sentence and closes itself when an edit removes it."""
+    chunks = db.execute(select(Chunk).where(Chunk.document_id == document.id)).scalars().all()
+    seen: set[tuple[str, str]] = set()
+    for conflict in db.execute(select(KnowledgeConflict).where(
         KnowledgeConflict.status == "open",
         or_(KnowledgeConflict.document_id == document.id, KnowledgeConflict.other_document_id == document.id),
-    ))
-    mine = [c for chunk in db.execute(select(Chunk).where(Chunk.document_id == document.id)).scalars()
-            if not chunk.flagged_injection for c in extract_claims(chunk)]
+    )).scalars().all():
+        if conflict.origin != FLYWHEEL:
+            db.delete(conflict)
+            continue
+        own = conflict.sentence if conflict.document_id == document.id else conflict.other_sentence
+        if any(own in chunk.text for chunk in chunks):
+            seen.update({(conflict.sentence, conflict.other_sentence), (conflict.other_sentence, conflict.sentence)})
+        else:
+            conflict.status, conflict.note = "resolved", "文档已修改，冲突的句子已不存在"
+            conflict.resolved_at = datetime.now(timezone.utc)
+    mine = [c for chunk in chunks if not chunk.flagged_injection for c in extract_claims(chunk)]
     if not mine:
         db.commit()
         return 0
@@ -128,7 +146,6 @@ def detect_conflicts(db: Session, document: Document) -> int:
                             Chunk.flagged_injection.is_(False))
     ).scalars() for c in extract_claims(chunk)]
     found = 0
-    seen: set[tuple[str, str]] = set()
     for a in mine:
         for b in others:
             if (a.sentence, b.sentence) in seen or not _same_topic(a, b):
@@ -145,6 +162,39 @@ def detect_conflicts(db: Session, document: Document) -> int:
             found += 1
     db.commit()
     return found
+
+
+def record_published_anyway(db: Session, document: Document, found: list[dict], note: str) -> None:
+    """Keep the conflicts a reviewer published a correction over on the open list (``found`` as
+    returned by flywheel.service.patch_conflicts): until one side is edited or the conflict is
+    marked resolved, answers resting on both sides go to a person."""
+    listed = {frozenset((c.sentence, c.other_sentence)) for c in db.execute(select(KnowledgeConflict).where(
+        KnowledgeConflict.tenant_id == document.tenant_id, KnowledgeConflict.status == "open")).scalars()}
+    chunks = db.execute(select(Chunk).where(Chunk.document_id == document.id)).scalars().all()
+    for item in found:
+        pair = frozenset((item["patch_sentence"], item["existing_sentence"]))
+        if pair in listed:  # detection on ingestion has already listed it
+            continue
+        listed.add(pair)
+        db.add(KnowledgeConflict(
+            tenant_id=document.tenant_id, document_id=document.id,
+            chunk_id=next((c.id for c in chunks if item["patch_sentence"] in c.text), 0),
+            other_document_id=item["document_id"], other_chunk_id=item["chunk_id"],
+            sentence=item["patch_sentence"], other_sentence=item["existing_sentence"],
+            detail=item["detail"], origin=FLYWHEEL, note=note,
+        ))
+    db.commit()
+
+
+def disputed(db: Session, tenant_id: int, texts: list[str]) -> list[KnowledgeConflict]:
+    """Open conflicts with both sides among ``texts``, the knowledge one answer would rest on.
+    Matched by sentence rather than chunk id, so re-indexing a document does not hide them."""
+    if not texts:
+        return []
+    rows = db.execute(select(KnowledgeConflict).where(
+        KnowledgeConflict.tenant_id == tenant_id, KnowledgeConflict.status == "open")).scalars()
+    return [c for c in rows
+            if any(c.sentence in text for text in texts) and any(c.other_sentence in text for text in texts)]
 
 
 def open_conflict_counts(db: Session, tenant_id: int) -> dict[int, int]:

@@ -120,6 +120,7 @@ export default function FlywheelPage() {
           <div className="card-head"><h3>补丁 #{disputed.patch.id} 与现有知识冲突</h3></div>
           <div className="card-pad stack">
             <div className="small">{disputed.reason}</div>
+            <div className="small faint">仍然发布时，这些冲突会列入知识库的待核对清单；核对之前，同时用到两种说法的顾客问题会转人工。</div>
             {disputed.conflicts.map((c, i) => (
               <div key={i} className="json small stack" style={{ gap: 4 }}>
                 <div className="quote"><b>补丁</b> {c.patch_sentence}</div>

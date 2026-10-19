@@ -82,3 +82,68 @@ def test_a_correction_in_other_units_is_caught_and_cannot_certify_itself(client,
     client.post(f"/api/flywheel/patches/{feedback['patch_id']}/apply", json={"acknowledge_conflicts": True}, headers=admin)
     case = next(c for c in client.get("/api/evals/cases", headers=admin).json() if c["id"] == feedback["eval_case_id"])
     assert case["status"] == "candidate", "a disputed correction must not lock itself into the regression gate"
+
+
+def test_a_question_resting_on_both_sides_of_an_open_conflict_goes_to_a_person(client, ask, login):
+    # N-014, the remaining layer: until someone checks which version is right, the agent does not
+    # answer from contradicting knowledge (the evidence check passes each sentence on its own).
+    admin = login("admin@leon.demo")
+    client.post("/api/kb/documents/text", json=CONFLICTING, headers=admin)
+    _, events = ask(login("customer@leon.demo"), "微信退款多久能到账？")
+    final = by_type(events, "final")[0]
+    assert final["status"] == "handoff" and final["text"].startswith("抱歉，这个问题涉及的规定正在核对中")
+    assert "1-2个工作日" not in final["text"] and final["meta"]["citations"] == [], \
+        "the customer is not shown the two versions"
+    trace = client.get(f"/api/runs/{events[0]['run_id']}", headers=admin).json()
+    assert any(s["name"] == "knowledge_conflict" for s in trace["spans"])
+
+    _, events = ask(login("agent@leon.demo"), "微信退款多久能到账？")
+    staff = by_type(events, "final")[0]
+    assert "1-2个工作日" in staff["text"] and "1-3个工作日" in staff["text"], "staff see what to check"
+
+    conflict_id = client.get("/api/kb/conflicts", headers=admin).json()[0]["id"]
+    client.post(f"/api/kb/conflicts/{conflict_id}/resolve", json={"note": "补充说明为准"}, headers=admin)
+    _, events = ask(login("customer@leon.demo"), "微信退款多久能到账？")
+    assert by_type(events, "final")[0]["status"] == "completed", "answered again once resolved"
+
+
+def test_a_correction_published_anyway_stays_on_the_list_until_the_policy_is_edited(client, ask, login):
+    from sqlalchemy import select
+
+    from app.db import new_session
+    from app.models import Document
+    from app.rag.ingest import ingest_document
+    from app.services import get_services
+
+    _, events = ask(login("customer@leon.demo"), "退款多久能到账啊")
+    message_id = by_type(events, "final")[0]["message_id"]
+    feedback = client.post(f"/api/messages/{message_id}/feedback", json={
+        "rating": "correction", "reason_category": "knowledge_outdated", "correction": "退款审核通过后3天内原路到账。",
+    }, headers=login("agent@leon.demo")).json()
+    admin = login("admin@leon.demo")
+    client.post(f"/api/flywheel/patches/{feedback['patch_id']}/apply", json={"acknowledge_conflicts": True}, headers=admin)
+    listed = client.get("/api/kb/conflicts", headers=admin).json()
+    assert {c["origin"] for c in listed} == {"flywheel"} and len(listed) == 2, \
+        "both policy lines it contradicts are on the list, although wording alone does not flag them"
+    _, events = ask(login("customer@leon.demo"), "退款多久能到账啊")
+    assert by_type(events, "final")[0]["status"] == "handoff"
+
+    with new_session() as db:
+        patch_doc = db.execute(select(Document).where(Document.title == "客服纠错知识补丁")).scalar_one()
+        ingest_document(db, tenant_id=patch_doc.tenant_id, title=patch_doc.title, content=patch_doc.content,
+                        embedder=get_services().embedder, source=patch_doc.source, document=patch_doc)
+    assert len(client.get("/api/kb/conflicts", headers=admin).json()) == 2, "re-indexing the patch keeps them"
+
+    with new_session() as db:  # the policy is changed to the corrected rule
+        policy = db.execute(select(Document).where(Document.title == "售后与退款政策")).scalar_one()
+        content = policy.content
+        for sentence in {c["other_sentence"] for c in listed}:
+            assert sentence in content
+            content = content.replace(sentence, "退款审核通过后3天内原路到账。")
+        ingest_document(db, tenant_id=policy.tenant_id, title=policy.title, content=content,
+                        embedder=get_services().embedder, source=policy.source, document=policy)
+    assert client.get("/api/kb/conflicts", headers=admin).json() == []
+    resolved = client.get("/api/kb/conflicts?status_filter=resolved", headers=admin).json()
+    assert len(resolved) == 2 and all("已修改" in c["note"] for c in resolved)
+    _, events = ask(login("customer@leon.demo"), "退款多久能到账啊")
+    assert by_type(events, "final")[0]["status"] == "completed"
