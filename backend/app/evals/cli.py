@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pass rate {m['pass_rate']:.1%} ({run.passed}/{run.total})  "
               f"p50 {m['latency_p50_ms']}ms  p95 {m['latency_p95_ms']}ms  tokens {m['total_tokens']}")
         print("checks:", json.dumps(m["checks"], ensure_ascii=False))
+        print(f"retrieval: hit@1 {m.get('retrieval_hit_at_1')}  mrr {m.get('retrieval_mrr')}")
         if m.get("diff"):
             print("diff vs previous run:", json.dumps(m["diff"], ensure_ascii=False))
         if args.report:

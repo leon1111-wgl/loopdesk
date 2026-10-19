@@ -92,6 +92,20 @@ def _copy_trace(sandbox: Session, db: Session, run_id: str | None) -> None:
         db.add(Span(**data))
 
 
+def retrieval_rank(case: EvalCase, summary: dict) -> int | None:
+    """1-based rank of the first chunk from the expected document in the first search,
+    0 when it was not retrieved, None when the case does not name an expected document."""
+    if not case.expected_doc:
+        return None
+    for event in summary.get("tool_results", []):
+        if event["name"] == "search_knowledge":
+            for rank, hit in enumerate(event["output"].get("results") or [], start=1):
+                if hit["doc"] == case.expected_doc:
+                    return rank
+            return 0
+    return 0
+
+
 def score_case(case: EvalCase, summary: dict) -> tuple[bool, dict, str, list[str]]:
     answer = (summary.get("final") or {}).get("text", "")
     tools = summary.get("tool_calls", [])
@@ -142,6 +156,7 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
     check_totals: dict[str, list[bool]] = defaultdict(list)
     tag_totals: dict[str, list[bool]] = defaultdict(list)
     coverages: list[float] = []
+    ranks: list[int] = []
     passed_count = 0
     for case in cases:
         user = _resolve_user(sandbox, sandbox_tenant, case)
@@ -159,6 +174,9 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
                                                           conversation=conversation, options=options))
         latency = int((time.perf_counter() - started) * 1000)
         passed, checks, answer, tools = score_case(case, summary)
+        rank = retrieval_rank(case, summary)
+        if rank is not None:
+            ranks.append(rank)
         done = summary.get("done") or {}
         tokens += done.get("prompt_tokens", 0) + done.get("completion_tokens", 0)
         cost += done.get("cost", 0.0)
@@ -191,6 +209,9 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
         "checks": {name: rate(values) for name, values in check_totals.items()},
         "by_tag": {tag: rate(values) for tag, values in sorted(tag_totals.items())},
         "avg_evidence_coverage": round(statistics.mean(coverages), 4) if coverages else None,
+        # Ranking quality, reported but not gated: Hit@1 and MRR of the expected document.
+        "retrieval_hit_at_1": round(sum(1 for r in ranks if r == 1) / len(ranks), 4) if ranks else None,
+        "retrieval_mrr": round(sum(1 / r for r in ranks if r) / len(ranks), 4) if ranks else None,
         "latency_p50_ms": _percentile(latencies, 0.5),
         "latency_p95_ms": _percentile(latencies, 0.95),
         "total_tokens": tokens,
