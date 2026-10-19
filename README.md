@@ -167,6 +167,8 @@ LOOPDESK_VERIFIER=llm                   # 真实模型会改写措辞，用 LLM 
 
 **答案缓存基准**（`python -m app.evals.cache_bench`）：10 个 FAQ 问题各问两遍，第二遍 100% 命中缓存，答案与第一遍一致，token 从 8,946 降到 0。p50 延迟从 385ms 降到 1ms，但离线模型带有 20ms 的模拟流式延迟，这个延迟数字只能说明检索和模型调用被跳过了。
 
+**性能基线**（`python -m app.evals.load_bench`，Apple M1 Max、单进程、SQLite、离线模型）：开启 SQLite WAL 后，并发 1 时约 143 RPS（p95 9ms），并发 16 时 p99 从 1.37s 降到 0.75s。瓶颈分析和下一步计划见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。测的是模型以外的平台开销，不代表接入真实模型后的线上表现。
+
 ## 目录结构
 
 ```
@@ -185,7 +187,7 @@ backend/
   seed_data/      演示知识库（Markdown）
   tests/          pytest
 frontend/src/     React 控制台（对话、审批、知识库、链路、飞轮、评测、看板）
-docs/             架构、评测、部署文档
+docs/             架构、评测、部署、性能文档
 ```
 
 ## 技术栈

@@ -16,6 +16,16 @@ _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None
 
 
+def _sqlite_pragmas(conn, _record) -> None:
+    conn.execute("PRAGMA foreign_keys=ON")  # same integrity errors as PostgreSQL
+    if conn.execute("PRAGMA database_list").fetchone()[2]:  # file database, not :memory:
+        # WAL lets readers proceed while one writer commits; with busy_timeout, concurrent
+        # requests wait for the lock instead of failing with "database is locked".
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+
+
 def init_engine(database_url: str) -> Engine:
     """Create the engine once per process. SQLite is the zero-setup default;
     PostgreSQL is used in docker-compose via LOOPDESK_DATABASE_URL."""
@@ -25,7 +35,7 @@ def init_engine(database_url: str) -> Engine:
     if database_url.startswith("sqlite"):
         # SQLite ignores foreign keys unless asked; enforce them so local runs and tests
         # catch the same integrity errors PostgreSQL would.
-        event.listen(_engine, "connect", lambda conn, _record: conn.execute("PRAGMA foreign_keys=ON"))
+        event.listen(_engine, "connect", _sqlite_pragmas)
     _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
     return _engine
 
