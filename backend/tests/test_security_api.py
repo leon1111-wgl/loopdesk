@@ -4,6 +4,7 @@ import pytest
 
 from app.config import Settings
 from app.main import create_app
+from app.seed import DEMO_PASSWORD
 from tests.conftest import _reset_database, by_type
 
 
@@ -70,6 +71,39 @@ def test_login_limit_per_account_ignores_case_and_whitespace(client):
     attempts = [" " * (i % 3) + ("Admin@Leon.Demo" if i % 2 else "admin@leon.demo") for i in range(11)]
     codes = [client.post("/api/auth/login", json={"email": e, "password": "guess"}).status_code for e in attempts]
     assert codes == [401] * 10 + [429]
+
+
+def test_successful_logins_do_not_use_up_the_guessing_budget(client):
+    good = [client.post("/api/auth/login", json={"email": "customer@leon.demo", "password": DEMO_PASSWORD}).status_code
+            for _ in range(15)]
+    assert good == [200] * 15
+    bad = [client.post("/api/auth/login", json={"email": "customer@leon.demo", "password": "guess"}).status_code
+           for _ in range(11)]
+    assert bad == [401] * 10 + [429], "failures still count"
+
+
+def test_rate_limiter_holds_under_a_parallel_burst():
+    import threading
+
+    from fastapi import HTTPException
+
+    from app.security import RateLimiter
+
+    limiter, allowed = RateLimiter(), []
+
+    def attempt():
+        try:
+            limiter.check("login:burst", 10)
+            allowed.append(1)
+        except HTTPException:
+            pass
+
+    threads = [threading.Thread(target=attempt) for _ in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(allowed) == 10
 
 
 @pytest.mark.parametrize("secret", [Settings().jwt_secret, "change-me-to-a-long-random-string-before-deploying",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import threading
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -102,17 +103,31 @@ class RateLimiter:
 
     def __init__(self) -> None:
         self._hits: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()  # sync endpoints run in a thread pool: check-and-record is one step
 
-    def check(self, key: str, limit: int, window: float = 60.0) -> None:
+    def check(self, key: str, limit: int, window: float = 60.0) -> float | None:
+        """Record one hit, or raise 429 if the window is full. Returns the hit, which
+        release() can hand back."""
         if limit <= 0:
+            return None
+        with self._lock:
+            now = time.monotonic()
+            hits = self._hits[key]
+            while hits and now - hits[0] > window:
+                hits.popleft()
+            if len(hits) >= limit:
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试")
+            hits.append(now)
+            return now
+
+    def release(self, key: str, hit: float | None) -> None:
+        if hit is None:
             return
-        now = time.monotonic()
-        hits = self._hits[key]
-        while hits and now - hits[0] > window:
-            hits.popleft()
-        if len(hits) >= limit:
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试")
-        hits.append(now)
+        with self._lock:
+            try:
+                self._hits[key].remove(hit)
+            except ValueError:  # already slid out of the window
+                pass
 
 
 rate_limiter = RateLimiter()

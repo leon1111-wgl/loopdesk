@@ -47,11 +47,17 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)) -> dic
     # the TCP peer: behind a reverse proxy run uvicorn with --proxy-headers and
     # --forwarded-allow-ips=<proxy ip> instead of trusting X-Forwarded-For from anyone.
     client_ip = request.client.host if request.client else "unknown"
-    rate_limiter.check(f"login-ip:{client_ip}", settings.login_attempts_per_ip)
-    rate_limiter.check(f"login:{email}", settings.login_attempts_per_email)
+    ip_key, email_key = f"login-ip:{client_ip}", f"login:{email}"
+    ip_hit = rate_limiter.check(ip_key, settings.login_attempts_per_ip)
+    email_hit = rate_limiter.check(email_key, settings.login_attempts_per_email)
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "邮箱或密码错误")
+    # Only failures use up the budget, so an office behind one NAT or a user on several
+    # devices is not locked out. Every attempt still holds its slot while the (slow)
+    # password check runs, so a burst of parallel guesses cannot slip past the limit.
+    rate_limiter.release(ip_key, ip_hit)
+    rate_limiter.release(email_key, email_hit)
     tenant = db.get(Tenant, user.tenant_id)
     return {"token": create_token(user), "user": user_out(user, tenant)}
 
