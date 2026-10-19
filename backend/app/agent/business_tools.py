@@ -7,6 +7,7 @@ span and strips them before the result reaches the model.
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -135,10 +136,13 @@ def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     if done is not None:  # already executed; the order is "refunding" now, so skip re-validation
         return {"order_id": done.order_id, "amount": done.amount}
     order = _load_order(ctx, _order_id(args))
-    try:
-        amount = round(float(args.get("amount") or order.amount), 2)
+    raw = args.get("amount")
+    try:  # an omitted amount means the full paid amount (see the tool schema); 0 is not "omitted"
+        amount = round(float(order.amount if raw is None or raw == "" else raw), 2)
     except (TypeError, ValueError) as exc:
         raise ToolError("退款金额格式不正确") from exc
+    if not math.isfinite(amount):
+        raise ToolError("退款金额格式不正确")
     if amount <= 0:
         raise ToolError("退款金额必须大于 0")
     if amount > order.amount + 1e-6:
@@ -166,7 +170,8 @@ def _refund_history(ctx: ToolContext, customer_id: int) -> tuple[int, float]:
 
 
 def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> str | None:
-    amount = round(float(args.get("amount") or 0), 2)
+    # args went through _refund_precheck, so "amount" is the amount that would be paid.
+    amount = round(float(args["amount"]), 2)
     limit = ctx.tenant.auto_refund_limit
     if amount > limit:
         return f"超过自动审批额度 ¥{limit:.2f}，需要人工审核"

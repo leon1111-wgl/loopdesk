@@ -66,6 +66,7 @@ class ToolOutcome:
     output: dict[str, Any] = field(default_factory=dict)
     is_error: bool = False
     reason: str = ""
+    arguments: dict[str, Any] | None = None  # normalized arguments a human is asked to approve
 
 
 class AgentRuntime:
@@ -341,13 +342,17 @@ class AgentRuntime:
                 outcome = ToolOutcome("result", {"error": "工具参数不是合法 JSON"}, True)
             else:
                 try:
+                    args = call.arguments
                     if tool.precheck:
-                        tool.precheck(ctx, call.arguments)
-                    reason = tool.approval(ctx, call.arguments) if (tool.approval and ctx.approval_id is None) else None
+                        # The precheck returns the arguments as they would be executed (e.g. an
+                        # omitted refund amount made explicit). The approval policy, the approval
+                        # card and the execution all use them, never the model's raw arguments.
+                        args = {**args, **(tool.precheck(ctx, args) or {})}
+                    reason = tool.approval(ctx, args) if (tool.approval and ctx.approval_id is None) else None
                     if reason:
-                        span.set(approval_required=True, reason=reason)
-                        return ToolOutcome("approval", reason=reason)
-                    output = tool.handler(ctx, call.arguments)
+                        span.set(approval_required=True, reason=reason, arguments=args)
+                        return ToolOutcome("approval", reason=reason, arguments=args)
+                    output = tool.handler(ctx, args)
                     outcome = ToolOutcome("result", output)
                 except ToolError as exc:
                     span.status = "rejected"
@@ -372,7 +377,7 @@ class AgentRuntime:
 
     # ================================================================ pause / finish
     def _pause(self, run, tracer, ctx, state, messages, call, queue, outcome, started):
-        args = call.arguments
+        args = outcome.arguments or call.arguments
         amount = args.get("amount")
         amount_text = f"（¥{float(amount):.2f}）" if amount is not None else ""
         text = (f"您的{TOOL_LABEL.get(call.name, '操作')}申请{amount_text}{outcome.reason}。"
