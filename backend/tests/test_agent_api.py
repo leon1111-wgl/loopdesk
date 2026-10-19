@@ -1,7 +1,11 @@
+import json
+from datetime import timedelta
+
+import pytest
 from sqlalchemy import select
 
 from app.db import new_session
-from app.models import Order, Refund
+from app.models import Approval, Order, Refund, Tenant, User
 from tests.conftest import by_type
 
 
@@ -202,3 +206,61 @@ def test_order_id_glued_to_chinese_is_recognised(ask, login):
     _, events = ask(login("customer@leon.demo"), "我订单SO20261008002到哪了")
     assert [e["name"] for e in by_type(events, "tool_call")] == ["get_order", "track_shipment"]
     assert "AT1402938475" in by_type(events, "final")[0]["text"]
+
+
+# ---------------------------------------------------------------- after-sales windows
+def test_refund_outside_the_after_sales_window_is_refused(ask, login):
+    _, events = ask(login("customer@leon.demo"), "SO20260918011 我要退货退款")  # delivered 30 days ago
+    assert not by_type(events, "approval_required")
+    assert "售后期限" in by_type(events, "final")[0]["text"]
+    with new_session() as db:
+        assert db.get(Order, "SO20260918011").status == "delivered"
+        assert db.execute(select(Refund).where(Refund.order_id == "SO20260918011")).first() is None
+
+
+def test_tool_layer_refuses_an_out_of_window_refund_even_if_the_model_asks(settings, client):
+    # get_order already says "not refundable"; a model that ignores it still cannot move money.
+    from app.agent.business_tools import _refund_precheck
+    from app.agent.tools import ToolContext, ToolError
+
+    with new_session() as db:
+        emma = db.execute(select(User).where(User.email == "customer@leon.demo")).scalar_one()
+        ctx = ToolContext(db=db, settings=settings, tenant=db.get(Tenant, emma.tenant_id), user=emma,
+                          embedder=None, run_id="test", conversation_id=None)
+        with pytest.raises(ToolError, match="超过 15 天的售后期限"):
+            _refund_precheck(ctx, {"order_id": "SO20260918011", "reason": "不想要了"})
+
+
+def test_refund_after_the_no_reason_window_needs_a_human(client, ask, login):
+    # ¥32 is under the ¥50 auto limit, but on day 10 only a quality problem qualifies,
+    # and the tool cannot judge the customer's photos.
+    _, events = ask(login("customer@leon.demo"), "订单 SO20261008010 申请退款")
+    approval = by_type(events, "approval_required")[0]
+    assert "超过 7 天无理由退货期限" in approval["reason"]
+    pending = client.get("/api/approvals", headers=login("admin@leon.demo")).json()
+    window = next(e for e in pending[0]["evidence"] if e["title"] == "after_sales_window")
+    assert json.loads(window["text"])["days_since_delivery"] == 10
+
+
+def test_after_sales_window_is_judged_when_the_customer_asked(client, ask, login):
+    # Filed on day 10, approved six days later on day 16: the review queue must not cost
+    # the customer a refund they were entitled to when they asked.
+    _, events = ask(login("customer@leon.demo"), "订单 SO20261008010 申请退款")
+    approval_id = by_type(events, "approval_required")[0]["approval_id"]
+    with new_session() as db:
+        db.get(Approval, approval_id).created_at -= timedelta(days=6)
+        db.get(Order, "SO20261008010").delivered_at -= timedelta(days=6)
+        db.commit()
+    r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "approve"},
+                    headers=login("admin@leon.demo"))
+    assert r.status_code == 200, r.text
+    assert "已受理" in r.json()["final"]["text"]
+    with new_session() as db:
+        assert db.get(Order, "SO20261008010").status == "refunding"
+
+
+def test_after_sales_windows_are_tenant_configuration(client, ask, login):
+    r = client.patch("/api/tenant", json={"return_window_days": 14}, headers=login("admin@leon.demo"))
+    assert r.json()["return_window_days"] == 14 and r.json()["quality_window_days"] == 15
+    _, events = ask(login("customer@leon.demo"), "订单 SO20261008010 申请退款")
+    assert not by_type(events, "approval_required"), "day 10 is inside a 14-day no-reason window"

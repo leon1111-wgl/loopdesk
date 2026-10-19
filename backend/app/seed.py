@@ -27,6 +27,7 @@ EVAL_DIR = BASE_DIR / "evals"
 TENANTS = [
     {
         "slug": "leon", "name": "Leon优选", "industry": "ecommerce", "auto_refund_limit": 50.0, "ticket_sla_hours": 24,
+        "return_window_days": 7, "quality_window_days": 15,
         "users": [
             ("admin@leon.demo", "Leon", "admin"),
             ("agent@leon.demo", "Mia", "agent"),
@@ -56,36 +57,58 @@ TENANTS = [
 ]
 
 
-def _dt(value: str) -> datetime:
-    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+# Order numbers are fixed strings (eval cases, tests and the docs refer to them), but every
+# timestamp is relative to the moment the data is created: after-sales windows and refund
+# velocity limits are judged against "now", and absolute dates would quietly age every
+# order out of its window. The date inside an order number is therefore just a label.
+_CST = timezone(timedelta(hours=8))
+
+
+def _ago(days: float = 0, hours: float = 0) -> datetime:
+    return datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(days=days, hours=hours)
+
+
+def _event(when: datetime, desc: str) -> dict:
+    return {"time": when.astimezone(_CST).strftime("%Y-%m-%d %H:%M"), "desc": desc}
 
 
 def _orders(customer: User, other: User) -> list[Order]:
     t = customer.tenant_id
     return [
+        # Delivered 3 days ago, small amount: the automatic refund path.
         Order(id="SO20260918001", tenant_id=t, customer_id=customer.id, amount=39.9, status="delivered",
               items=[{"name": "云朵抱枕", "qty": 1, "price": 39.9}],
-              paid_at=_dt("2026-09-18T10:05:00"), delivered_at=_dt("2026-09-20T15:30:00"),
+              paid_at=_ago(5, 2), delivered_at=_ago(3),
               shipment={"carrier": "Orion快递", "tracking_no": "OR7788123401", "events": [
-                  {"time": "2026-09-18 19:02", "desc": "已揽收（杭州）"},
-                  {"time": "2026-09-20 15:30", "desc": "已签收，签收人：本人"}]}),
+                  _event(_ago(4, 16), "已揽收（杭州）"), _event(_ago(3), "已签收，签收人：本人")]}),
         Order(id="SO20261008002", tenant_id=t, customer_id=customer.id, amount=1299.0, status="shipped",
               items=[{"name": "扫地机器人 X1", "qty": 1, "price": 1299.0}],
-              paid_at=_dt("2026-10-08T09:12:00"),
+              paid_at=_ago(2, 5),
               shipment={"carrier": "Atlas快运", "tracking_no": "AT1402938475", "events": [
-                  {"time": "2026-10-08 18:20", "desc": "已揽收（深圳）"},
-                  {"time": "2026-10-09 06:45", "desc": "已到达杭州转运中心"},
-                  {"time": "2026-10-09 14:10", "desc": "派送中，快递员正在派件"}]}),
+                  _event(_ago(1, 20), "已揽收（深圳）"),
+                  _event(_ago(1, 8), "已到达杭州转运中心"),
+                  _event(_ago(0, 3), "派送中，快递员正在派件")]}),
         Order(id="SO20261012003", tenant_id=t, customer_id=customer.id, amount=268.0, status="paid",
-              items=[{"name": "手冲咖啡套装", "qty": 1, "price": 268.0}], paid_at=_dt("2026-10-12T21:40:00")),
+              items=[{"name": "手冲咖啡套装", "qty": 1, "price": 268.0}], paid_at=_ago(0, 10)),
         Order(id="SO20260801004", tenant_id=t, customer_id=customer.id, amount=159.0, status="refunded",
-              items=[{"name": "运动水壶", "qty": 2, "price": 79.5}], paid_at=_dt("2026-08-01T08:00:00"),
-              delivered_at=_dt("2026-08-03T12:00:00")),
+              items=[{"name": "运动水壶", "qty": 2, "price": 79.5}], paid_at=_ago(80), delivered_at=_ago(78)),
+        # Delivered 10 days ago: past the 7-day no-reason window, inside the 15-day quality window.
+        Order(id="SO20261008010", tenant_id=t, customer_id=customer.id, amount=32.0, status="delivered",
+              items=[{"name": "陶瓷马克杯", "qty": 1, "price": 32.0}],
+              paid_at=_ago(12, 3), delivered_at=_ago(10),
+              shipment={"carrier": "Orion快递", "tracking_no": "OR7788125530", "events": [
+                  _event(_ago(11, 18), "已揽收（义乌）"), _event(_ago(10), "已签收，签收人：本人")]}),
+        # Delivered 30 days ago: outside every after-sales window.
+        Order(id="SO20260918011", tenant_id=t, customer_id=customer.id, amount=36.0, status="delivered",
+              items=[{"name": "帆布托特包", "qty": 1, "price": 36.0}],
+              paid_at=_ago(32, 4), delivered_at=_ago(30),
+              shipment={"carrier": "Orion快递", "tracking_no": "OR7788120917", "events": [
+                  _event(_ago(31, 20), "已揽收（苏州）"), _event(_ago(30), "已签收，签收人：本人")]}),
         Order(id="SO20261003005", tenant_id=t, customer_id=other.id, amount=899.0, status="delivered",
               items=[{"name": "降噪耳机 Pro", "qty": 1, "price": 899.0}],
-              paid_at=_dt("2026-10-03T11:11:00"), delivered_at=_dt("2026-10-05T10:00:00"),
+              paid_at=_ago(16, 12), delivered_at=_ago(14, 12),
               shipment={"carrier": "Atlas快运", "tracking_no": "AT1400011122", "events": [
-                  {"time": "2026-10-05 10:00", "desc": "已签收"}]}),
+                  _event(_ago(14, 12), "已签收")]}),
     ]
 
 
@@ -96,17 +119,18 @@ def fixture_orders(tenant_slug: str, users_by_email: dict[str, User]) -> list[Or
         return []
     emma, jack = users_by_email["customer@leon.demo"], users_by_email["customer2@leon.demo"]
     t = emma.tenant_id
+    # Jack's recent small orders; three of them were refunded (see fixture_refunds).
     small = [
-        ("SO20261001006", "解压捏捏乐", 35.0, "refunded"),
-        ("SO20261005007", "桌面收纳盒", 42.0, "refunded"),
-        ("SO20261010008", "便携风扇", 28.0, "refunded"),
-        ("SO20261015009", "蓝牙小音箱", 45.0, "delivered"),
+        ("SO20261001006", "解压捏捏乐", 35.0, "refunded", 8),
+        ("SO20261005007", "桌面收纳盒", 42.0, "refunded", 6),
+        ("SO20261010008", "便携风扇", 28.0, "refunded", 4),
+        ("SO20261015009", "蓝牙小音箱", 45.0, "delivered", 2),
     ]
     extra = [
         Order(id=oid, tenant_id=t, customer_id=jack.id, amount=amount, status=status,
               items=[{"name": name, "qty": 1, "price": amount}],
-              paid_at=_dt("2026-10-01T09:00:00"), delivered_at=_dt("2026-10-03T09:00:00"))
-        for oid, name, amount, status in small
+              paid_at=_ago(delivered_days_ago + 2), delivered_at=_ago(delivered_days_ago))
+        for oid, name, amount, status, delivered_days_ago in small
     ]
     return _orders(emma, jack) + extra
 
@@ -151,7 +175,8 @@ def seed_demo(db: Session, embedder: Embedder) -> bool:
         return False
     for spec in TENANTS:
         tenant = Tenant(slug=spec["slug"], name=spec["name"], industry=spec["industry"],
-                        auto_refund_limit=spec["auto_refund_limit"], ticket_sla_hours=spec["ticket_sla_hours"])
+                        auto_refund_limit=spec["auto_refund_limit"], ticket_sla_hours=spec["ticket_sla_hours"],
+                        **{k: spec[k] for k in ("return_window_days", "quality_window_days") if k in spec})
         db.add(tenant)
         db.flush()
         users = {}

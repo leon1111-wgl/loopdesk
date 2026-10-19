@@ -22,6 +22,8 @@ class LoginIn(BaseModel):
 class TenantPatch(BaseModel):
     auto_refund_limit: float | None = Field(default=None, ge=0, le=100000)
     ticket_sla_hours: int | None = Field(default=None, ge=1, le=168)
+    return_window_days: int | None = Field(default=None, ge=0, le=365)
+    quality_window_days: int | None = Field(default=None, ge=0, le=365)
 
 
 def user_out(user: User, tenant: Tenant) -> dict:
@@ -33,7 +35,8 @@ def user_out(user: User, tenant: Tenant) -> dict:
 
 def tenant_out(tenant: Tenant) -> dict:
     return {"id": tenant.id, "slug": tenant.slug, "name": tenant.name, "industry": tenant.industry,
-            "auto_refund_limit": tenant.auto_refund_limit, "ticket_sla_hours": tenant.ticket_sla_hours}
+            "auto_refund_limit": tenant.auto_refund_limit, "ticket_sla_hours": tenant.ticket_sla_hours,
+            "return_window_days": tenant.return_window_days, "quality_window_days": tenant.quality_window_days}
 
 
 @router.post("/auth/login")
@@ -83,6 +86,10 @@ def patch_tenant(body: TenantPatch, principal: Principal = Depends(require_admin
         tenant.auto_refund_limit = body.auto_refund_limit
     if body.ticket_sla_hours is not None:
         tenant.ticket_sla_hours = body.ticket_sla_hours
+    if body.return_window_days is not None:
+        tenant.return_window_days = body.return_window_days
+    if body.quality_window_days is not None:
+        tenant.quality_window_days = body.quality_window_days
     db.commit()
     return tenant_out(tenant)
 

@@ -31,6 +31,9 @@ class Tenant(Base):
     industry: Mapped[str] = mapped_column(String(64), default="ecommerce")
     auto_refund_limit: Mapped[float] = mapped_column(Float, default=50.0)
     ticket_sla_hours: Mapped[int] = mapped_column(Integer, default=24)
+    # After-sales windows in days since delivery: no-reason returns, then quality problems only.
+    return_window_days: Mapped[int] = mapped_column(Integer, default=7, server_default="7")
+    quality_window_days: Mapped[int] = mapped_column(Integer, default=15, server_default="15")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

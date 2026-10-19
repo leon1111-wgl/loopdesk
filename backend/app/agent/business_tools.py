@@ -13,7 +13,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
-from ..models import Approval, Conversation, Order, Refund, Ticket
+from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket
 from ..rag.retrieval import hybrid_search
 from .tools import ToolContext, ToolDef, ToolError, ToolRegistry
 
@@ -33,6 +33,23 @@ def _order_id(args: dict[str, Any]) -> str:
     if not value:
         raise ToolError("缺少订单号")
     return value
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _days_since_delivery(order: Order, at: datetime) -> int | None:
+    """Whole days since delivery, the unit the policy is written in ("自签收之日起7天内");
+    None while the order has not been delivered (refunding before delivery is not time-limited)."""
+    if order.delivered_at is None:
+        return None
+    return max(0, (at - _as_utc(order.delivered_at)).days)
+
+
+def _last_refund_day(tenant: Tenant) -> int:
+    """After this many days since delivery no refund can be filed online at all."""
+    return max(tenant.return_window_days, tenant.quality_window_days)
 
 
 def _load_order(ctx: ToolContext, order_id: str) -> Order:
@@ -88,6 +105,16 @@ def get_order(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     order = _load_order(ctx, _order_id(args))
     status_text = STATUS_TEXT.get(order.status, order.status)
     refundable = order.status in REFUNDABLE
+    refund_note = "" if refundable else f"该订单当前状态为“{status_text}”，不能重复申请退款"
+    days = _days_since_delivery(order, datetime.now(timezone.utc))
+    if refundable and days is not None:
+        tenant = ctx.tenant
+        if days > _last_refund_day(tenant):
+            refundable = False
+            refund_note = f"订单已签收 {days} 天，超过 {_last_refund_day(tenant)} 天的售后期限"
+        elif days > tenant.return_window_days:
+            refund_note = (f"订单已签收 {days} 天，已超过 {tenant.return_window_days} 天无理由退货期限，"
+                           f"{tenant.quality_window_days} 天内仅质量问题可以退换，提交后需要人工核实")
     return {
         "order_id": order.id,
         "status": order.status,
@@ -96,9 +123,10 @@ def get_order(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         "items": order.items,
         "paid_at": order.paid_at.strftime("%Y-%m-%d"),
         "delivered_at": order.delivered_at.strftime("%Y-%m-%d") if order.delivered_at else None,
+        "days_since_delivery": days,
         "region": order.region,
         "refundable": refundable,
-        "refund_note": "" if refundable else f"该订单当前状态为“{status_text}”，不能重复申请退款",
+        "refund_note": refund_note,
         "summary": f"订单 {order.id} 当前状态为“{status_text}”，订单金额 ¥{order.amount:.2f}",
     }
 
@@ -131,6 +159,14 @@ def _refund_for_approval(ctx: ToolContext) -> Refund | None:
     return ctx.db.execute(select(Refund).where(Refund.approval_id == ctx.approval_id)).scalar_one_or_none()
 
 
+def _application_time(ctx: ToolContext) -> datetime:
+    """When the customer asked. After a human approval the tool runs again, possibly days
+    later; the after-sales window is judged at the request, so a slow review queue cannot
+    push a valid request out of its window."""
+    approval = ctx.db.get(Approval, ctx.approval_id) if ctx.approval_id is not None else None
+    return _as_utc(approval.created_at) if approval is not None else datetime.now(timezone.utc)
+
+
 def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     done = _refund_for_approval(ctx)
     if done is not None:  # already executed; the order is "refunding" now, so skip re-validation
@@ -149,6 +185,12 @@ def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"退款金额 ¥{amount:.2f} 超过订单实付金额 ¥{order.amount:.2f}")
     if order.status not in REFUNDABLE:
         raise ToolError(f"该订单当前状态为“{STATUS_TEXT.get(order.status, order.status)}”，不能发起退款")
+    days = _days_since_delivery(order, _application_time(ctx))
+    if days is not None and days > _last_refund_day(ctx.tenant):
+        # A hard rule, not an approval: the policy leaves nothing to decide. Exceptions
+        # (goodwill, warranty) belong to a human in the back office, not to the agent.
+        raise ToolError(f"订单已签收 {days} 天，超过 {_last_refund_day(ctx.tenant)} 天的售后期限，不能在线申请退款；"
+                        "如有特殊情况，可以转人工客服处理")
     if ctx.approval_id is None:
         pending = ctx.db.execute(select(Approval).where(
             Approval.tenant_id == ctx.tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
@@ -172,32 +214,47 @@ def _refund_history(ctx: ToolContext, customer_id: int) -> tuple[int, float]:
 def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> str | None:
     # args went through _refund_precheck, so "amount" is the amount that would be paid.
     amount = round(float(args["amount"]), 2)
-    limit = ctx.tenant.auto_refund_limit
-    if amount > limit:
-        return f"超过自动审批额度 ¥{limit:.2f}，需要人工审核"
-
-    # Velocity check, counted per customer (not per operator: a support agent filing on
-    # the customer's behalf must not reset the counter). It stops "many small refunds".
     order = ctx.db.get(Order, _order_id(args))
     if order is None:
         return None
-    settings = ctx.settings
-    days = settings.refund_window_days
-    count, total = _refund_history(ctx, order.customer_id)
-    reason = None
-    if count + 1 > settings.refund_window_max_count:
-        reason = (f"因近 {days} 天已有 {count} 笔退款，超过自动审批的次数上限"
-                  f"（{settings.refund_window_max_count} 笔），需要人工审核")
-    elif total + amount > settings.refund_window_max_amount + 1e-6:
-        reason = (f"因近 {days} 天累计退款将达到 ¥{total + amount:.2f}，"
-                  f"超过 ¥{settings.refund_window_max_amount:.2f} 的累计自动审批上限，需要人工审核")
-    if reason:
-        # The reviewer sees the history that triggered the escalation in the evidence package.
-        ctx.add_evidence("tool", "refund_history", json.dumps({
-            "customer_id": order.customer_id, "window_days": days, "refund_count": count,
-            "refund_total": round(total, 2), "this_request": amount,
+    tenant, settings = ctx.tenant, ctx.settings
+    reasons: list[str] = []
+
+    # Between the no-reason and the quality window only a quality problem qualifies, and
+    # the tool cannot look at the customer's photos: a person decides, whatever the amount.
+    days = _days_since_delivery(order, datetime.now(timezone.utc))
+    if days is not None and days > tenant.return_window_days:
+        reasons.append(f"订单已签收 {days} 天，超过 {tenant.return_window_days} 天无理由退货期限，"
+                       f"{tenant.quality_window_days} 天内仅质量问题可以退换")
+        ctx.add_evidence("tool", "after_sales_window", json.dumps({
+            "order_id": order.id, "delivered_at": _as_utc(order.delivered_at).strftime("%Y-%m-%d"),
+            "days_since_delivery": days, "return_window_days": tenant.return_window_days,
+            "quality_window_days": tenant.quality_window_days,
         }, ensure_ascii=False))
-    return reason
+
+    limit = tenant.auto_refund_limit
+    if amount > limit:
+        reasons.append(f"超过自动审批额度 ¥{limit:.2f}")
+    else:
+        # Velocity check, counted per customer (not per operator: a support agent filing on
+        # the customer's behalf must not reset the counter). It stops "many small refunds".
+        window = settings.refund_window_days
+        count, total = _refund_history(ctx, order.customer_id)
+        velocity = None
+        if count + 1 > settings.refund_window_max_count:
+            velocity = (f"近 {window} 天已有 {count} 笔退款，超过自动审批的次数上限"
+                        f"（{settings.refund_window_max_count} 笔）")
+        elif total + amount > settings.refund_window_max_amount + 1e-6:
+            velocity = (f"近 {window} 天累计退款将达到 ¥{total + amount:.2f}，"
+                        f"超过 ¥{settings.refund_window_max_amount:.2f} 的累计自动审批上限")
+        if velocity:
+            reasons.append(velocity)
+            # The reviewer sees the history that triggered the escalation in the evidence package.
+            ctx.add_evidence("tool", "refund_history", json.dumps({
+                "customer_id": order.customer_id, "window_days": window, "refund_count": count,
+                "refund_total": round(total, 2), "this_request": amount,
+            }, ensure_ascii=False))
+    return "；".join(reasons) + "，需要人工审核" if reasons else None
 
 
 def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
