@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { FlaskConical, History, PencilLine, Plus, Send, ShieldAlert, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
-import { Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
+import { CHANNEL_TEXT, Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
 import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, HandoffState, Verification } from "../types";
 
 const SUGGESTIONS: Record<string, [string, string][]> = {
@@ -374,7 +374,7 @@ export default function ChatPage() {
             <div className="row faint" style={{ marginTop: 2 }}>
               {time(c.updated_at)}
               {c.status === "handoff" && <span className="badge badge-info">已转人工</span>}
-              {c.channel !== "web" && <span className="badge">{c.channel}</span>}
+              {c.channel !== "web" && <span className="badge">{CHANNEL_TEXT[c.channel] ?? c.channel}</span>}
             </div>
           </div>
         ))}

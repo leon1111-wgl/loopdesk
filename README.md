@@ -36,6 +36,10 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 <td><img src="docs/assets/retrieval.png" alt="检索调试器"><br><b>检索调试器</b>：BM25 名次、向量名次、RRF 分数、相关度阈值、注入样本屏蔽</td>
 </tr>
 <tr>
+<td><img src="docs/assets/handoffs.png" alt="人工接待"><br><b>人工接待</b>：转人工后 Agent 不再回答，坐席按等待时间接待、回复，处理完把对话交还智能客服</td>
+<td><img src="docs/assets/handoff-customer.png" alt="顾客看到的人工回复"><br><b>顾客端</b>：人工回复单独标注，底部提示当前由谁服务或排在第几位</td>
+</tr>
+<tr>
 <td><img src="docs/assets/dashboard.png" alt="运营看板"><br><b>运营看板</b>：自助解决率、转人工率、证据覆盖率、缓存命中率、Prompt 版本对比，支持导出 CSV</td>
 <td><img src="docs/assets/dashboard-dark.png" alt="深色模式"><br><b>深色模式</b>：跟随系统，也可以手动切换</td>
 </tr>

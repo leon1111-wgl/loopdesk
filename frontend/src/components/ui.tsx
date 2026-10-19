@@ -31,6 +31,8 @@ const RUN_STATUS: Record<string, [string, string]> = {
   archived: ["已归档", ""],
 };
 
+export const CHANNEL_TEXT: Record<string, string> = { web: "网页", feishu: "飞书", api: "API", eval: "评测" };
+
 export function StatusBadge({ status }: { status: string }) {
   const [text, cls] = RUN_STATUS[status] ?? [status, ""];
   return <span className={`badge ${cls}`}>{text}</span>;

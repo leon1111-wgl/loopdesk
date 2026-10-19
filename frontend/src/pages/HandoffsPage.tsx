@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Send, Undo2 } from "lucide-react";
 import { api } from "../api";
-import { Empty, ErrorBanner, time, useLoad } from "../components/ui";
+import { CHANNEL_TEXT, Empty, ErrorBanner, time, useLoad } from "../components/ui";
 import type { ChatMessage, Handoff } from "../types";
-
-const CHANNEL_TEXT: Record<string, string> = { web: "网页", feishu: "飞书", api: "API" };
 
 function waited(seconds: number) {
   if (seconds < 60) return "不到 1 分钟";
