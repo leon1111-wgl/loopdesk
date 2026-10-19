@@ -16,6 +16,7 @@ pgvector / Milvus behind the same interface.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 from collections import Counter, defaultdict
@@ -31,6 +32,8 @@ from ..models import Chunk, Document, Tenant
 from ..textutil import canonical_query, expand_query, tokenize
 
 RRF_K = 60
+logger = logging.getLogger(__name__)
+_width_warned: set[tuple[int, int]] = set()
 MIN_SIMILARITY = 1e-6  # below this a vector score is rounding noise (float32), not similarity
 
 
@@ -119,6 +122,14 @@ class TenantIndex:
 
     def vector(self, qvec: list[float], allowed, k: int) -> list[tuple[int, float]]:
         if self.matrix is None or k <= 0:
+            return []
+        if self.matrix.shape[1] != len(qvec):
+            # The embedding model changed and the documents were not re-indexed yet: the product
+            # is undefined, and old and new vectors are not comparable anyway. BM25 still answers.
+            if (self.matrix.shape[1], len(qvec)) not in _width_warned:
+                _width_warned.add((self.matrix.shape[1], len(qvec)))
+                logger.warning("stored vectors have %d dimensions, the query has %d: re-index the documents",
+                               self.matrix.shape[1], len(qvec))
             return []
         scores = self.matrix @ np.asarray(qvec, dtype=np.float32)
         scores[~np.isin(self.visibility, list(allowed))] = -np.inf

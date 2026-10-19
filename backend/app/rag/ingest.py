@@ -112,8 +112,10 @@ def edit_document(db: Session, document: Document, *, title: str, content: str, 
 
 
 def delete_document(db: Session, document: Document) -> None:
-    db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    # The tenant row first, like every path that also touches conflicts (resolving one takes the
+    # tenant row for its audit number): one lock order, no deadlock on PostgreSQL.
     _bump_kb_version(db, document.tenant_id)
+    db.execute(delete(Chunk).where(Chunk.document_id == document.id))
     db.execute(delete(KnowledgeConflict).where(
         (KnowledgeConflict.document_id == document.id) | (KnowledgeConflict.other_document_id == document.id)))
     tenant_id = document.tenant_id

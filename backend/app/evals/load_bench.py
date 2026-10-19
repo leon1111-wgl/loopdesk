@@ -68,6 +68,7 @@ def _start_server(database_url: str, workers: int, cache_hours: float,
         "LOOPDESK_DATABASE_URL": database_url,
         "LOOPDESK_SEED_DEMO": "0",  # seeded by _prepare_database; non-demo mode needs a real secret
         "LOOPDESK_JWT_SECRET": secrets.token_urlsafe(48),
+        "LOOPDESK_AUDIT_KEY": secrets.token_urlsafe(48),  # non-demo mode wants its own audit key too
         "LOOPDESK_SEED_DEMO_TRAFFIC": "0",
         "LOOPDESK_RATE_LIMIT_PER_MINUTE": "1000000",
         "LOOPDESK_MOCK_STREAM_DELAY": "0",

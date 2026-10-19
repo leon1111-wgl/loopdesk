@@ -78,7 +78,8 @@ interface Integrity {
 }
 
 function IntegrityNotice() {
-  const { data } = useLoad(() => api.get<Integrity>("/api/audit/verify"));
+  const { data, error } = useLoad(() => api.get<Integrity>("/api/audit/verify"));
+  if (error) return <div className="error-banner" role="alert">无法完成完整性校验：{error}</div>;
   if (!data) return null;
   if (data.ok) {
     return (
@@ -91,7 +92,10 @@ function IntegrityNotice() {
     <div className="error-banner" role="alert">
       完整性校验未通过：{data.altered.length ? `${data.altered.length} 条记录内容与签名不符` : ""}
       {data.altered.length && data.missing.length ? "，" : ""}
-      {data.missing.length ? `缺少编号 ${data.missing.join("、")}` : ""}。审计记录可能被直接改动过数据库。
+      {data.missing.length ? `缺少编号 ${data.missing.join("、")}` : ""}
+      {(data.altered.length || data.missing.length) && data.unsigned ? "，" : ""}
+      {data.unsigned ? `${data.unsigned} 条记录没有签名（升级前的旧记录可由运维补签一次；否则说明有人直接写过审计表）` : ""}。
+      审计记录可能被直接改动过数据库。
     </div>
   );
 }

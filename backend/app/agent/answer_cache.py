@@ -43,8 +43,8 @@ def normalize_question(text: str) -> str:
 
 def config_fingerprint(settings: Settings, prompt_version: str = DEFAULT_PROMPT_VERSION) -> str:
     raw = "|".join([settings.llm_provider, settings.llm_model_strong, settings.llm_model_fast,
-                    settings.embedding_provider, str(settings.min_relevance), prompt_version,
-                    PROMPT_VERSIONS.get(prompt_version, "")])
+                    settings.embedding_provider, settings.embedding_model or "", str(settings.embedding_dim),
+                    str(settings.min_relevance), prompt_version, PROMPT_VERSIONS.get(prompt_version, "")])
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 

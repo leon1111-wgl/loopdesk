@@ -287,3 +287,72 @@ def test_a_document_edit_does_not_stall_the_tenants_chats_on_postgresql(settings
     finally:
         release.set()
         editor.join()
+
+
+def test_a_resolved_pair_does_not_hide_the_same_sentence_in_another_document(client, login):
+    # Code review: resolved pairs were remembered by sentence text only. Once the supplement's
+    # conflict with the policy was resolved, the same sentence in a different document was never
+    # flagged again after a re-index, and questions resting on both sides were answered.
+    admin = login("admin@leon.demo")
+    client.post("/api/kb/documents/text", json=CONFLICTING, headers=admin)
+    conflict_id = client.get("/api/kb/conflicts", headers=admin).json()[0]["id"]
+    client.post(f"/api/kb/conflicts/{conflict_id}/resolve", json={"note": "补充说明为准"}, headers=admin)
+    notice = client.post("/api/kb/documents/text", headers=admin, json={
+        "title": "门店公告", "content": "## 到账\n- 微信支付、支付宝退款预计1-2个工作日到账。"}).json()
+    assert notice["conflicts"] == 1, "a new document with the same sentence is a new conflict"
+    policy = next(d for d in client.get("/api/kb/documents", headers=admin).json() if d["title"] == "售后与退款政策")
+    current = client.get(f"/api/kb/documents/{policy['id']}", headers=admin).json()
+    client.put(f"/api/kb/documents/{policy['id']}", headers=admin, json={
+        "title": current["title"], "content": current["content"] + "\n\n如有疑问请联系客服。",
+        "visibility": current["visibility"], "version": current["version"]})
+    open_conflicts = client.get("/api/kb/conflicts", headers=admin).json()
+    assert [c["document"]["title"] for c in open_conflicts] == ["门店公告"] or \
+        [c["other_document"]["title"] for c in open_conflicts] == ["门店公告"]
+
+
+def _write_order(run):
+    """The tables written by ``run``, in statement order (= row-lock order on PostgreSQL)."""
+    import re
+
+    from sqlalchemy import event
+
+    from app.db import get_engine
+
+    written = []
+
+    def note(conn, cursor, statement, *args):
+        m = re.match(r"\s*(UPDATE|DELETE FROM|INSERT INTO)\s+(\w+)", statement)
+        if m:
+            written.append(m.group(2))
+
+    event.listen(get_engine(), "before_cursor_execute", note)
+    try:
+        run()
+    finally:
+        event.remove(get_engine(), "before_cursor_execute", note)
+    return written
+
+
+def test_paths_that_touch_conflicts_lock_the_tenant_row_first(client, login):
+    # Code review: deleting a document locked the tenant row (knowledge version) and then the
+    # conflict rows, while resolving a conflict locked the conflict row and then the tenant row
+    # (audit number): opposite orders, a deadlock on PostgreSQL. Every path now takes the tenant
+    # row first.
+    from app.db import new_session
+    from app.models import Document
+    from app.rag.ingest import delete_document
+
+    admin = login("admin@leon.demo")
+    doc = client.post("/api/kb/documents/text", json=CONFLICTING, headers=admin).json()
+    conflict_id = client.get("/api/kb/conflicts", headers=admin).json()[0]["id"]
+
+    resolve = _write_order(lambda: client.post(f"/api/kb/conflicts/{conflict_id}/resolve", json={}, headers=admin))
+    assert resolve.index("tenants") < resolve.index("knowledge_conflicts")
+    assert client.post(f"/api/kb/conflicts/{conflict_id}/resolve", json={}, headers=admin).status_code == 409
+
+    def delete():
+        with new_session() as db:
+            delete_document(db, db.get(Document, doc["id"]))
+
+    removal = _write_order(delete)
+    assert removal[0] == "tenants", removal

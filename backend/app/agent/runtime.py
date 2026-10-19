@@ -318,6 +318,8 @@ class AgentRuntime:
                 if outcome.kind == "approval":
                     yield from self._pause(run, tracer, ctx, state, messages, call, queue, outcome, started)
                     return
+                if outcome.is_error:  # an answer built around a failed tool is never cached
+                    state["tool_errors"] = state.get("tool_errors", 0) + 1
                 messages.append(self._tool_message(call, outcome))
                 yield {"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
                        "is_error": outcome.is_error}
@@ -541,7 +543,7 @@ class AgentRuntime:
             status = "handoff" if "handoff_to_human" in tools_used else "completed"
         cache_key = state.get("cache_key")
         if (cache_key and status == "completed" and verification is not None and verification.verdict == "pass"
-                and tools_used and set(tools_used) == {"search_knowledge"}):
+                and tools_used and set(tools_used) == {"search_knowledge"} and not state.get("tool_errors")):
             answer_cache.store(self.db, answer_cache.CacheKey(**cache_key), final_text,
                                {"evidence": [e.to_dict() for e in ctx.evidence], "verification": verification.to_dict()},
                                self.settings.answer_cache_ttl_hours)

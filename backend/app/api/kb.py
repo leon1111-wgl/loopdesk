@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..audit import changes, record, text_diff
@@ -192,11 +192,17 @@ def resolve_conflict(conflict_id: int, body: ResolveIn, principal: Principal = D
     from datetime import datetime, timezone
 
     conflict = get_owned(db, KnowledgeConflict, conflict_id, principal.tenant.id)
-    conflict.status = "resolved"
-    conflict.note = body.note
-    conflict.resolved_by = principal.user.id
-    conflict.resolved_at = datetime.now(timezone.utc)
+    # The audit entry takes the tenant row before the conflict row is touched: deleting a
+    # document locks them in that order too.
     record(db, principal, "kb.conflict.resolve", f"conflict:{conflict.id}", sentence=conflict.sentence,
            other_sentence=conflict.other_sentence, note=body.note)
+    resolved = db.execute(
+        update(KnowledgeConflict).where(KnowledgeConflict.id == conflict.id, KnowledgeConflict.status == "open")
+        .values(status="resolved", note=body.note, resolved_by=principal.user.id,
+                resolved_at=datetime.now(timezone.utc)).execution_options(synchronize_session=False)
+    ).rowcount
+    if resolved != 1:  # resolved by someone else, or its document was deleted meanwhile
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "该冲突已处理或已不存在")
     db.commit()
-    return {"id": conflict.id, "status": conflict.status}
+    return {"id": conflict.id, "status": "resolved"}

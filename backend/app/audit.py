@@ -78,11 +78,15 @@ def verify(db: Session, tenant_id: int) -> dict[str, Any]:
     """Recompute every entry's MAC and check that the numbers run 1..last without gaps."""
     last = db.execute(select(Tenant.audit_seq).where(Tenant.id == tenant_id)).scalar_one()
     entries = db.execute(select(AuditLog).where(AuditLog.tenant_id == tenant_id).order_by(AuditLog.id)).scalars().all()
-    signed = [e for e in entries if e.seq is not None]
-    altered = [e.id for e in signed if not hmac.compare_digest(e.mac or "", _mac(e))]
+    signed = [e for e in entries if e.seq is not None and e.mac]
+    # Bytes, not str: compare_digest raises on a non-ASCII str, which a forged value can be.
+    altered = [e.id for e in signed if not hmac.compare_digest(e.mac.encode(), _mac(e).encode())]
     missing = sorted(set(range(1, last + 1)) - {e.seq for e in signed})
-    return {"ok": not altered and not missing, "entries": len(entries), "last_seq": last,
-            "altered": altered, "missing": missing, "unsigned": len(entries) - len(signed)}
+    unsigned = len(entries) - len(signed)
+    # An unsigned entry is never fine: anyone with database access can add one. Entries written
+    # before signing existed are signed once with python -m app.ops.audit_backfill.
+    return {"ok": not altered and not missing and not unsigned, "entries": len(entries), "last_seq": last,
+            "altered": altered, "missing": missing, "unsigned": unsigned}
 
 
 def changes(before: dict[str, Any], after: dict[str, Any]) -> dict[str, list[Any]]:

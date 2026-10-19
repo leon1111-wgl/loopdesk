@@ -123,7 +123,14 @@ def detect_conflicts(db: Session, document: Document) -> int:
     what the corrected answer cited, which wording alone cannot reproduce. It stays open while
     the document still contains its sentence and closes itself when an edit removes it."""
     chunks = db.execute(select(Chunk).where(Chunk.document_id == document.id)).scalars().all()
-    seen: set[tuple[str, str]] = set()
+    # Pairs are (document, sentence) on both sides: the same sentence in another document is
+    # another conflict, even if this pair was resolved.
+    seen: set[tuple[int, str, int, str]] = set()
+
+    def remember(c: KnowledgeConflict) -> None:
+        seen.update({(c.document_id, c.sentence, c.other_document_id, c.other_sentence),
+                     (c.other_document_id, c.other_sentence, c.document_id, c.sentence)})
+
     for conflict in db.execute(select(KnowledgeConflict).where(
         KnowledgeConflict.status == "open",
         or_(KnowledgeConflict.document_id == document.id, KnowledgeConflict.other_document_id == document.id),
@@ -133,7 +140,7 @@ def detect_conflicts(db: Session, document: Document) -> int:
             continue
         own = conflict.sentence if conflict.document_id == document.id else conflict.other_sentence
         if any(own in chunk.text for chunk in chunks):
-            seen.update({(conflict.sentence, conflict.other_sentence), (conflict.other_sentence, conflict.sentence)})
+            remember(conflict)
         else:
             conflict.status, conflict.note = "resolved", "文档已修改，冲突的句子已不存在"
             conflict.resolved_at = datetime.now(timezone.utc)
@@ -143,7 +150,7 @@ def detect_conflicts(db: Session, document: Document) -> int:
         KnowledgeConflict.status == "resolved",
         or_(KnowledgeConflict.document_id == document.id, KnowledgeConflict.other_document_id == document.id),
     )).scalars():
-        seen.update({(conflict.sentence, conflict.other_sentence), (conflict.other_sentence, conflict.sentence)})
+        remember(conflict)
     mine = [c for chunk in chunks if not chunk.flagged_injection for c in extract_claims(chunk)]
     if not mine:
         db.commit()
@@ -155,12 +162,13 @@ def detect_conflicts(db: Session, document: Document) -> int:
     found = 0
     for a in mine:
         for b in others:
-            if (a.sentence, b.sentence) in seen or not _same_topic(a, b):
+            pair = (a.document_id, a.sentence, b.document_id, b.sentence)
+            if pair in seen or not _same_topic(a, b):
                 continue
             detail = conflicting_dimensions(a, b)
             if not detail:
                 continue
-            seen.add((a.sentence, b.sentence))
+            seen.add(pair)
             db.add(KnowledgeConflict(
                 tenant_id=document.tenant_id, document_id=a.document_id, chunk_id=a.chunk_id,
                 other_document_id=b.document_id, other_chunk_id=b.chunk_id,
@@ -175,11 +183,12 @@ def record_published_anyway(db: Session, document: Document, found: list[dict], 
     """Keep the conflicts a reviewer published a correction over on the open list (``found`` as
     returned by flywheel.service.patch_conflicts): until one side is edited or the conflict is
     marked resolved, answers resting on both sides go to a person."""
-    listed = {frozenset((c.sentence, c.other_sentence)) for c in db.execute(select(KnowledgeConflict).where(
-        KnowledgeConflict.tenant_id == document.tenant_id, KnowledgeConflict.status == "open")).scalars()}
+    listed = {frozenset({(c.document_id, c.sentence), (c.other_document_id, c.other_sentence)})
+              for c in db.execute(select(KnowledgeConflict).where(
+                  KnowledgeConflict.tenant_id == document.tenant_id, KnowledgeConflict.status == "open")).scalars()}
     chunks = db.execute(select(Chunk).where(Chunk.document_id == document.id)).scalars().all()
     for item in found:
-        pair = frozenset((item["patch_sentence"], item["existing_sentence"]))
+        pair = frozenset({(document.id, item["patch_sentence"]), (item["document_id"], item["existing_sentence"])})
         if pair in listed:  # detection on ingestion has already listed it
             continue
         listed.add(pair)

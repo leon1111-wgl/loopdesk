@@ -201,9 +201,14 @@ function ConflictsCard({ admin, onChange }: { admin: boolean; onChange: () => vo
   const { data, reload } = useLoad(() => api.get<Conflict[]>("/api/kb/conflicts"));
   if (!data || data.length === 0) return null;
   async function resolve(id: number) {
-    await api.post(`/api/kb/conflicts/${id}/resolve`, { note: "已核对" });
-    reload();
-    onChange();
+    try {
+      await api.post(`/api/kb/conflicts/${id}/resolve`, { note: "已核对" });
+    } catch {
+      // 409: another administrator resolved it, or its document was deleted; the reload shows that
+    } finally {
+      reload();
+      onChange();
+    }
   }
   return (
     <div className="card">

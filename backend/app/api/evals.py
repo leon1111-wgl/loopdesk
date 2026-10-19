@@ -57,10 +57,11 @@ def update_case(case_id: int, body: CasePatch, principal: Principal = Depends(re
     case = get_owned(db, EvalCase, case_id, principal.tenant.id)
     updates = body.model_dump(exclude_none=True)
     diff = changes({field: getattr(case, field) for field in updates}, updates)
+    if diff:  # the regression gate is a release control: who loosened it, and how
+        # Recorded before the case row is changed: the tenant row is locked first on every path.
+        record(db, principal, "eval.case.update", f"eval_case:{case.id}", key=case.key, changes=diff)
     for field, value in updates.items():
         setattr(case, field, value)
-    if diff:  # the regression gate is a release control: who loosened it, and how
-        record(db, principal, "eval.case.update", f"eval_case:{case.id}", key=case.key, changes=diff)
     db.commit()
     return case_out(case)
 

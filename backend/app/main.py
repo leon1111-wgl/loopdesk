@@ -46,9 +46,18 @@ def check_jwt_secret(settings: Settings) -> None:
     logger.warning("%s。演示模式继续启动，部署前务必更换并设置 LOOPDESK_SEED_DEMO=0。", message)
 
 
+def check_audit_key(settings: Settings) -> None:
+    """Production keeps the audit signing key apart from the JWT secret (see app/audit.py)."""
+    problem = settings.audit_key_problem()
+    if problem and not settings.seed_demo:
+        raise RuntimeError(f"LOOPDESK_AUDIT_KEY {problem}。生产配置（LOOPDESK_SEED_DEMO=0）拒绝启动："
+                           "请设置一个独立的、至少 32 字节的随机字符串，并和数据库分开保管")
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     check_jwt_secret(settings)
+    check_audit_key(settings)
     set_settings(settings)
     init_engine(settings.database_url)
     prepare_database(settings.database_url, settings.auto_migrate)

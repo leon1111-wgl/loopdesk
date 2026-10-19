@@ -125,7 +125,17 @@ def test_demo_config_starts_but_warns_about_the_default_jwt_secret(settings, cap
 def test_production_config_starts_with_a_strong_secret(settings):
     _reset_database(settings.database_url)
     settings.seed_demo = False  # the fixture's secret is 36 random-looking bytes
+    settings.audit_key = "another-independent-audit-key-of-32-bytes!"
     assert create_app(settings).title == "LoopDesk API"
+
+
+@pytest.mark.parametrize("key", [None, "short", "test-secret-with-at-least-32-bytes!!"])
+def test_production_config_refuses_a_missing_weak_or_shared_audit_key(settings, key):
+    # Code review: derived from the JWT secret, rotating that secret made every past audit entry
+    # fail verification under a "the database may have been changed" banner.
+    settings.seed_demo, settings.audit_key = False, key
+    with pytest.raises(RuntimeError, match="LOOPDESK_AUDIT_KEY"):
+        create_app(settings)
 
 
 def test_upload_validation(client, login):

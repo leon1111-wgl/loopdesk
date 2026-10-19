@@ -83,3 +83,28 @@ def test_overview_reports_cache_hit_rate(client, ask, login):
     ask(customer, "退款多久能到账？")
     overview = client.get("/api/metrics/overview", headers=login("admin@leon.demo")).json()
     assert overview["cache_hits"] == 1 and overview["cache_hit_rate"] == 0.5
+
+
+def test_an_answer_given_after_a_failed_search_is_not_cached(client, ask, login, monkeypatch):
+    # Code review: when search_knowledge failed (an exception in retrieval), the agent answered
+    # "知识库中没有找到…", the run passed verification and the refusal was cached for a day.
+    from app.agent import business_tools
+
+    def broken(*args, **kwargs):
+        raise ValueError("matmul: dimension mismatch")
+
+    customer = login("customer@leon.demo")
+    monkeypatch.setattr(business_tools, "hybrid_search", broken)
+    ask(customer, "退款多久能到账？")
+    monkeypatch.undo()
+    _, again = ask(customer, "退款多久能到账？")
+    assert _done(again)["route_tier"] != "cache", "the refusal from a failed search was replayed"
+    assert "1-3个工作日" in by_type(again, "final")[0]["text"]
+
+
+def test_a_different_embedding_model_does_not_reuse_cached_answers(settings):
+    from app.agent.answer_cache import config_fingerprint
+
+    before = config_fingerprint(settings)
+    settings.embedding_dim = 1024
+    assert config_fingerprint(settings) != before

@@ -135,3 +135,54 @@ def test_concurrent_entries_get_distinct_numbers_without_gaps(client, login):
         tenant_id = db.query(Tenant).filter_by(slug="leon").one().id
         report = verify(db, tenant_id)
     assert report["ok"] and report["last_seq"] == 6 and report["entries"] == 6
+
+
+def test_an_unsigned_or_garbled_entry_fails_verification_instead_of_passing_or_crashing(client, login):
+    # Code review: verify() ignored entries without seq/mac (a fabricated one passed as "written
+    # before signing"), and a non-ASCII stored MAC made compare_digest raise, so /verify was a 500.
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select, update
+
+    from app.db import new_session
+    from app.models import AuditLog, Tenant
+
+    admin = login("admin@leon.demo")
+    _three_changes(client, admin)
+    with new_session() as db:
+        tenant_id = db.execute(select(Tenant.id).where(Tenant.slug == "leon")).scalar_one()
+        db.add(AuditLog(tenant_id=tenant_id, actor_id=None, action="tenant.update", target="tenant:1",
+                        detail={"changes": {}}, request_id="", created_at=datetime.now(timezone.utc)))
+        db.commit()
+    report = client.get("/api/audit/verify", headers=admin).json()
+    assert report["ok"] is False and report["unsigned"] == 1
+    with new_session() as db:
+        first = db.execute(select(AuditLog).where(AuditLog.seq == 1)).scalar_one()
+        db.execute(update(AuditLog).where(AuditLog.id == first.id).values(mac="é" * 64))
+        db.commit()
+    r = client.get("/api/audit/verify", headers=admin)
+    assert r.status_code == 200 and first.id in r.json()["altered"]
+
+
+def test_entries_from_before_signing_can_be_signed_once_by_an_operator(client, login):
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from app.db import new_session
+    from app.models import AuditLog, Tenant
+    from app.ops.audit_backfill import sign_unsigned
+
+    admin = login("admin@leon.demo")
+    with new_session() as db:  # written by a version without signing
+        tenant_id = db.execute(select(Tenant.id).where(Tenant.slug == "leon")).scalar_one()
+        db.add(AuditLog(tenant_id=tenant_id, actor_id=None, action="tenant.update", target="tenant:1",
+                        detail={"changes": {"auto_refund_limit": [50, 80]}}, request_id="",
+                        created_at=datetime.now(timezone.utc)))
+        db.commit()
+    _three_changes(client, admin)
+    assert client.get("/api/audit/verify", headers=admin).json()["unsigned"] == 1
+    with new_session() as db:
+        assert sign_unsigned(db) == 1
+    report = client.get("/api/audit/verify", headers=admin).json()
+    assert report["ok"] and report["last_seq"] == 4 and report["unsigned"] == 0

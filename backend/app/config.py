@@ -216,6 +216,18 @@ class Settings:
             return "短于 32 字节"
         return None
 
+    def audit_key_problem(self) -> str | None:
+        """Why the audit HMAC key is unfit for production, or None. Derived from the JWT secret, it
+        would turn rotating that secret (to end every session, or when leaving the demo) into
+        every past audit entry failing verification."""
+        if not self.audit_key:
+            return "未设置（会从 JWT 密钥派生，轮换 JWT 密钥后所有旧审计记录都会校验失败）"
+        if len(self.audit_key.encode()) < 32:
+            return "短于 32 字节"
+        if self.audit_key == self.jwt_secret:
+            return "与 JWT 密钥相同"
+        return None
+
     def price_for(self, model: str) -> tuple[float, float]:
         return self.prices.get(model, (0.0, 0.0))
 

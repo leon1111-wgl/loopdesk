@@ -237,3 +237,21 @@ def test_every_worker_sees_a_knowledge_change_through_one_cheap_lookup(client, l
     client.delete(f"/api/kb/documents/{doc['id']}", headers=admin)
     with new_session() as db:
         assert other_worker.get(db, tenant_id).n == before.n
+
+
+def test_a_query_vector_of_another_width_falls_back_to_bm25(client):
+    # Code review: after switching the embedding model without re-indexing, the matrix product
+    # raised on every search (500 on /api/kb/search; the chat tool failed). The old loop simply
+    # mis-scored. Vector scores are skipped until the documents are re-indexed; BM25 still answers.
+    from sqlalchemy import select
+
+    from app.db import new_session
+    from app.models import Tenant
+    from app.rag.embeddings import HashingEmbedder
+    from app.rag.retrieval import hybrid_search
+
+    with new_session() as db:
+        tenant = db.execute(select(Tenant).where(Tenant.slug == "leon")).scalar_one()
+        hits, debug = hybrid_search(db, tenant.id, "退款多久能到账", HashingEmbedder(1024), {"public"}, top_k=4)
+    assert hits and debug.vector == [] and debug.bm25
+    assert any("工作日" in h.text for h in hits)

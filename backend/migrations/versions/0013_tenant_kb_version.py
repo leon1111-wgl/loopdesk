@@ -4,8 +4,10 @@ Revision ID: 0013
 Revises: 0012
 Create Date: 2026-10-20 05:50:00
 
-Starting from 0 is safe: indexes and cached answers from before the upgrade belong to running
-processes that restart with it.
+Starting from 0 is safe: retrieval indexes live in each process and are rebuilt after the
+restart, and answers cached in the database under the old signature (count:max:sum) can never
+match the new one. Do not let pre-0013 code write to the knowledge base after this upgrade:
+it changes chunks without bumping the version (see docs/DEPLOYMENT.md).
 """
 
 from __future__ import annotations

@@ -33,6 +33,11 @@ docker compose up --build
 - `/api/ready`：就绪检查，确认数据库可连接、表结构已经迁移到最新版本、检索索引已在后台预热完成，否则返回 503。预热让重启后的第一位顾客不必等索引构建（5 万片段约 9 秒）；`LOOPDESK_PREWARM_INDEX=0` 可以关闭，关闭后第一次检索时构建。Dockerfile 中的 `HEALTHCHECK` 和 Kubernetes 的 readinessProbe 都应该指向它。
 - 每个响应都带 `X-Request-ID`。用户报障时只要提供这个 ID，就可以在日志中找到对应的请求，在链路追踪中找到对应的 Agent 运行（trace 详情里会显示 request_id）。
 
+## 升级注意
+
+- **迁移 0013（知识版本号）之后，不要让旧版本的实例继续写知识库**：旧版本改片段时不会更新租户的知识版本号，新版本的实例会一直使用旧的检索索引和答案缓存，直到下一次版本号变化。升级时先停掉旧实例（或者升级期间暂停知识库编辑和补丁发布），再启动新版本。
+- **迁移 0015（审计签名）之后**，升级前已有的审计记录没有签名，完整性校验会报“未签名”。升级后运行一次 `python -m app.ops.audit_backfill` 补签；之后再出现的未签名记录说明有人直接写过审计表，不要补签。
+
 ## 渠道消息补偿
 
 ```bash
@@ -91,7 +96,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 | `REFUND_WINDOW_DAYS` / `REFUND_WINDOW_MAX_COUNT` / `REFUND_WINDOW_MAX_AMOUNT` | `30` / `3` / `200` | 累计退款风控：窗口天数内同一顾客的退款笔数或累计金额超过上限时，小额退款也转人工审核 |
 | `RUN_DEADLINE_SECONDS` | `90` | 整次运行的时间预算（所有步骤、两档模型、所有重试加起来）。每一步开始前检查；模型调用的超时被压到剩余时间，过了期限不再重试。超时后转人工（建工单、告知排队位次），链路里记录 `run_deadline`。设为 0 关闭 |
 | `OTLP_ENDPOINT` / `OTLP_SERVICE_NAME` | — / `loopdesk` | 设置后，每次运行结束时以 OpenTelemetry trace 导出到这个 OTLP/HTTP 地址（例如 `http://otel-collector:4318/v1/traces`），按 GenAI 语义约定命名；只导出元数据，不含问题、回答和工具参数 |
-| `AUDIT_KEY` | 由 `JWT_SECRET` 派生 | 审计记录的 HMAC 签名密钥。生产环境请单独设置，并和数据库分开保管：能写数据库的人不应同时拿到它，否则签名就失去意义。更换密钥后，旧记录会校验失败（暂不支持轮换） |
+| `AUDIT_KEY` | 演示模式下由 `JWT_SECRET` 派生 | 审计记录的 HMAC 签名密钥。生产配置（`SEED_DEMO=0`）下必须单独设置、至少 32 字节、不能和 JWT 密钥相同，否则拒绝启动：从 JWT 密钥派生的话，轮换 JWT 密钥会让所有旧记录校验失败。请和数据库分开保管：能写数据库的人不应同时拿到它。更换密钥后旧记录会校验失败（暂不支持轮换） |
 | `TRACE_WRITES` | `auto` | 链路写入方式：`auto` 在 PostgreSQL 上批量写（运行结束、暂停审批、出错时一次写入，同次实测吞吐 +39%–47%），在 SQLite 上每个 span 完成即提交；也可以显式设为 `per_span` 或 `buffered`。批量模式下，运行中的链路要等运行结束才能看到 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN` | — | 飞书机器人 |
 | `WECOM_WEBHOOK_KEY` | — | 企业微信群机器人（审批提醒） |
