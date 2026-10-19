@@ -81,6 +81,7 @@ class Settings:
     llm_model_fast: str = "mock-fast"
     llm_model_strong: str = "mock-strong"
     llm_timeout: float = 60.0
+    run_deadline_seconds: float = 90.0  # whole run (all steps, retries, both model tiers); 0 disables
     llm_stream_usage: bool = True  # send stream_options.include_usage (disable if a vendor rejects it)
     anthropic_effort: str = "low"
     mock_stream_delay: float = 0.0  # seconds between streamed chunks of the mock model
@@ -150,6 +151,7 @@ class Settings:
         s.llm_model_strong = _env("LLM_MODEL_STRONG", default_strong)
         s.llm_model_fast = _env("LLM_MODEL_FAST", default_fast if s.llm_provider in ("mock", "anthropic") else s.llm_model_strong)
         s.llm_timeout = _env_float("LLM_TIMEOUT", s.llm_timeout)
+        s.run_deadline_seconds = _env_float("RUN_DEADLINE_SECONDS", s.run_deadline_seconds)
         s.llm_stream_usage = _env_bool("LLM_STREAM_USAGE", s.llm_stream_usage)
         s.anthropic_effort = _env("ANTHROPIC_EFFORT", s.anthropic_effort)
         s.mock_stream_delay = _env_float("MOCK_STREAM_DELAY", s.mock_stream_delay)

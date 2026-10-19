@@ -187,3 +187,16 @@ def test_a_model_refusal_hands_over_too(ask, login, monkeypatch):
     assert by_type(events, "final")[0]["status"] == "handoff"
     with new_session() as db:
         assert _handoffs(db, conversation_id) == 1
+
+
+def test_a_run_past_its_deadline_hands_over_instead_of_waiting(settings, client, ask, login):
+    # Review round 2, N-018: no budget for the whole run (6 steps x 2 tiers x 3 attempts x 60 s).
+    settings.run_deadline_seconds = 1e-9  # already spent when the first model call would start
+    conversation_id, events = ask(login("customer@leon.demo"), "退款多久能到账？")
+    final = by_type(events, "final")[0]
+    assert final["status"] == "handoff" and "处理时间过长" in final["text"]
+    run_id = events[0]["run_id"]
+    trace = client.get(f"/api/runs/{run_id}", headers=login("admin@leon.demo")).json()
+    assert any(s["name"] == "run_deadline" for s in trace["spans"])
+    with new_session() as db:
+        assert _handoffs(db, conversation_id) == 1

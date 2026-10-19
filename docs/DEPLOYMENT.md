@@ -80,6 +80,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 | `PROMPT_CANARY_VERSION` / `PROMPT_CANARY_PERCENT` | — / `0` | 灰度：按会话哈希把指定比例的对话稳定地分给候选版本；比例改回 0 即回滚 |
 | `ANSWER_CACHE_TTL_HOURS` | `24` | 答案缓存的有效期，设为 0 即关闭；知识或配置变化时缓存会自动失效 |
 | `REFUND_WINDOW_DAYS` / `REFUND_WINDOW_MAX_COUNT` / `REFUND_WINDOW_MAX_AMOUNT` | `30` / `3` / `200` | 累计退款风控：窗口天数内同一顾客的退款笔数或累计金额超过上限时，小额退款也转人工审核 |
+| `RUN_DEADLINE_SECONDS` | `90` | 整次运行的时间预算（所有步骤、两档模型、所有重试加起来）。每一步开始前检查；模型调用的超时被压到剩余时间，过了期限不再重试。超时后转人工（建工单、告知排队位次），链路里记录 `run_deadline`。设为 0 关闭 |
 | `TRACE_WRITES` | `auto` | 链路写入方式：`auto` 在 PostgreSQL 上批量写（运行结束、暂停审批、出错时一次写入，同次实测吞吐 +39%–47%），在 SQLite 上每个 span 完成即提交；也可以显式设为 `per_span` 或 `buffered`。批量模式下，运行中的链路要等运行结束才能看到 |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN` | — | 飞书机器人 |
 | `WECOM_WEBHOOK_KEY` | — | 企业微信群机器人（审批提醒） |

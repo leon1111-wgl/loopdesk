@@ -216,3 +216,22 @@ def test_mcp_server_tools_respect_permissions(settings, client, monkeypatch):
     assert out == {"error": "订单不存在或无权查看"}
     monkeypatch.setenv("LOOPDESK_MCP_USER", "agent@leon.demo")
     assert json.loads(mcp_server._call(get_services(), get_order, {"order_id": "SO20261003005"}))["amount"] == 899.0
+
+
+def test_openai_compat_never_retries_past_the_run_deadline():
+    import time as clock
+
+    from app.llm.base import LLMMessage, LLMRetryableError
+
+    calls = {"n": 0}
+
+    def overloaded(request):
+        calls["n"] += 1
+        return httpx.Response(503, json={"error": "overloaded"})
+
+    provider = OpenAICompatProvider("https://x/v1", "k", transport=httpx.MockTransport(overloaded))
+    started = clock.monotonic()
+    with pytest.raises(LLMRetryableError):
+        provider.chat([LLMMessage(role="user", content="hi")], [], "m", {"deadline": started + 0.5})
+    assert clock.monotonic() - started < 1.0, "the 1 s and 2 s back-offs would run past the deadline"
+    assert calls["n"] == 1

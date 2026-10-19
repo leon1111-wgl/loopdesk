@@ -11,6 +11,8 @@ Differences from the OpenAI shape that this adapter absorbs:
 
 from __future__ import annotations
 
+import time
+
 import json
 from typing import Any
 
@@ -87,6 +89,12 @@ class AnthropicProvider(LLMProvider):
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = to_anthropic_tools(tools)
+        deadline = (options or {}).get("deadline")
+        if deadline is not None:  # never wait past the run's deadline (a monotonic time)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise LLMRetryableError("run deadline reached")
+            kwargs["timeout"] = left
         try:
             response = self.client.beta.messages.create(**kwargs)
         except Exception as exc:  # map SDK errors onto retryable / fatal

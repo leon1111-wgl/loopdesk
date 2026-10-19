@@ -47,6 +47,7 @@ STRICT_FALLBACK = "抱歉，我暂时无法给出有可靠依据的答复。为�
 MAX_STEPS_TEXT = "抱歉，这个问题需要的处理步骤较多。"
 MODEL_ERROR_TEXT = "抱歉，智能客服暂时繁忙，请稍后再试或转人工客服。"
 REFUSAL_TEXT = "抱歉，这个问题我无法处理。"
+DEADLINE_TEXT = "抱歉，这个问题处理时间过长。"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 TOOL_LABEL = {"request_refund": "退款"}
 
@@ -302,6 +303,10 @@ class AgentRuntime:
               messages: list[LLMMessage], queue: list[ToolCall], started: float) -> Iterator[dict[str, Any]]:
         stream_tokens = self.settings.evidence_mode != "strict"
         specs = [t.spec() for t in self.registry.for_role(ctx.user.role)]
+        # One budget for the whole run: without it, 6 steps x 2 model tiers x 3 attempts x 60 s
+        # could hold a connection and a worker thread for over half an hour.
+        budget = self.settings.run_deadline_seconds
+        state["deadline"] = time.monotonic() + budget if budget > 0 else None
         while True:
             while queue:
                 call = queue.pop(0)
@@ -314,6 +319,9 @@ class AgentRuntime:
                 yield {"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
                        "is_error": outcome.is_error}
 
+            if self._past_deadline(state):
+                yield from self._deadline_handoff(run, tracer, ctx, state, started)
+                return
             if state["steps"] >= self.settings.max_agent_steps:
                 text = MAX_STEPS_TEXT + self._fallback_handoff(tracer, ctx, "Agent 达到最大步数")
                 yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
@@ -329,6 +337,9 @@ class AgentRuntime:
                         result = event.result
             except LLMError as exc:
                 run.error = str(exc)[:2000]
+                if self._past_deadline(state):  # the model ran out the clock: a person takes over
+                    yield from self._deadline_handoff(run, tracer, ctx, state, started)
+                    return
                 yield from self._finish(run, tracer, ctx, state, MODEL_ERROR_TEXT, started, status="failed")
                 return
 
@@ -348,7 +359,8 @@ class AgentRuntime:
 
     def _call_llm(self, tracer: Tracer, messages, specs, state):
         options = {"inject_hallucination": state["options"].get("inject_hallucination", False),
-                   "dry_run": state["options"].get("dry_run", False)}
+                   "dry_run": state["options"].get("dry_run", False),
+                   "deadline": state.get("deadline")}  # providers cap timeouts and stop retrying at it
         last_error: LLMError | None = None
         for model in state["models"]:
             emitted = False
@@ -419,6 +431,18 @@ class AgentRuntime:
         if call.name != "search_knowledge" or outcome.is_error:
             ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
         return outcome
+
+    @staticmethod
+    def _past_deadline(state: dict[str, Any]) -> bool:
+        deadline = state.get("deadline")
+        return deadline is not None and time.monotonic() >= deadline
+
+    def _deadline_handoff(self, run, tracer, ctx, state, started) -> Iterator[dict[str, Any]]:
+        with tracer.span("guardrail", "run_deadline", {"seconds": self.settings.run_deadline_seconds}) as span:
+            span.status = "error"
+            span.set(steps=state["steps"])
+        text = DEADLINE_TEXT + self._fallback_handoff(tracer, ctx, "处理超时")
+        yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
 
     def _fallback_handoff(self, tracer: Tracer, ctx: ToolContext, reason: str) -> str:
         """The agent gave up (step limit, model refusal): really hand the customer to a person
@@ -522,6 +546,7 @@ class AgentRuntime:
             state.pop("messages", None)
             state.pop("pending", None)
             run.finished_at = datetime.now(timezone.utc)
+        state.pop("deadline", None)  # a monotonic clock value: meaningless after this request
         run.state = state
         run.status = status
         run.output_text = final_text
