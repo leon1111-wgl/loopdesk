@@ -158,3 +158,32 @@ def test_a_reply_that_read_the_ticket_before_a_close_cannot_reopen_it(client, as
         assert db.get(Conversation, conversation_id).status == "bot"
         assert not db.execute(select(Message).where(Message.conversation_id == conversation_id,
                                                     Message.role == "agent")).first()
+
+
+def test_giving_up_at_the_step_limit_really_hands_the_customer_over(settings, client, ask, login):
+    # Review round 2, N-016: the run was labelled handoff, but no ticket existed and the
+    # conversation stayed with the bot.
+    settings.max_agent_steps = 1
+    conversation_id, events = ask(login("customer@leon.demo"), "SO20261008002 到哪了")
+    final = by_type(events, "final")[0]
+    assert final["status"] == "handoff" and "排队第" in final["text"]
+    with new_session() as db:
+        from app.models import Conversation
+        assert _handoffs(db, conversation_id) == 1
+        assert db.get(Conversation, conversation_id).status == "handoff"
+    assert any(q["conversation_id"] == conversation_id for q in client.get("/api/handoffs", headers=login("agent@leon.demo")).json())
+
+
+def test_a_model_refusal_hands_over_too(ask, login, monkeypatch):
+    from app.llm.base import ChatResult, StreamEvent, Usage
+    from app.services import get_services
+
+    def refusing_stream(messages, tools, model, options=None):
+        yield StreamEvent(type="done", result=ChatResult(content="", tool_calls=[], usage=Usage(), model=model,
+                                                          finish_reason="refusal"))
+
+    monkeypatch.setattr(get_services().provider, "stream", refusing_stream)
+    conversation_id, events = ask(login("customer@leon.demo"), "帮我写一段攻击别人的话")
+    assert by_type(events, "final")[0]["status"] == "handoff"
+    with new_session() as db:
+        assert _handoffs(db, conversation_id) == 1

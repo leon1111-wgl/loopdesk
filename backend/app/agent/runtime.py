@@ -44,9 +44,9 @@ from .tracing import Tracer
 from .verifier import verify_answer
 
 STRICT_FALLBACK = "抱歉，我暂时无法给出有可靠依据的答复。为避免误导，建议您转人工客服确认。"
-MAX_STEPS_TEXT = "抱歉，这个问题需要的处理步骤较多，建议您转人工客服继续处理。"
+MAX_STEPS_TEXT = "抱歉，这个问题需要的处理步骤较多。"
 MODEL_ERROR_TEXT = "抱歉，智能客服暂时繁忙，请稍后再试或转人工客服。"
-REFUSAL_TEXT = "抱歉，这个问题我无法处理，建议您转人工客服。"
+REFUSAL_TEXT = "抱歉，这个问题我无法处理。"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 TOOL_LABEL = {"request_refund": "退款"}
 
@@ -315,7 +315,8 @@ class AgentRuntime:
                        "is_error": outcome.is_error}
 
             if state["steps"] >= self.settings.max_agent_steps:
-                yield from self._finish(run, tracer, ctx, state, MAX_STEPS_TEXT, started, status="handoff")
+                text = MAX_STEPS_TEXT + self._fallback_handoff(tracer, ctx, "Agent 达到最大步数")
+                yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
                 return
             state["steps"] += 1
             try:
@@ -332,7 +333,8 @@ class AgentRuntime:
                 return
 
             if result.finish_reason == "refusal":
-                yield from self._finish(run, tracer, ctx, state, REFUSAL_TEXT, started, status="handoff")
+                text = REFUSAL_TEXT + self._fallback_handoff(tracer, ctx, "模型拒绝回答")
+                yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
                 return
             if result.tool_calls:
                 messages.append(LLMMessage(role="assistant", content=result.content,
@@ -417,6 +419,14 @@ class AgentRuntime:
         if call.name != "search_knowledge" or outcome.is_error:
             ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
         return outcome
+
+    def _fallback_handoff(self, tracer: Tracer, ctx: ToolContext, reason: str) -> str:
+        """The agent gave up (step limit, model refusal): really hand the customer to a person
+        rather than only suggesting it. A ticket and the conversation's handoff state make the
+        handoff count honest (someone is actually queued), and the trace shows it as a tool span."""
+        outcome = self._run_tool(tracer, ctx, ToolCall(id="fallback_handoff", name="handoff_to_human",
+                                                       arguments={"reason": reason}))
+        return str(outcome.output.get("message") or "请稍后联系人工客服。")
 
     @staticmethod
     def _tool_message(call: ToolCall, outcome: ToolOutcome) -> LLMMessage:
