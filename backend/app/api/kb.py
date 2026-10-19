@@ -120,6 +120,7 @@ def search(body: SearchIn, principal: Principal = Depends(require_staff), db: Se
     }
     return {
         "query_tokens": debug.query_tokens,
+        "coverage_tokens": debug.coverage_tokens,
         "min_relevance": services.settings.min_relevance,
         "hits": [{**h.as_dict(), "flagged_injection": h.chunk_id in flagged,
                   "passes_threshold": h.relevance >= services.settings.min_relevance} for h in hits],

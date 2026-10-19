@@ -28,7 +28,7 @@ interface SearchHit {
 function RetrievalDebugger() {
   const [query, setQuery] = useState("退款多久能到账");
   const [scope, setScope] = useState("customer");
-  const [result, setResult] = useState<{ query_tokens: string[]; min_relevance: number; hits: SearchHit[] } | null>(null);
+  const [result, setResult] = useState<{ query_tokens: string[]; coverage_tokens: string[]; min_relevance: number; hits: SearchHit[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   async function run() {
     try {
@@ -56,7 +56,10 @@ function RetrievalDebugger() {
         <ErrorBanner error={error} />
         {result && (
           <>
-            <div className="faint">分词：{result.query_tokens.join(" / ") || "（无）"} · 相关度阈值 {result.min_relevance}</div>
+            <div className="faint">
+              召回分词：{result.query_tokens.join(" / ") || "（无）"} · 覆盖率分词（口语已换成知识库用语）：
+              {result.coverage_tokens.join(" / ") || "（无）"} · 相关度阈值 {result.min_relevance}
+            </div>
             <div className="table-wrap">
               <table className="table">
                 <thead>

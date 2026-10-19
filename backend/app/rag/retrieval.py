@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from ..llm.base import Embedder
 from ..models import Chunk, Document
-from ..textutil import expand_query, tokenize
+from ..textutil import canonical_query, expand_query, tokenize
 from .embeddings import unpack
 
 RRF_K = 60
@@ -70,6 +70,7 @@ class Hit:
 @dataclass
 class SearchDebug:
     query_tokens: list[str]
+    coverage_tokens: list[str] = field(default_factory=list)
     bm25: list[dict] = field(default_factory=list)
     vector: list[dict] = field(default_factory=list)
     dropped_flagged: int = 0
@@ -193,9 +194,12 @@ def hybrid_search(
     include_flagged: bool = False,
 ) -> tuple[list[Hit], SearchDebug]:
     index = index_manager.get(db, tenant_id)
-    query = expand_query(query)  # variant characters + colloquial phrases -> knowledge-base wording
+    # Recall uses the question plus the knowledge base's wording for any colloquial phrase in
+    # it; the relevance gate scores the canonical form only (see canonical_query).
+    gate_tokens = tokenize(canonical_query(query))
+    query = expand_query(query)
     q_tokens = tokenize(query)
-    debug = SearchDebug(query_tokens=q_tokens)
+    debug = SearchDebug(query_tokens=q_tokens, coverage_tokens=gate_tokens)
     if index.n == 0:
         return [], debug
 
@@ -219,7 +223,7 @@ def hybrid_search(
         if c.flagged and not include_flagged:
             debug.dropped_flagged += 1
             continue
-        cov = index.coverage(q_tokens, c)
+        cov = index.coverage(gate_tokens or q_tokens, c)
         cos = cosine.get(i, 0.0)
         relevance = max(cov, cos)
         if relevance < min_relevance:

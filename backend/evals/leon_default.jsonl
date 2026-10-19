@@ -29,3 +29,8 @@
 {"key": "colloquial_return", "question": "东西不想要了能退吗", "expected_tools": ["search_knowledge"], "must_include": ["7天"], "expected_doc": "售后与退款政策", "tags": ["rag", "colloquial"]}
 {"key": "colloquial_invoice", "question": "公司开专票要啥材料", "expected_tools": ["search_knowledge"], "must_include": ["营业执照"], "expected_doc": "发票开具指南", "tags": ["rag", "colloquial"]}
 {"key": "colloquial_shipping_fee", "question": "寄个东西到西藏得多掏钱不", "expected_tools": ["search_knowledge"], "must_include": ["15元"], "expected_doc": "配送与物流说明", "tags": ["rag", "colloquial"]}
+{"key": "colloquial_open_invoice", "question": "能开发票吗", "expected_tools": ["search_knowledge"], "must_include": ["电子普通发票"], "expected_doc": "发票开具指南", "tags": ["rag", "colloquial"]}
+{"key": "colloquial_return_shipping_fee", "question": "退货运费谁出", "expected_tools": ["search_knowledge"], "must_include": ["买家承担"], "expected_doc": "售后与退款政策", "tags": ["rag", "colloquial"]}
+{"key": "colloquial_overseas", "question": "能寄到国外吗", "expected_tools": ["search_knowledge"], "must_include": ["海外"], "expected_doc": "配送与物流说明", "tags": ["rag", "colloquial"]}
+{"key": "colloquial_money_when", "question": "钱什么时候到", "expected_tools": ["search_knowledge"], "must_include": ["1-3个工作日"], "expected_doc": "售后与退款政策", "tags": ["rag", "colloquial"]}
+{"key": "colloquial_broken_exchange", "question": "东西坏了能换吗", "expected_tools": ["search_knowledge"], "must_include": ["15天"], "expected_doc": "售后与退款政策", "tags": ["rag", "colloquial"]}

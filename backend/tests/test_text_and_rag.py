@@ -82,3 +82,20 @@ def test_order_ids_are_found_next_to_chinese_text():
     for text in ("我订单SO20261008002到哪了", "SO20261008002的物流", "订单 so20261008002 呢", "（SO20261008002）"):
         assert ORDER_ID_RE.search(text).group(0).upper() == "SO20261008002", text
     assert ORDER_ID_RE.search("XSO20261008002") is None, "not inside another token"
+
+
+def test_relevance_gate_scores_the_canonical_wording():
+    from app.textutil import canonical_query, tokenize
+
+    # Colloquial words are outside the knowledge base's vocabulary and would only dilute coverage.
+    assert tokenize(canonical_query("能开发票吗")) == ["开具", "发票"]
+    assert tokenize(canonical_query("能寄到国外吗")) == ["配送", "海外"]
+    assert tokenize(canonical_query("钱什么时候到")) == ["退款", "到账"]
+    assert tokenize(canonical_query("以旧换新活动怎么参加")) == tokenize("以旧换新活动怎么参加"), "no synonym, no change"
+
+
+def test_return_shipping_fee_is_segmented_like_the_policy_documents():
+    from app.textutil import tokenize
+
+    assert tokenize("退货运费谁出") == ["退货", "运费"]
+    assert "货运" not in tokenize("金卡会员每月享受2次免费退货运费")

@@ -21,6 +21,10 @@ try:
         "工单", "补偿券", "定制商品", "生鲜", "偏远地区", "发货", "物流", "会员等级", "海外",
     ):
         jieba.add_word(_word)
+    # The general dictionary segments "退货运费" as 退 / 货运费. The knowledge base never says
+    # 货运费, and the wrong split (made on both sides) sent "退货运费谁出" to the membership
+    # rules instead of the return policy. Without the word: 退货 / 运费, 换货 / 运费.
+    jieba.del_word("货运费")
 except ImportError:  # pragma: no cover - exercised only without jieba
     jieba = None
 
@@ -40,7 +44,7 @@ STOP_TOKENS = {
     "可以", "什么", "怎么", "如何", "请问", "我的", "你们", "是否", "一下", "这个", "那个", "多久",
     "多少", "哪些", "为什么", "怎样", "能否", "能不能", "是不是", "有没有", "没有", "知道", "告诉",
     "现在", "目前", "已经", "我们", "你好", "您好", "帮我", "一个", "需要", "时候", "情况", "问题",
-    "啥时候", "什么时候", "几时", "多会儿", "啥", "咋", "咋样",
+    "啥时候", "什么时候", "几时", "多会儿", "啥", "咋", "咋样", "哪里", "哪儿", "怎么办", "咋办", "东西",
     "the", "a", "an", "is", "are", "to", "of", "and", "or", "for", "my", "i", "you", "can", "how", "what",
 }
 
@@ -86,10 +90,22 @@ QUERY_SYNONYMS: dict[str, str] = {
     "能不能退": "退货",
     "专票": "增值税专用发票",
     "开票": "发票",
+    "开发票": "开具 发票",  # jieba keeps 开发票 as one word and search mode adds 开发
     "多掏钱": "额外支付 运费",
     "加钱": "额外支付",
     "快递费": "运费",
+    "钱什么时候": "退款 到账",
+    "钱多久": "退款 到账",
+    "退到哪": "原路退回",
+    "坏了": "质量问题",
+    "能换": "换货",
+    "换一个": "换货",
+    "国外": "海外",
+    "境外": "海外",
+    "寄到": "配送",
+    "抵钱": "抵扣",
 }
+_SYNONYM_RE = re.compile("|".join(sorted(map(re.escape, QUERY_SYNONYMS), key=len, reverse=True)))
 
 
 def expand_query(text: str) -> str:
@@ -97,6 +113,15 @@ def expand_query(text: str) -> str:
     folded = text.translate(_VARIANT_CHARS)
     extras = list(dict.fromkeys(canonical for phrase, canonical in QUERY_SYNONYMS.items() if phrase in folded))
     return f"{folded} {' '.join(extras)}" if extras else folded
+
+
+def canonical_query(text: str) -> str:
+    """The question in the knowledge base's own words: colloquial phrases are *replaced*.
+
+    Used by the relevance gate. There, the colloquial words themselves ("寄到", "国外") are
+    out of the knowledge base's vocabulary, get the highest IDF, and would drag coverage
+    under the threshold even though the canonical words match: "能寄到国外吗" -> "能 配送 海外 吗"."""
+    return _SYNONYM_RE.sub(lambda m: f" {QUERY_SYNONYMS[m.group(0)]} ", text.translate(_VARIANT_CHARS))
 
 
 def token_set(text: str) -> set[str]:
