@@ -73,7 +73,7 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
         <div className="card-pad stack" style={{ borderTop: "1px solid var(--border)" }}>
           <ErrorBanner error={error} />
           {own && <div className="notice">这是你自己发起的申请，按四眼原则需要其他同事审批。</div>}
-          <div className="row">
+          <div className="row decision-row">
             <input className="input" placeholder="审批意见（会告知顾客）" value={comment} onChange={(e) => setComment(e.target.value)} />
             <button className="btn btn-danger" disabled={busy || own} onClick={() => decide("reject")}><X size={15} /> 驳回</button>
             <button className="btn btn-success" disabled={busy || own} onClick={() => decide("approve")}><Check size={15} /> 通过并执行</button>

@@ -186,6 +186,19 @@ export function useTheme(): [Theme, (t: Theme) => void] {
   return [theme, update];
 }
 
+/** Track a CSS media query, e.g. the 780px breakpoint where the sidebar becomes a drawer. */
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
+}
+
 /** Load data with loading/error state and a reload function. */
 export function useLoad<T>(loader: () => Promise<T>, deps: unknown[] = []) {
   const [data, setData] = useState<T | null>(null);

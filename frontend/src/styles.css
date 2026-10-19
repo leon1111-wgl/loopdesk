@@ -117,6 +117,9 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 }
 .brand { display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 16px; border-bottom: 1px solid var(--border-2); }
 .brand-name { font-weight: 600; font-size: 15px; letter-spacing: 0.01em; }
+.nav-close { margin-left: auto; }
+.nav-toggle { position: relative; flex-shrink: 0; }
+.toggle-dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 2px var(--surface); }
 .tenant-card { margin: 12px 12px 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
 .tenant-card .name { font-weight: 600; font-size: 13px; }
 .tenant-card .meta { font-size: 12px; color: var(--text-3); }
@@ -248,7 +251,7 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
 .chat { display: grid; grid-template-columns: 248px minmax(0, 1fr) 320px; height: 100%; }
 .chat.customer { grid-template-columns: 248px minmax(0, 1fr); }
 .convo-list { border-right: 1px solid var(--border); background: var(--surface); overflow: auto; display: flex; flex-direction: column; }
-.convo-list-head { padding: 12px; border-bottom: 1px solid var(--border-2); }
+.convo-list-head { padding: 12px; border-bottom: 1px solid var(--border-2); display: flex; align-items: center; gap: 8px; }
 .convo-item { padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border-2); }
 .convo-item:hover { background: var(--hover); }
 .convo-item.active { background: var(--primary-soft); box-shadow: inset 2px 0 0 var(--primary); }
@@ -261,6 +264,7 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
 .avatar.bot { background: var(--primary); color: #fff; }
 .avatar.me { background: var(--border); color: var(--text-2); }
 .bubble { border-radius: 6px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); min-width: 0; }
+.msg.assistant .bubble { min-width: 320px; }
 .msg.user .bubble { background: var(--primary-soft); border-color: var(--primary-line); }
 .bubble-text { white-space: pre-wrap; word-break: break-word; line-height: 1.7; }
 .bubble-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border-2); }
@@ -280,7 +284,7 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
 .composer-box { display: flex; gap: 8px; align-items: flex-end; }
 .composer textarea { flex: 1; min-height: 40px; max-height: 160px; resize: none; }
 .composer .btn { height: 40px; }
-.welcome { max-width: 560px; margin: 48px auto 0; }
+.welcome { width: 100%; max-width: 560px; margin: 48px auto 0; }
 .welcome h2 { font-size: 16px; }
 .suggestion-list { display: flex; flex-direction: column; margin-top: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); overflow: hidden; }
 .suggestion { display: flex; align-items: center; gap: 10px; text-align: left; border: none; background: transparent; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border-2); }
@@ -334,6 +338,9 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
 .kind-approval, .kind-notify { background: var(--warning); }
 .kind-router { background: var(--text-3); }
 
+/* Mobile-only controls (declared after .icon-btn so they stay hidden); the 780px query turns them on. */
+.nav-toggle, .nav-close, .history-close, .chat-bar, .scrim { display: none; }
+
 @media (max-width: 1180px) {
   .chat { grid-template-columns: 220px minmax(0, 1fr); }
   .inspector { display: none; }
@@ -341,9 +348,23 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
   .grid-3 { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 780px) {
-  .sidebar { display: none; }
+  /* The sidebar and the conversation list become off-canvas drawers. */
+  .sidebar, .convo-list {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 45; border-right: 1px solid var(--border);
+    transform: translateX(-100%); visibility: hidden; transition: transform 0.2s ease, visibility 0s linear 0.2s;
+  }
+  .sidebar { width: min(264px, 84vw); }
+  .convo-list { width: min(300px, 86vw); }
+  .shell.nav-open .sidebar, .chat.history-open .convo-list { transform: none; visibility: visible; transition: transform 0.2s ease; }
+  .scrim { display: block; position: fixed; inset: 0; z-index: 44; background: var(--overlay); }
+  .nav-toggle, .nav-close, .history-close { display: inline-grid; }
+  .nav-toggle { margin-left: -6px; }
+  .crumb-tenant, .hide-compact { display: none; }
+  .chat-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .msg.assistant .bubble { min-width: 0; flex: 1; }
+  .decision-row { flex-wrap: wrap; }
+  .decision-row .input { flex: 1 0 100%; }
   .chat, .chat.customer { grid-template-columns: minmax(0, 1fr); }
-  .convo-list { display: none; }
   .grid-2, .grid-4 { grid-template-columns: minmax(0, 1fr); }
   .login { grid-template-columns: minmax(0, 1fr); }
   .login-intro { padding: 24px 16px; border-right: none; border-bottom: 1px solid var(--border); }
@@ -352,4 +373,7 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
   .topbar { padding: 0 16px; }
   .messages { padding: 16px; }
   .composer { padding: 12px 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .convo-list { transition: none !important; }
 }

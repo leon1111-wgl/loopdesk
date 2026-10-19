@@ -1,9 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { FlaskConical, PencilLine, Plus, Send, ShieldAlert, ThumbsDown, ThumbsUp } from "lucide-react";
+import { FlaskConical, History, PencilLine, Plus, Send, ShieldAlert, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
-import { Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, time } from "../components/ui";
+import { Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, time, useMediaQuery } from "../components/ui";
 import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, Verification } from "../types";
 
 const SUGGESTIONS: Record<string, [string, string][]> = {
@@ -211,6 +211,13 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const busy = Boolean(live && !live.done);
+  // Narrow screens hide the conversation list; it opens as a drawer from the chat bar.
+  const compact = useMediaQuery("(max-width: 780px)");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const listOpen = compact && historyOpen;
+  const historyToggle = useRef<HTMLButtonElement>(null);
+  const historyClose = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
 
   const loadConversations = useCallback(() => {
     api.get<Conversation[]>("/api/conversations").then(setConversations).catch((e) => setError(e.message));
@@ -240,6 +247,30 @@ export default function ChatPage() {
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, live, pendingUser]);
+
+  // Same focus handling as the navigation drawer in Layout: focus moves into the list
+  // when it opens and back to the toggle once the chat column is no longer inert.
+  function closeHistory() {
+    restoreFocus.current = true;
+    setHistoryOpen(false);
+  }
+
+  useEffect(() => {
+    if (!listOpen) {
+      if (restoreFocus.current) historyToggle.current?.focus();
+      restoreFocus.current = false;
+      return;
+    }
+    historyClose.current?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeHistory();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [listOpen]);
+
+  function openConversation(path: string) {
+    setHistoryOpen(false);
+    navigate(path);
+  }
 
   async function send(text: string) {
     const content = text.trim();
@@ -289,16 +320,25 @@ export default function ChatPage() {
   const suggestions = [...(SUGGESTIONS[tenant] ?? []), ...(staff && tenant === "leon" ? STAFF_EXTRA : [])];
 
   return (
-    <div className={`chat ${staff ? "" : "customer"}`} style={{ flex: 1, minHeight: 0 }}>
-      <aside className="convo-list">
+    <div className={`chat ${staff ? "" : "customer"} ${listOpen ? "history-open" : ""}`} style={{ flex: 1, minHeight: 0 }}>
+      {listOpen && <div className="scrim" onClick={closeHistory} />}
+      <aside
+        id="convo-list"
+        className="convo-list"
+        aria-label="历史对话"
+        {...(listOpen ? { role: "dialog", "aria-modal": true } : {})}
+      >
         <div className="convo-list-head">
-          <button className="btn" style={{ width: "100%" }} onClick={() => navigate("/chat")}>
+          <button className="btn" style={{ flex: 1 }} onClick={() => openConversation("/chat")}>
             <Plus size={15} /> 新建对话
+          </button>
+          <button ref={historyClose} className="icon-btn history-close" aria-label="关闭历史对话" onClick={closeHistory}>
+            <X size={18} />
           </button>
         </div>
         {conversations.length === 0 && <div className="empty">暂无历史对话</div>}
         {conversations.map((c) => (
-          <div key={c.id} className={`convo-item ${c.id === conversationId ? "active" : ""}`} onClick={() => navigate(`/chat/${c.id}`)}>
+          <div key={c.id} className={`convo-item ${c.id === conversationId ? "active" : ""}`} onClick={() => openConversation(`/chat/${c.id}`)}>
             <div className="title ellipsis">{c.title}</div>
             <div className="row faint" style={{ marginTop: 2 }}>
               {time(c.updated_at)}
@@ -309,7 +349,22 @@ export default function ChatPage() {
         ))}
       </aside>
 
-      <section className="chat-main">
+      <section className="chat-main" inert={listOpen || undefined}>
+        <div className="chat-bar">
+          <button
+            ref={historyToggle}
+            className="btn btn-sm history-toggle"
+            aria-expanded={listOpen}
+            aria-controls="convo-list"
+            onClick={() => setHistoryOpen(true)}
+          >
+            <History size={14} /> 历史对话{conversations.length > 0 && ` · ${conversations.length}`}
+          </button>
+          <span className="spacer" />
+          <button className="btn btn-sm" onClick={() => navigate("/chat")}>
+            <Plus size={14} /> 新建对话
+          </button>
+        </div>
         <div className="messages">
           {messages.length === 0 && !pendingUser && (
             <div className="welcome">
@@ -332,7 +387,7 @@ export default function ChatPage() {
           {messages.map((m) => (
             <div key={m.id} className={`msg ${m.role}`}>
               <div className={`avatar ${m.role === "assistant" ? "bot" : "me"}`}>{m.role === "assistant" ? "AI" : user?.name.slice(0, 1)}</div>
-              <div className="bubble" style={m.role === "assistant" ? { minWidth: 320 } : undefined}>
+              <div className="bubble">
                 {m.role === "assistant" ? (
                   <AnswerText text={m.content} citations={m.meta.citations ?? []} verification={m.meta.verification} />
                 ) : (

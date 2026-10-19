@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   Activity,
@@ -7,16 +7,18 @@ import {
   FlaskConical,
   LayoutDashboard,
   LogOut,
+  Menu,
   MessagesSquare,
   Monitor,
   Moon,
   RefreshCcw,
   Sun,
+  X,
 } from "lucide-react";
 import { api } from "../api";
 import { isStaff, useAuth } from "../auth";
 import type { Approval } from "../types";
-import { Logo, ROLE_TEXT, useTheme } from "./ui";
+import { Logo, ROLE_TEXT, useMediaQuery, useTheme } from "./ui";
 
 const TITLES: Record<string, string> = {
   dashboard: "运营看板",
@@ -41,6 +43,13 @@ export default function Layout() {
   const staff = isStaff(user);
   const [pending, setPending] = useState(0);
   const [theme, setTheme] = useTheme();
+  // Below 780px the sidebar becomes an off-canvas drawer opened from the top bar.
+  const compact = useMediaQuery("(max-width: 780px)");
+  const [navOpen, setNavOpen] = useState(false);
+  const drawerOpen = compact && navOpen;
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const restoreFocus = useRef(false);
 
   useEffect(() => {
     if (!staff) return;
@@ -53,6 +62,25 @@ export default function Layout() {
     const timer = window.setInterval(load, 8000);
     return () => window.clearInterval(timer);
   }, [staff, location.pathname]);
+
+  // Dismissing the drawer returns focus to the menu button. This runs after the render
+  // that removes `inert` from the main column; focusing earlier would be ignored.
+  const closeNav = () => {
+    restoreFocus.current = true;
+    setNavOpen(false);
+  };
+
+  useEffect(() => {
+    if (!drawerOpen) {
+      if (restoreFocus.current) toggleRef.current?.focus();
+      restoreFocus.current = false;
+      return;
+    }
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeNav();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerOpen]);
 
   const section = location.pathname.split("/")[1] || "chat";
   const groups: [string, NavItem[]][] = staff
@@ -75,22 +103,36 @@ export default function Layout() {
   const themeLabel = { system: "跟随系统", light: "浅色", dark: "深色" }[theme];
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
+    <div className={`shell ${drawerOpen ? "nav-open" : ""}`}>
+      {drawerOpen && <div className="scrim" onClick={closeNav} />}
+      <aside
+        id="app-nav"
+        className="sidebar"
+        aria-label="导航菜单"
+        {...(drawerOpen ? { role: "dialog", "aria-modal": true } : {})}
+      >
         <div className="brand">
           <Logo />
           <span className="brand-name">LoopDesk</span>
+          <button ref={closeRef} className="icon-btn nav-close" aria-label="关闭导航菜单" onClick={closeNav}>
+            <X size={18} />
+          </button>
         </div>
         <div className="tenant-card">
           <div className="name">{user?.tenant.name}</div>
           <div className="meta">{user?.tenant.industry === "saas" ? "SaaS 服务" : "电商零售"} · 演示租户</div>
         </div>
-        <nav className="nav">
+        <nav className="nav" aria-label="主导航">
           {groups.map(([group, items]) => (
             <div key={group}>
               <div className="nav-group">{group}</div>
               {items.map((item) => (
-                <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? "active" : "")}>
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) => (isActive ? "active" : "")}
+                  onClick={() => setNavOpen(false)}
+                >
                   {item.icon}
                   {item.label}
                   {item.count ? <span className="count">{item.count}</span> : null}
@@ -111,15 +153,26 @@ export default function Layout() {
           </button>
         </div>
       </aside>
-      <div className="main">
+      <div className="main" inert={drawerOpen || undefined}>
         <header className="topbar">
           <div className="crumbs">
-            <span className="ellipsis">{user?.tenant.name}</span>
-            <span>/</span>
-            <b>{TITLES[section] ?? "LoopDesk"}</b>
+            <button
+              ref={toggleRef}
+              className="icon-btn nav-toggle"
+              aria-label={staff && pending ? `打开导航菜单（${pending} 条待审批）` : "打开导航菜单"}
+              aria-expanded={drawerOpen}
+              aria-controls="app-nav"
+              onClick={() => setNavOpen(true)}
+            >
+              <Menu size={18} />
+              {staff && pending > 0 && <span className="toggle-dot" />}
+            </button>
+            <span className="ellipsis crumb-tenant">{user?.tenant.name}</span>
+            <span className="crumb-tenant">/</span>
+            <b className="ellipsis">{TITLES[section] ?? "LoopDesk"}</b>
           </div>
           <div className="row">
-            <span className="badge">演示环境 · 数据均为虚构</span>
+            <span className="badge">演示环境<span className="hide-compact"> · 数据均为虚构</span></span>
             <button className="icon-btn" title={`主题：${themeLabel}（点击切换）`} aria-label="切换主题" onClick={() => setTheme(nextTheme)}>
               {theme === "light" ? <Sun size={16} /> : theme === "dark" ? <Moon size={16} /> : <Monitor size={16} />}
             </button>
