@@ -242,6 +242,9 @@ class Feedback(Base):
     reason_category: Mapped[str] = mapped_column(String(32), default="")
     attribution: Mapped[str] = mapped_column(String(32), default="")
     comment: Mapped[str] = mapped_column(Text, default="")
+    # One rating per user and message (a second click changes it); the same correction sent
+    # twice (double click, retry) is one correction. NULL on rows from before the key existed.
+    dedup_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

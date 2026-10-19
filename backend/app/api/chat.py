@@ -99,9 +99,12 @@ def list_messages(conversation_id: int, principal: Principal = Depends(get_princ
     messages = db.execute(
         select(Message).where(Message.conversation_id == conversation.id).order_by(Message.id)
     ).scalars().all()
+    # The reader's own feedback only: a support agent's correction of an answer (internal
+    # flywheel data, possibly internal knowledge) is not shown to the customer who asked.
     feedback = {
         f.message_id: f for f in db.execute(
-            select(Feedback).where(Feedback.message_id.in_([m.id for m in messages]))
+            select(Feedback).where(Feedback.message_id.in_([m.id for m in messages]),
+                                   Feedback.user_id == principal.user.id).order_by(Feedback.id)
         ).scalars()
     }
     return {"conversation": conversation_out(conversation), "handoff": handoff.state(db, conversation),

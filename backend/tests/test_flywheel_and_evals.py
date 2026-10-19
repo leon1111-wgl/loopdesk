@@ -87,3 +87,74 @@ def test_eval_runs_in_sandbox_and_ignores_live_order_changes(client, ask, login)
     with new_session() as db:
         assert db.get(Order, "SO20260918001").status == "refunding", "eval must not touch live data"
         assert db.query(Run).filter(Run.is_eval.is_(True)).count() == run["total"], "eval traces are kept"
+
+
+def test_a_second_rating_changes_the_first_instead_of_counting_twice(client, ask, login):
+    customer, admin = login("customer@leon.demo"), login("admin@leon.demo")
+    _, events = ask(customer, "退款多久能到账？")
+    message_id = by_type(events, "final")[0]["message_id"]
+    first = client.post(f"/api/messages/{message_id}/feedback", json={"rating": "up"}, headers=customer).json()
+    second = client.post(f"/api/messages/{message_id}/feedback", json={"rating": "down"}, headers=customer).json()
+    client.post(f"/api/messages/{message_id}/feedback", json={"rating": "down"}, headers=customer)
+    assert first["feedback_id"] == second["feedback_id"]
+    assert client.get("/api/flywheel/stats", headers=admin).json()["feedback"] == {"down": 1}
+
+
+def test_the_same_correction_sent_twice_is_one_correction(client, ask, login):
+    from sqlalchemy import func, select
+
+    from app.db import new_session
+    from app.models import EvalCase, KBPatch
+
+    _, events = ask(login("customer@leon.demo"), "以旧换新活动怎么参加？")
+    message_id = by_type(events, "final")[0]["message_id"]
+    agent = login("agent@leon.demo")
+    body = {"rating": "correction", "reason_category": "knowledge_gap",
+            "correction": "以旧换新活动仅限手机和平板品类，审核通过后可抵扣50-800元。"}
+    first = client.post(f"/api/messages/{message_id}/feedback", json=body, headers=agent).json()
+    again = client.post(f"/api/messages/{message_id}/feedback", json=body, headers=agent).json()
+    assert again == first
+    other = client.post(f"/api/messages/{message_id}/feedback", headers=agent,
+                        json={**body, "correction": "以旧换新仅限手机品类。"}).json()
+    assert other["feedback_id"] != first["feedback_id"], "a different correction is a new one"
+    with new_session() as db:
+        assert db.execute(select(func.count(EvalCase.id)).where(EvalCase.source == "flywheel")).scalar_one() == 2
+        assert db.execute(select(func.count(KBPatch.id))).scalar_one() == 2
+
+
+def test_concurrent_identical_ratings_store_one(client, ask, login):
+    import threading
+
+    from sqlalchemy import func, select
+
+    from app.db import new_session
+    from app.models import Feedback
+
+    customer = login("customer@leon.demo")
+    _, events = ask(customer, "退款多久能到账？")
+    message_id = by_type(events, "final")[0]["message_id"]
+    barrier, codes = threading.Barrier(4, timeout=10), []
+
+    def click():
+        barrier.wait()
+        codes.append(client.post(f"/api/messages/{message_id}/feedback", json={"rating": "up"}, headers=customer).status_code)
+
+    threads = [threading.Thread(target=click) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert codes == [200] * 4
+    with new_session() as db:
+        assert db.execute(select(func.count(Feedback.id)).where(Feedback.message_id == message_id)).scalar_one() == 1
+
+
+def test_a_customer_does_not_see_the_agents_correction_of_their_answer(client, ask, login):
+    customer = login("customer@leon.demo")
+    conversation_id, events = ask(customer, "以旧换新活动怎么参加？")
+    message_id = by_type(events, "final")[0]["message_id"]
+    client.post(f"/api/messages/{message_id}/feedback", headers=login("agent@leon.demo"), json={
+        "rating": "correction", "reason_category": "knowledge_gap", "correction": "内部口径：仅限手机品类。"})
+    listed = client.get(f"/api/conversations/{conversation_id}/messages", headers=customer).json()["messages"]
+    assert all(m["feedback"] is None for m in listed)
+    assert "内部口径" not in str(listed)

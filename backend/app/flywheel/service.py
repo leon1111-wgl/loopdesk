@@ -11,12 +11,14 @@ breaking the others: that is the loop closing.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import Counter
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..agent.prompts import KB_PATCH_PROMPT
@@ -104,14 +106,31 @@ def submit_feedback(
     run = db.get(Run, message.run_id) if message.run_id else None
     attribution = attribute_failure(db, run) if rating != "up" else ""
 
+    # One rating per user and message, the latest click wins; a correction is identified by its
+    # text, so the same one sent twice returns the first result instead of a second eval case
+    # and a second patch. Feedback counts on the dashboard are then people, not clicks.
+    basis = f"{message.id}:{user.id}:" + (f"correction:{correction.strip()}" if rating == "correction" else "rating")
+    dedup_key = hashlib.sha256(basis.encode()).hexdigest()
     feedback = Feedback(
         tenant_id=message.tenant_id, message_id=message.id, run_id=message.run_id, user_id=user.id,
         rating=rating, question=question, answer=message.content, correction=correction.strip(),
         reason_category=reason_category or (attribution if rating != "up" else ""),
-        attribution=attribution, comment=comment,
+        attribution=attribution, comment=comment, dedup_key=dedup_key,
     )
-    db.add(feedback)
-    db.commit()
+    existing = db.execute(select(Feedback).where(Feedback.dedup_key == dedup_key)).scalar_one_or_none()
+    if existing is None:
+        db.add(feedback)
+        try:
+            db.commit()
+        except IntegrityError:  # the same feedback arrived twice at once
+            db.rollback()
+            existing = db.execute(select(Feedback).where(Feedback.dedup_key == dedup_key)).scalar_one()
+    if existing is not None:
+        if rating != "correction":
+            existing.rating, existing.comment = rating, comment
+            existing.reason_category, existing.attribution = feedback.reason_category, attribution
+            db.commit()
+        return _feedback_result(db, existing)
     result: dict = {"feedback_id": feedback.id, "attribution": attribution, "eval_case_id": None, "patch_id": None}
     if rating != "correction":
         return result
@@ -144,6 +163,13 @@ def submit_feedback(
         result["patch_id"] = patch.id
     db.commit()
     return result
+
+
+def _feedback_result(db: Session, feedback: Feedback) -> dict:
+    case_id = db.execute(select(EvalCase.id).where(EvalCase.feedback_id == feedback.id)).scalar_one_or_none()
+    patch_id = db.execute(select(KBPatch.id).where(KBPatch.feedback_id == feedback.id)).scalar_one_or_none()
+    return {"feedback_id": feedback.id, "attribution": feedback.attribution, "eval_case_id": case_id,
+            "patch_id": patch_id}
 
 
 class PatchConflict(FlywheelError):
