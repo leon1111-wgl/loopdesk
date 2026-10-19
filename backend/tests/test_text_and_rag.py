@@ -117,3 +117,54 @@ def test_tokenize_cache_hands_out_copies():
     assert tokenize("退款多久能到账") == ["退款", "到账"], "a caller mutating its list must not poison the cache"
     long_text = "退款到账" * 600  # longer than the cache limit: still tokenized, just not cached
     assert tokenize(long_text)[:2] == ["退款", "到账"]
+
+
+def _scan_bm25(index, q_tokens, allowed, k, k1=1.5, b=0.75):
+    """The original full scan, kept as the reference the inverted index must match."""
+    scores, unique = [], set(q_tokens)
+    for i, c in enumerate(index.chunks):
+        if c.visibility not in allowed:
+            continue
+        score = 0.0
+        for t in unique:
+            tf = c.tf.get(t)
+            if tf:
+                score += index.idf(t) * tf * (k1 + 1) / (tf + k1 * (1 - b + b * c.length / (index.avgdl or 1)))
+        if score > 0:
+            scores.append((i, score))
+    scores.sort(key=lambda x: -x[1])
+    return scores[:k]
+
+
+def _scan_vector(index, qvec, allowed, k):
+    scores = [(i, sum(a * b for a, b in zip(qvec, index.matrix[i].tolist())))
+              for i, c in enumerate(index.chunks) if c.visibility in allowed]
+    scores.sort(key=lambda x: -x[1])
+    return [s for s in scores[:k] if s[1] > 1e-6]
+
+
+def test_the_index_ranks_exactly_like_a_full_scan(client):
+    # BM25 now walks an inverted index and vector scores are one matrix product (20,000 chunks:
+    # 391 ms -> see docs/PERFORMANCE.md). Rankings must not move: same chunks, same order.
+    from sqlalchemy import select
+
+    from app.db import new_session
+    from app.models import Tenant
+    from app.rag.retrieval import index_manager
+    from app.services import get_services
+    from app.textutil import expand_query, tokenize
+
+    questions = ["退款多久能到账", "退货运费谁出", "积分可以怎么抵扣", "发票怎么开", "能货到付款吗",
+                 "海外订单多久送到", "银行卡退款要几天", "客服内部怎么处理投诉", "SO20261008002 到哪了", "会员等级"]
+    embedder = get_services().embedder
+    with new_session() as db:
+        tenant = db.execute(select(Tenant).where(Tenant.slug == "leon")).scalar_one()
+        index = index_manager.get(db, tenant.id)
+        for question in questions:
+            query = expand_query(question)
+            q_tokens, qvec = tokenize(query), embedder.embed([query])[0]
+            for allowed in ({"public"}, {"public", "internal"}):
+                assert index.bm25(q_tokens, allowed, 12) == _scan_bm25(index, q_tokens, allowed, 12), question
+                got, expected = index.vector(qvec, allowed, 12), _scan_vector(index, qvec, allowed, 12)
+                assert [i for i, _ in got] == [i for i, _ in expected], question
+                assert all(abs(a - b) < 1e-5 for (_, a), (_, b) in zip(got, expected))

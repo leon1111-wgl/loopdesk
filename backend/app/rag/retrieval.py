@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import math
 import threading
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+
+import numpy as np
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -30,6 +32,7 @@ from ..textutil import canonical_query, expand_query, tokenize
 from .embeddings import unpack
 
 RRF_K = 60
+MIN_SIMILARITY = 1e-6  # below this a vector score is rounding noise (float32), not similarity
 
 
 @dataclass
@@ -44,7 +47,6 @@ class IndexedChunk:
     flagged: bool
     tf: Counter
     length: int
-    vector: list[float]
 
 
 @dataclass
@@ -78,43 +80,51 @@ class SearchDebug:
 
 
 class TenantIndex:
-    def __init__(self, chunks: list[IndexedChunk]):
+    """BM25 over an inverted index (a query only touches the chunks that contain its words) and
+    vector scores as one matrix product. The first versions looped over every chunk in Python:
+    at 20,000 chunks a search took about 390 ms (python -m app.evals.retrieval_bench)."""
+
+    def __init__(self, chunks: list[IndexedChunk], vectors: list[list[float]] | None = None):
         self.chunks = chunks
         self.n = len(chunks)
         self.avgdl = (sum(c.length for c in chunks) / self.n) if self.n else 0.0
         self.df: Counter = Counter()
-        for c in chunks:
+        self.postings: dict[str, list[tuple[int, int]]] = defaultdict(list)  # token -> [(chunk, tf)]
+        for i, c in enumerate(chunks):
             self.df.update(c.tf.keys())
+            for token, tf in c.tf.items():
+                self.postings[token].append((i, tf))
+        # float32, as stored: 20,000 x 512 is 40 MB, where per-chunk Python lists took several times that
+        self.matrix = np.asarray(vectors or [], dtype=np.float32).reshape(self.n, -1) if self.n else None
+        self.visibility = np.array([c.visibility for c in chunks], dtype=object)
 
     def idf(self, token: str) -> float:
         df = self.df.get(token, 0)
         return math.log(1 + (self.n - df + 0.5) / (df + 0.5))
 
     def bm25(self, q_tokens: list[str], allowed, k: int, k1: float = 1.5, b: float = 0.75) -> list[tuple[int, float]]:
-        scores: list[tuple[int, float]] = []
-        unique = set(q_tokens)
-        for i, c in enumerate(self.chunks):
-            if c.visibility not in allowed:
+        scores: dict[int, float] = {}
+        for t in set(q_tokens):  # the same token order for every chunk, so sums match a full scan
+            postings = self.postings.get(t)
+            if not postings:
                 continue
-            score = 0.0
-            for t in unique:
-                tf = c.tf.get(t)
-                if tf:
-                    denom = tf + k1 * (1 - b + b * c.length / (self.avgdl or 1))
-                    score += self.idf(t) * tf * (k1 + 1) / denom
-            if score > 0:
-                scores.append((i, score))
-        scores.sort(key=lambda x: -x[1])
-        return scores[:k]
+            idf = self.idf(t)
+            for i, tf in postings:
+                c = self.chunks[i]
+                if c.visibility not in allowed:
+                    continue
+                denom = tf + k1 * (1 - b + b * c.length / (self.avgdl or 1))
+                scores[i] = scores.get(i, 0.0) + idf * tf * (k1 + 1) / denom
+        return sorted(scores.items(), key=lambda x: (-x[1], x[0]))[:k]
 
     def vector(self, qvec: list[float], allowed, k: int) -> list[tuple[int, float]]:
-        scores = [
-            (i, sum(a * b for a, b in zip(qvec, c.vector)))
-            for i, c in enumerate(self.chunks)
-            if c.visibility in allowed
-        ]
-        scores.sort(key=lambda x: -x[1])
-        return [s for s in scores[:k] if s[1] > 0]
+        if self.matrix is None or k <= 0:
+            return []
+        scores = self.matrix @ np.asarray(qvec, dtype=np.float32)
+        scores[~np.isin(self.visibility, list(allowed))] = -np.inf
+        top = np.argpartition(-scores, k - 1)[:k] if k < self.n else np.arange(self.n)
+        ranked = sorted(((int(i), float(scores[i])) for i in top), key=lambda x: (-x[1], x[0]))
+        return [s for s in ranked[:k] if s[1] > MIN_SIMILARITY]
 
     def coverage(self, q_tokens: list[str], c: IndexedChunk) -> float:
         unique = set(q_tokens)
@@ -170,7 +180,7 @@ class IndexManager:
             .where(Chunk.tenant_id == tenant_id)
             .order_by(Chunk.id)
         ).all()
-        chunks = []
+        chunks, vectors = [], []
         for chunk, title, visibility in rows:
             tokens = tokenize(f"{chunk.heading}\n{chunk.text}")
             chunks.append(
@@ -185,10 +195,10 @@ class IndexManager:
                     flagged=chunk.flagged_injection,
                     tf=Counter(tokens),
                     length=len(tokens),
-                    vector=unpack(chunk.embedding),
                 )
             )
-        index = TenantIndex(chunks)
+            vectors.append(unpack(chunk.embedding))
+        index = TenantIndex(chunks, vectors)
         with self._lock:
             self._cache[tenant_id] = (signature, index)
         return index

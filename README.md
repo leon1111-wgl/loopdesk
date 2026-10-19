@@ -201,7 +201,7 @@ LOOPDESK_VERIFIER=llm                   # 真实模型会改写措辞，用 LLM 
 
 **答案缓存基准**（`python -m app.evals.cache_bench`）：16 个 FAQ 问题各问两遍，第二遍 100% 命中缓存，答案与第一遍一致，token 从 14,845 降到 0。离线模型几乎瞬间返回，所以这里不报延迟收益；接入真实模型后，省下的是真实的首字延迟和 token 账单。
 
-**性能基线**（`python -m app.evals.load_bench`，离线模型）：本机（Apple M1 Max、单进程、SQLite WAL）并发 1 时约 160 RPS，其中分词缓存贡献了 11%–15%；GitHub Actions 上同一次运行内对比：PostgreSQL 改为批量写链路后，单 worker 吞吐提升 39%–47%；并发 16 时 4 workers 达到 129.7 RPS、p99 193ms。每一步的数据、没有采用的方案和仍未解释的现象见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。测的是模型以外的平台开销，不代表接入真实模型后的线上表现。
+**性能基线**（`python -m app.evals.load_bench`，离线模型）：本机（Apple M1 Max、单进程、SQLite WAL）并发 1 时约 160 RPS，其中分词缓存贡献了 11%–15%；GitHub Actions 上同一次运行内对比：PostgreSQL 改为批量写链路后，单 worker 吞吐提升 39%–47%；并发 16 时 4 workers 达到 129.7 RPS、p99 193ms。检索改为倒排表加向量矩阵后，2 万片段时单次检索从 391ms 降到 10ms（排序结果与逐个扫描一致）。每一步的数据、没有采用的方案和仍未解释的现象见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。测的是模型以外的平台开销，不代表接入真实模型后的线上表现。
 
 ## 目录结构
 
