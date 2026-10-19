@@ -6,8 +6,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..models import Chunk, Document
+from ..models import Chunk, Document, KnowledgeConflict
 from ..rag.chunking import UnsupportedFile, parse_upload
+from ..rag.conflicts import open_conflict_counts
 from ..rag.ingest import delete_document, ingest_document
 from ..rag.retrieval import hybrid_search
 from ..security import Principal, require_admin, require_staff
@@ -30,10 +31,14 @@ class SearchIn(BaseModel):
     top_k: int = Field(default=5, ge=1, le=10)
 
 
-def document_out(d: Document) -> dict:
+def document_out(d: Document, conflicts: int = 0) -> dict:
     return {"id": d.id, "title": d.title, "source": d.source, "visibility": d.visibility, "version": d.version,
-            "chunk_count": d.chunk_count, "flagged_chunks": d.flagged_chunks,
+            "chunk_count": d.chunk_count, "flagged_chunks": d.flagged_chunks, "conflicts": conflicts,
             "created_at": iso(d.created_at), "updated_at": iso(d.updated_at)}
+
+
+def _with_conflicts(db: Session, d: Document) -> dict:
+    return document_out(d, open_conflict_counts(db, d.tenant_id).get(d.id, 0))
 
 
 @router.get("/documents")
@@ -41,7 +46,8 @@ def list_documents(principal: Principal = Depends(require_staff), db: Session = 
     rows = db.execute(
         select(Document).where(Document.tenant_id == principal.tenant.id).order_by(Document.id)
     ).scalars()
-    return [document_out(d) for d in rows]
+    counts = open_conflict_counts(db, principal.tenant.id)
+    return [document_out(d, counts.get(d.id, 0)) for d in rows]
 
 
 @router.get("/documents/{document_id}")
@@ -49,7 +55,7 @@ def get_document(document_id: int, principal: Principal = Depends(require_staff)
     document = get_owned(db, Document, document_id, principal.tenant.id)
     chunks = db.execute(select(Chunk).where(Chunk.document_id == document.id).order_by(Chunk.ord)).scalars()
     return {
-        **document_out(document),
+        **_with_conflicts(db, document),
         "content": document.content,
         "chunks": [{"id": c.id, "ord": c.ord, "heading": c.heading, "text": c.text, "page": c.page,
                     "flagged_injection": c.flagged_injection} for c in chunks],
@@ -63,7 +69,7 @@ def create_text_document(body: TextDocIn, principal: Principal = Depends(require
         db, tenant_id=principal.tenant.id, title=body.title, content=body.content,
         embedder=get_services().embedder, visibility=body.visibility, source="manual", created_by=principal.user.id,
     )
-    return document_out(document)
+    return _with_conflicts(db, document)
 
 
 @router.post("/documents/upload")
@@ -90,7 +96,7 @@ async def upload_document(
         db, tenant_id=principal.tenant.id, title=name, content=text, embedder=get_services().embedder,
         visibility=visibility, source=file.filename or "", created_by=principal.user.id, pages=pages,
     )
-    return document_out(document)
+    return _with_conflicts(db, document)
 
 
 @router.delete("/documents/{document_id}")
@@ -120,3 +126,38 @@ def search(body: SearchIn, principal: Principal = Depends(require_staff), db: Se
         "bm25": debug.bm25,
         "vector": debug.vector,
     }
+
+
+class ResolveIn(BaseModel):
+    note: str = Field(default="", max_length=500)
+
+
+@router.get("/conflicts")
+def list_conflicts(status_filter: str = "open", principal: Principal = Depends(require_staff),
+                   db: Session = Depends(get_db)) -> list[dict]:
+    query = select(KnowledgeConflict).where(KnowledgeConflict.tenant_id == principal.tenant.id)
+    if status_filter != "all":
+        query = query.where(KnowledgeConflict.status == status_filter)
+    titles = {d.id: d.title for d in db.execute(
+        select(Document).where(Document.tenant_id == principal.tenant.id)).scalars()}
+    return [
+        {"id": c.id, "status": c.status, "sentence": c.sentence, "other_sentence": c.other_sentence,
+         "document": {"id": c.document_id, "title": titles.get(c.document_id, "（已删除）")},
+         "other_document": {"id": c.other_document_id, "title": titles.get(c.other_document_id, "（已删除）")},
+         "detail": c.detail, "note": c.note, "created_at": iso(c.created_at), "resolved_at": iso(c.resolved_at)}
+        for c in db.execute(query.order_by(KnowledgeConflict.id.desc())).scalars()
+    ]
+
+
+@router.post("/conflicts/{conflict_id}/resolve")
+def resolve_conflict(conflict_id: int, body: ResolveIn, principal: Principal = Depends(require_admin),
+                     db: Session = Depends(get_db)) -> dict:
+    from datetime import datetime, timezone
+
+    conflict = get_owned(db, KnowledgeConflict, conflict_id, principal.tenant.id)
+    conflict.status = "resolved"
+    conflict.note = body.note
+    conflict.resolved_by = principal.user.id
+    conflict.resolved_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": conflict.id, "status": conflict.status}

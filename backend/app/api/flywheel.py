@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..flywheel.service import FlywheelError, apply_patch, flywheel_stats, reject_patch
+from ..rag.conflicts import open_conflict_counts
 from ..models import EvalCase, Feedback, KBPatch, User
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
@@ -55,7 +56,9 @@ def apply(patch_id: int, principal: Principal = Depends(require_admin), db: Sess
         document = apply_patch(db, patch, principal.user, get_services().embedder)
     except FlywheelError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    return {"patch_id": patch.id, "status": patch.status, "document_id": document.id, "document_version": document.version}
+    conflicts = open_conflict_counts(db, principal.tenant.id).get(document.id, 0)
+    return {"patch_id": patch.id, "status": patch.status, "document_id": document.id,
+            "document_version": document.version, "conflicts": conflicts}
 
 
 @router.post("/patches/{patch_id}/reject")

@@ -258,6 +258,26 @@ class EvalCase(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class KnowledgeConflict(Base):
+    """Two documents stating the same rule with different numbers (see rag/conflicts.py)."""
+
+    __tablename__ = "knowledge_conflicts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    document_id: Mapped[int] = mapped_column(Integer, index=True)
+    chunk_id: Mapped[int] = mapped_column(Integer)
+    other_document_id: Mapped[int] = mapped_column(Integer, index=True)
+    other_chunk_id: Mapped[int] = mapped_column(Integer)
+    sentence: Mapped[str] = mapped_column(Text)
+    other_sentence: Mapped[str] = mapped_column(Text)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open | resolved
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AnswerCache(Base):
     """Replayable answers keyed by question + knowledge version + config (see agent/answer_cache.py)."""
 

@@ -109,6 +109,7 @@ export interface DocumentRow {
   version: number;
   chunk_count: number;
   flagged_chunks: number;
+  conflicts: number;
   updated_at: string;
 }
 

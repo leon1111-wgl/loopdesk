@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 
 from ..guardrails.injection import detect_injection
 from ..llm.base import Embedder
-from ..models import Chunk, Document
+from ..models import Chunk, Document, KnowledgeConflict
 from .chunking import chunk_markdown, chunk_pages
+from .conflicts import detect_conflicts
 from .embeddings import pack
 from .retrieval import index_manager
 
@@ -64,11 +65,14 @@ def ingest_document(
     document.flagged_chunks = flagged
     db.commit()
     index_manager.invalidate(tenant_id)
+    detect_conflicts(db, document)
     return document
 
 
 def delete_document(db: Session, document: Document) -> None:
     db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    db.execute(delete(KnowledgeConflict).where(
+        (KnowledgeConflict.document_id == document.id) | (KnowledgeConflict.other_document_id == document.id)))
     tenant_id = document.tenant_id
     db.delete(document)
     db.commit()

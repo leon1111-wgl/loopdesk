@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, FilePlus2, Search, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, FilePlus2, Search, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { Drawer, Empty, ErrorBanner, Modal, time, useLoad } from "../components/ui";
@@ -145,6 +145,54 @@ function AddDocModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
   );
 }
 
+interface Conflict {
+  id: number;
+  sentence: string;
+  other_sentence: string;
+  document: { id: number; title: string };
+  other_document: { id: number; title: string };
+  detail: Record<string, { this: string[]; other: string[] }>;
+  created_at: string;
+}
+
+function ConflictsCard({ admin, onChange }: { admin: boolean; onChange: () => void }) {
+  const { data, reload } = useLoad(() => api.get<Conflict[]>("/api/kb/conflicts"));
+  if (!data || data.length === 0) return null;
+  async function resolve(id: number) {
+    await api.post(`/api/kb/conflicts/${id}/resolve`, { note: "已核对" });
+    reload();
+    onChange();
+  }
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3>知识冲突（{data.length}）</h3>
+        <span className="faint">同一规则在两份文档中写了不同的数字，检索时可能拿到任意一份</span>
+      </div>
+      <div className="card-pad stack">
+        {data.map((c) => (
+          <div key={c.id} className="json small stack" style={{ gap: 6 }}>
+            <div className="row">
+              {Object.entries(c.detail).map(([unit, v]) => (
+                <span key={unit} className="badge badge-warning">{unit}：{v.this.join("、")} ≠ {v.other.join("、")}</span>
+              ))}
+              <span className="spacer" />
+              <span className="faint">{time(c.created_at)}</span>
+            </div>
+            <div className="quote"><b>《{c.document.title}》</b> {c.sentence}</div>
+            <div className="quote"><b>《{c.other_document.title}》</b> {c.other_sentence}</div>
+            {admin && (
+              <button className="btn btn-sm" style={{ width: "fit-content" }} onClick={() => resolve(c.id)}>
+                <Check size={14} /> 已核对，标记为解决
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function KnowledgePage() {
   const { user } = useAuth();
   const admin = user?.role === "admin";
@@ -174,7 +222,7 @@ export default function KnowledgePage() {
       <ErrorBanner error={error} />
       <div className="card table-wrap">
         <table className="table">
-          <thead><tr><th>标题</th><th>可见范围</th><th>片段数</th><th>注入检测</th><th>版本</th><th>更新时间</th></tr></thead>
+          <thead><tr><th>标题</th><th>可见范围</th><th>片段数</th><th>注入检测</th><th>知识冲突</th><th>版本</th><th>更新时间</th></tr></thead>
           <tbody>
             {data?.map((d) => (
               <tr key={d.id} className="clickable" onClick={() => open(d.id)}>
@@ -182,6 +230,7 @@ export default function KnowledgePage() {
                 <td>{d.visibility === "public" ? <span className="badge badge-primary">公开</span> : <span className="badge badge-info">仅内部</span>}</td>
                 <td>{d.chunk_count}</td>
                 <td>{d.flagged_chunks ? <span className="badge badge-danger"><AlertTriangle size={12} /> {d.flagged_chunks} 个片段已屏蔽</span> : <span className="faint">无</span>}</td>
+                <td>{d.conflicts ? <span className="badge badge-warning">{d.conflicts} 处待核对</span> : <span className="faint">无</span>}</td>
                 <td>v{d.version}</td>
                 <td className="faint">{time(d.updated_at)}</td>
               </tr>
@@ -189,6 +238,7 @@ export default function KnowledgePage() {
           </tbody>
         </table>
       </div>
+      <ConflictsCard admin={admin} onChange={reload} />
       <RetrievalDebugger />
       {adding && <AddDocModal onClose={() => setAdding(false)} onDone={() => { setAdding(false); reload(); }} />}
       {detail && (

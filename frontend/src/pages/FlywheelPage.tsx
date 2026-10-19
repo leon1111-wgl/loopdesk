@@ -71,9 +71,10 @@ export default function FlywheelPage() {
 
   async function act(patch: Patch, action: "apply" | "reject") {
     try {
-      const r = await api.post<{ document_version?: number }>(`/api/flywheel/patches/${patch.id}/${action}`);
+      const r = await api.post<{ document_version?: number; conflicts?: number }>(`/api/flywheel/patches/${patch.id}/${action}`);
       setMessage(action === "apply"
-        ? `补丁 #${patch.id} 已发布到知识库（版本 v${r.document_version}），对应评测用例已激活。去评测中心运行回归，确认它从失败变为通过。`
+        ? `补丁 #${patch.id} 已发布到知识库（版本 v${r.document_version}），对应评测用例已激活。` +
+          (r.conflicts ? `注意：补丁与现有知识存在 ${r.conflicts} 处数字冲突，请到「知识库」核对。` : "去评测中心运行回归，确认它从失败变为通过。")
         : `补丁 #${patch.id} 已驳回`);
       setError(null);
       patches.reload();
