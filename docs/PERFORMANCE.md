@@ -46,6 +46,23 @@ python -m app.evals.load_bench --database-url postgresql+psycopg://... --workers
 
 并发 4 的 p99 两组区间有重叠，不宣称改善；吞吐量提升后，单位时间内争抢 SQLite 写锁的请求更多，尾延迟主要还是由写锁决定。
 
+## PostgreSQL 与多 worker（GitHub Actions 实测）
+
+本机没有 PostgreSQL，所以在 GitHub Actions 上跑（手动触发的 `Load benchmark` 工作流）：同一台 4 vCPU 的 runner 上依次测 SQLite 单 worker、PostgreSQL 单 worker、PostgreSQL 4 个 worker；每种配置用独立的数据库，测量前先预热 5 秒。压测客户端和服务在同一台机器上，所以多 worker 的结果包含了两者争抢 CPU 的影响。
+
+| 配置（同一次运行，每档 10 秒） | 并发 1 | 并发 4 | 并发 16 |
+|---|---|---|---|
+| SQLite（WAL），1 worker | 90.8 RPS，p99 15ms | 82.7 RPS，p99 188ms | 76.3 RPS，p99 1299ms |
+| PostgreSQL，1 worker | 40.6 RPS，p99 30ms | 49.2 RPS，p99 102ms | 45.1 RPS，p99 470ms |
+| PostgreSQL，4 workers | 14.9 RPS，p99 76ms | 50.2 RPS，p99 94ms | **103.6 RPS，p99 222ms** |
+
+- **共享 runner 的绝对数字不可比**：两次运行之间，SQLite 并发 1 分别测得 148 和 91 RPS。只比较同一次运行里的不同配置。
+- **PostgreSQL 单请求更慢**：一次请求大约提交 10 次（每个 span 完成即提交），每次都是一次网络往返加 WAL 刷盘，所以单 worker 时吞吐不到 SQLite 的一半。
+- **但高并发时更稳**：没有全库单写者锁，并发 16 时 PostgreSQL 单 worker 的 p99（470ms）只有 SQLite（1299ms）的三分之一多一点。
+- **多 worker 才能用上多核**：PostgreSQL 4 个 worker 在并发 16 时吞吐是单 worker 的 2.3 倍，p99 再减半，是三种配置里最好的。本机 SQLite 也有同样的趋势：并发 4 时 4 个 worker 比 1 个多 40%（153 → 215 RPS），但 SQLite 的写锁限制了上限。
+- **一个没解释清楚的现象**：CI 上 PostgreSQL 4 workers 在并发 1 时，每个请求固定多出约 43ms（p50 67ms，单 worker 是 24ms），两次运行都出现，预热和独立数据库都没消除；本机（macOS、SQLite）没有这个现象（4 workers 并发 1 为 163 RPS）。在加上服务端分段计时之前，不对原因下结论。
+- **结论**：生产部署用 PostgreSQL 加多 worker；“合并提交”或异步写链路这类减少提交次数的优化，在 PostgreSQL 上收益会比 SQLite 大，值得在这套环境里重新评估。
+
 ## 实验：合并 span 写入（未采用）
 
 假设：每个 span 单独提交是剩下的主要开销，把提交合并成“至多每 0.25 秒一次，并在执行工具前提交一次”应该会更快。
@@ -61,7 +78,7 @@ python -m app.evals.load_bench --database-url postgresql+psycopg://... --workers
 
 | 改动 | 预期效果 |
 |---|---|
-| PostgreSQL + 多个 uvicorn worker（`--workers N`） | 绕过 GIL 和 SQLite 单写者锁，吞吐随核数近似线性增长（脚本已支持，需要在有 PostgreSQL 的环境中实测） |
+| 在 PostgreSQL 上减少每次请求的提交次数（链路异步写入或合并提交） | PostgreSQL 单请求慢在约 10 次提交的往返；高并发时它没有 SQLite 的写锁问题，合并写入的收益应该更大（需在 CI 环境中实测） |
 | 链路写入改为异步队列（批量写入独立的存储） | 把链路写入移出请求路径。在 SQLite 上要小心：去掉每个 span 的提交后，请求事务里对 Run 的更新会一直持有写锁直到运行结束，等于把模型调用也包进了锁里；应该在 PostgreSQL 上做，或者 Run 的更新也一并异步化 |
 | 接入真实模型后改为异步 IO（async httpx + 异步数据库） | 等待模型返回期间线程处于空闲，异步化后单进程可以同时挂起的对话数从线程池大小（约 40）提高到上千 |
 | 向量检索换成 pgvector 或 Milvus，BM25 换成搜索引擎 | 检索的 CPU 开销不再随片段数线性增长 |
