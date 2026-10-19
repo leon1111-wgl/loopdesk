@@ -6,6 +6,8 @@ span and strips them before the result reaches the model.
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
@@ -142,12 +144,45 @@ def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return {"order_id": order.id, "amount": amount}
 
 
+def _refund_history(ctx: ToolContext, customer_id: int) -> tuple[int, float]:
+    """Refunds already executed for this customer inside the velocity window."""
+    since = datetime.now(timezone.utc) - timedelta(days=ctx.settings.refund_window_days)
+    count, total = ctx.db.execute(
+        select(func.count(Refund.id), func.coalesce(func.sum(Refund.amount), 0.0))
+        .join(Order, Order.id == Refund.order_id)
+        .where(Refund.tenant_id == ctx.tenant.id, Order.customer_id == customer_id, Refund.created_at >= since)
+    ).one()
+    return int(count), float(total)
+
+
 def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> str | None:
     amount = round(float(args.get("amount") or 0), 2)
     limit = ctx.tenant.auto_refund_limit
     if amount > limit:
         return f"超过自动审批额度 ¥{limit:.2f}，需要人工审核"
-    return None
+
+    # Velocity check, counted per customer (not per operator: a support agent filing on
+    # the customer's behalf must not reset the counter). It stops "many small refunds".
+    order = ctx.db.get(Order, _order_id(args))
+    if order is None:
+        return None
+    settings = ctx.settings
+    days = settings.refund_window_days
+    count, total = _refund_history(ctx, order.customer_id)
+    reason = None
+    if count + 1 > settings.refund_window_max_count:
+        reason = (f"因近 {days} 天已有 {count} 笔退款，超过自动审批的次数上限"
+                  f"（{settings.refund_window_max_count} 笔），需要人工审核")
+    elif total + amount > settings.refund_window_max_amount + 1e-6:
+        reason = (f"因近 {days} 天累计退款将达到 ¥{total + amount:.2f}，"
+                  f"超过 ¥{settings.refund_window_max_amount:.2f} 的累计自动审批上限，需要人工审核")
+    if reason:
+        # The reviewer sees the history that triggered the escalation in the evidence package.
+        ctx.add_evidence("tool", "refund_history", json.dumps({
+            "customer_id": order.customer_id, "window_days": days, "refund_count": count,
+            "refund_total": round(total, 2), "this_request": amount,
+        }, ensure_ascii=False))
+    return reason
 
 
 def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:

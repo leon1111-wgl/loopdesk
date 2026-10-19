@@ -174,3 +174,25 @@ def test_demo_traffic_populates_a_fresh_install(settings):
         overview = c.get("/api/metrics/overview", headers=headers).json()
         assert overview["runs"] >= 8 and overview["pending_approvals"] == 1
         assert len(overview["daily"]) == 7
+
+
+def test_refund_velocity_limit_escalates_small_refunds(client, ask, login):
+    # Jack already has three refunds in the last 30 days; a fourth small one (¥45 < ¥50 limit)
+    # must still go to a human.
+    _, events = ask(login("customer2@leon.demo"), "订单 SO20261015009 申请退款")
+    approval = by_type(events, "approval_required")[0]
+    assert "近 30 天已有 3 笔退款" in approval["reason"]
+    pending = client.get("/api/approvals", headers=login("admin@leon.demo")).json()
+    assert any(e["title"] == "refund_history" for e in pending[0]["evidence"]), "reviewer sees the history"
+
+
+def test_refund_velocity_counts_the_customer_not_the_operator(ask, login):
+    _, events = ask(login("agent@leon.demo"), "订单 SO20261015009 申请退款")
+    assert by_type(events, "approval_required"), "an agent filing for Jack cannot bypass Jack's history"
+
+
+def test_cumulative_refund_amount_limit(settings, ask, login):
+    settings.refund_window_max_amount = 30.0
+    _, events = ask(login("customer@leon.demo"), "订单 SO20260918001 申请退款")
+    approval = by_type(events, "approval_required")[0]
+    assert "累计退款将达到 ¥39.90" in approval["reason"]

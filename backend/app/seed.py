@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .llm.base import Embedder
-from .models import EvalCase, Order, Tenant, User
+from .models import EvalCase, Order, Refund, Tenant, User
 from .rag.ingest import ingest_document
 from .security import hash_password
 
@@ -94,7 +94,34 @@ def fixture_orders(tenant_slug: str, users_by_email: dict[str, User]) -> list[Or
     depend on whatever state the live orders are in."""
     if tenant_slug != "leon":
         return []
-    return _orders(users_by_email["customer@leon.demo"], users_by_email["customer2@leon.demo"])
+    emma, jack = users_by_email["customer@leon.demo"], users_by_email["customer2@leon.demo"]
+    t = emma.tenant_id
+    small = [
+        ("SO20261001006", "解压捏捏乐", 35.0, "refunded"),
+        ("SO20261005007", "桌面收纳盒", 42.0, "refunded"),
+        ("SO20261010008", "便携风扇", 28.0, "refunded"),
+        ("SO20261015009", "蓝牙小音箱", 45.0, "delivered"),
+    ]
+    extra = [
+        Order(id=oid, tenant_id=t, customer_id=jack.id, amount=amount, status=status,
+              items=[{"name": name, "qty": 1, "price": amount}],
+              paid_at=_dt("2026-10-01T09:00:00"), delivered_at=_dt("2026-10-03T09:00:00"))
+        for oid, name, amount, status in small
+    ]
+    return _orders(emma, jack) + extra
+
+
+def fixture_refunds(tenant_slug: str, tenant_id: int) -> list[Refund]:
+    """Jack's three small refunds inside the 30-day velocity window. Timestamps are
+    relative to now so the fixture never ages out of the window."""
+    if tenant_slug != "leon":
+        return []
+    now = datetime.now(timezone.utc)
+    return [
+        Refund(tenant_id=tenant_id, order_id=oid, amount=amount, reason="不想要了", status="processing",
+               created_at=now - timedelta(days=days_ago))
+        for oid, amount, days_ago in (("SO20261001006", 35.0, 6), ("SO20261005007", 42.0, 4), ("SO20261010008", 28.0, 2))
+    ]
 
 
 def load_eval_cases(db: Session, tenant: Tenant, path: Path, suite: str = "default") -> int:
@@ -139,6 +166,8 @@ def seed_demo(db: Session, embedder: Embedder) -> bool:
                             visibility=visibility, source=filename)
         for order in fixture_orders(spec["slug"], users):
             db.add(order)
+        db.flush()
+        db.add_all(fixture_refunds(spec["slug"], tenant.id))
         db.commit()
         load_eval_cases(db, tenant, EVAL_DIR / f"{spec['slug']}_default.jsonl")
     return True

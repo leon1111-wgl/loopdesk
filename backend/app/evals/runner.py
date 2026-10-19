@@ -21,7 +21,7 @@ from sqlalchemy.pool import StaticPool
 from ..agent.runtime import RunOptions, collect
 from ..db import Base
 from ..models import Chunk, Document, EvalCase, EvalResult, EvalRun, Run, Span, Tenant, User
-from ..seed import fixture_orders
+from ..seed import fixture_orders, fixture_refunds
 
 _REFUSAL = re.compile(r"没有找到|无法回答|建议您转人工|无法处理|暂时无法给出")
 
@@ -72,6 +72,8 @@ def build_sandbox(db: Session, tenant: Tenant) -> Session:
     sandbox.add_all(_clone(c) for c in db.execute(select(Chunk).where(Chunk.tenant_id == tenant.id)).scalars())
     sandbox.flush()
     sandbox.add_all(fixture_orders(tenant.slug, {u.email: sandbox.get(User, u.id) for u in users}))
+    sandbox.flush()
+    sandbox.add_all(fixture_refunds(tenant.slug, tenant.id))
     sandbox.commit()
     return sandbox
 

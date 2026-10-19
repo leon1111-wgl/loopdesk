@@ -91,6 +91,11 @@ class Settings:
     verifier: str = "lexical"  # lexical | llm
     pii_masking: bool = True
     rate_limit_per_minute: int = 30
+    # Velocity limits for automatic refunds (anti-abuse): a run of small refunds that each
+    # stay under the per-refund limit still goes to a human once these are exceeded.
+    refund_window_days: int = 30
+    refund_window_max_count: int = 3
+    refund_window_max_amount: float = 200.0
 
     # Channels
     feishu_app_id: str | None = None
@@ -143,6 +148,9 @@ class Settings:
         s.verifier = _env("VERIFIER", s.verifier)
         s.pii_masking = _env_bool("PII_MASKING", s.pii_masking)
         s.rate_limit_per_minute = _env_int("RATE_LIMIT_PER_MINUTE", s.rate_limit_per_minute)
+        s.refund_window_days = _env_int("REFUND_WINDOW_DAYS", s.refund_window_days)
+        s.refund_window_max_count = _env_int("REFUND_WINDOW_MAX_COUNT", s.refund_window_max_count)
+        s.refund_window_max_amount = _env_float("REFUND_WINDOW_MAX_AMOUNT", s.refund_window_max_amount)
 
         s.feishu_app_id = _env("FEISHU_APP_ID")
         s.feishu_app_secret = _env("FEISHU_APP_SECRET")
