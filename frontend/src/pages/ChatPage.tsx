@@ -93,6 +93,13 @@ function EventItem({ event }: { event: AgentEvent }) {
           <div className="faint">命中规则：{event.matches.join("、")}。已记录，权限由工具层强制校验。</div>
         </div>
       );
+    case "rewrite":
+      return (
+        <div className="event">
+          <b>追问改写</b>
+          <div className="faint">结合上文理解为：{event.standalone}</div>
+        </div>
+      );
     case "tool_call":
       return (
         <div className="event tool">

@@ -20,7 +20,7 @@ from sqlalchemy.pool import StaticPool
 
 from ..agent.runtime import RunOptions, collect
 from ..db import Base
-from ..models import Chunk, Document, EvalCase, EvalResult, EvalRun, Run, Span, Tenant, User
+from ..models import Chunk, Conversation, Document, EvalCase, EvalResult, EvalRun, Run, Span, Tenant, User
 from ..seed import fixture_orders, fixture_refunds
 
 _REFUSAL = re.compile(r"没有找到|无法回答|建议您转人工|无法处理|暂时无法给出")
@@ -144,8 +144,17 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
     for case in cases:
         user = _resolve_user(sandbox, sandbox_tenant, case)
         started = time.perf_counter()
+        options = RunOptions(dry_run=True, prompt_version=prompt_version)
+        conversation = None
+        if case.history:  # multi-turn case: replay the earlier user turns in a sandbox conversation
+            conversation = Conversation(tenant_id=sandbox_tenant.id, user_id=user.id, channel="eval")
+            sandbox.add(conversation)
+            sandbox.commit()
+            for earlier in case.history:
+                collect(services.runtime(sandbox).start(tenant=sandbox_tenant, user=user, text=earlier,
+                                                        conversation=conversation, options=options))
         summary = collect(services.runtime(sandbox).start(tenant=sandbox_tenant, user=user, text=case.question,
-                                                          options=RunOptions(dry_run=True, prompt_version=prompt_version)))
+                                                          conversation=conversation, options=options))
         latency = int((time.perf_counter() - started) * 1000)
         passed, checks, answer, tools = score_case(case, summary)
         done = summary.get("done") or {}

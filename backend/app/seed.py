@@ -138,7 +138,8 @@ def load_eval_cases(db: Session, tenant: Tenant, path: Path, suite: str = "defau
             expected_tools=data.get("expected_tools", []), forbidden_tools=data.get("forbidden_tools", []),
             must_include=data.get("must_include", []), must_not_include=data.get("must_not_include", []),
             expect_refusal=data.get("expect_refusal"), expect_approval=data.get("expect_approval"),
-            expected_doc=data.get("expected_doc"), tags=data.get("tags", []), source="seed", status="active",
+            expected_doc=data.get("expected_doc"), tags=data.get("tags", []), history=data.get("history"),
+            source="seed", status="active",
         ))
         count += 1
     db.commit()

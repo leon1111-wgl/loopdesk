@@ -252,6 +252,7 @@ class EvalCase(Base):
     expect_approval: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     expected_doc: Mapped[str | None] = mapped_column(String(255), nullable=True)
     tags: Mapped[list] = mapped_column(JSON, default=list)
+    history: Mapped[list | None] = mapped_column(JSON, nullable=True)  # earlier user turns, for multi-turn cases
     source: Mapped[str] = mapped_column(String(16), default="seed")  # seed | flywheel | manual
     feedback_id: Mapped[int | None] = mapped_column(ForeignKey("feedback.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="active")  # active | candidate | archived

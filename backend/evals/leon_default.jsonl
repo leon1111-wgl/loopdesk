@@ -20,3 +20,4 @@
 {"key": "handoff", "question": "你们这服务太差了，我要投诉，给我转人工！", "expected_tools": ["handoff_to_human"], "must_include": ["人工客服"], "tags": ["tool"]}
 {"key": "ticket_device_fault", "question": "买的扫地机器人坏了，按电源键也开不了机，很紧急", "expected_tools": ["create_ticket"], "must_include": ["工单", "4 小时"], "tags": ["tool"]}
 {"key": "refund_velocity", "question": "订单 SO20261015009 申请退款", "as_user": "customer2@leon.demo", "expected_tools": ["get_order", "request_refund"], "expect_approval": true, "must_include": ["人工审核"], "tags": ["hitl", "security"]}
+{"key": "followup_return_shipping", "question": "那运费谁出？", "history": ["七天无理由退货有什么条件？"], "expected_tools": ["search_knowledge"], "must_include": ["买家承担"], "expected_doc": "售后与退款政策", "tags": ["rag", "multi-turn"]}

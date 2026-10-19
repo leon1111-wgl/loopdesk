@@ -34,6 +34,7 @@ from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.router import ModelRouter
 from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
+from .rewrite import is_followup, rewrite_followup
 from ..observability import request_id_var
 from .prompts import build_system_prompt, choose_prompt_version
 from .tools import Evidence, ToolContext, ToolError, ToolRegistry
@@ -87,7 +88,7 @@ class AgentRuntime:
         options = options or RunOptions()
         pii = mask_pii(text) if self.settings.pii_masking else PIIReport(text, [])
         history = self._history(conversation)
-        if conversation is not None and not options.dry_run:
+        if conversation is not None:  # dry runs pass a conversation only inside the eval sandbox
             self.db.add(Message(tenant_id=tenant.id, conversation_id=conversation.id, role="user", content=pii.masked))
             if conversation.title == "新对话":
                 conversation.title = pii.masked[:30]
@@ -106,6 +107,18 @@ class AgentRuntime:
             span.set(pii_found=pii.found, injection_matches=injection.matches)
         if injection.suspicious:
             yield {"type": "guardrail", "name": "prompt_injection", "matches": injection.matches}
+
+        # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
+        question = pii.masked
+        previous = next((m.content for m in reversed(history) if m.role == "user"), None)
+        if is_followup(text, previous):
+            with tracer.span("rewrite", "followup_rewrite", {"question": pii.masked, "previous": previous}) as span:
+                span.model = self.settings.llm_model_fast
+                result, span.prompt_tokens, span.completion_tokens = rewrite_followup(
+                    self.provider, self.settings.llm_model_fast, history, pii.masked, previous)
+                span.set(standalone=result.standalone, method=result.method)
+            question = result.standalone
+            yield {"type": "rewrite", "standalone": question, "method": result.method}
 
         # Prompt version: forced (offline A/B) > canary split by conversation > default.
         prompt_version = options.prompt_version or choose_prompt_version(
@@ -139,7 +152,7 @@ class AgentRuntime:
             "request_id": request_id_var.get(),
         }
         messages = [LLMMessage(role="system", content=build_system_prompt(tenant, user, version=prompt_version)), *history,
-                    LLMMessage(role="user", content=pii.masked)]
+                    LLMMessage(role="user", content=question)]
         ctx = self._context(tenant, user, run, conversation, options.dry_run, [])
         try:
             yield from self._loop(run, tracer, ctx, state, messages, queue=[], started=time.perf_counter())
@@ -453,7 +466,7 @@ class AgentRuntime:
             **(extra_meta or {}),
         }
         message_id = None
-        if ctx.conversation_id and not ctx.dry_run:
+        if ctx.conversation_id:
             message = Message(tenant_id=run.tenant_id, conversation_id=ctx.conversation_id, role="assistant",
                               content=final_text, run_id=run.id, meta=meta)
             self.db.add(message)

@@ -43,7 +43,7 @@ def test_correction_becomes_eval_case_and_kb_patch_and_closes_the_loop(client, a
 
     # 5. regression suite: the new case passes and nothing else broke
     run = client.post("/api/evals/runs", json={}, headers=admin).json()
-    assert run["passed"] == run["total"] == 23
+    assert run["passed"] == run["total"] == 24
     detail = client.get(f"/api/evals/runs/{run['id']}", headers=admin).json()
     assert any(res["case_key"] == new_case["key"] and res["passed"] for res in detail["results"])
 

@@ -8,6 +8,7 @@ import type { EvidenceItem, RunRow, SpanRow } from "../types";
 const KIND_TEXT: Record<string, string> = {
   guardrail: "护栏", router: "路由", llm: "模型", tool: "工具", verify: "校验", approval: "审批", notify: "通知",
   cache: "缓存",
+  rewrite: "改写",
 };
 
 interface RunDetail extends RunRow {

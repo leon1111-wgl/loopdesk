@@ -63,6 +63,7 @@ export interface ChatMessage {
 export type AgentEvent =
   | { type: "run_started"; run_id: string }
   | { type: "guardrail"; name: string; matches: string[] }
+  | { type: "rewrite"; standalone: string; method: string }
   | { type: "token"; step: number; text: string }
   | { type: "step_done"; step: number }
   | { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
