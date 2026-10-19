@@ -67,3 +67,41 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - CLI wrappe
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+def erase_user(db: Session, user_id: int) -> dict[str, int]:
+    """Right to erasure for one user: redact their conversations, runs and the feedback
+    written about their messages, drop trace spans, anonymise the account so it can no
+    longer sign in. Orders, refunds and approvals stay as accounting/audit records, but
+    the approval evidence (which quotes the conversation) is cleared."""
+    import secrets
+
+    from ..models import Approval, Conversation, Feedback, User
+    from ..security import hash_password
+
+    user = db.get(User, user_id)
+    if user is None:
+        raise ValueError("user not found")
+    conversation_ids = select(Conversation.id).where(Conversation.user_id == user_id)
+    message_ids = select(Message.id).where(Message.conversation_id.in_(conversation_ids))
+    run_ids = select(Run.id).where(Run.user_id == user_id)
+    counts = {
+        "messages": db.execute(update(Message).where(Message.conversation_id.in_(conversation_ids))
+                               .values(content=REDACTED, meta={}), execution_options={"synchronize_session": False}).rowcount,
+        "spans": db.execute(delete(Span).where(Span.run_id.in_(run_ids))).rowcount,
+        "runs": db.execute(update(Run).where(Run.user_id == user_id)
+                           .values(input_text=REDACTED, output_text=REDACTED, state={}),
+                           execution_options={"synchronize_session": False}).rowcount,
+        "feedback": db.execute(update(Feedback).where(Feedback.message_id.in_(message_ids))
+                               .values(question=REDACTED, answer=REDACTED, correction=REDACTED, comment=""),
+                               execution_options={"synchronize_session": False}).rowcount,
+        "approvals": db.execute(update(Approval).where(Approval.run_id.in_(run_ids)).values(evidence=[]),
+                                execution_options={"synchronize_session": False}).rowcount,
+    }
+    db.execute(update(Conversation).where(Conversation.user_id == user_id).values(title=REDACTED),
+               execution_options={"synchronize_session": False})
+    user.name = f"已注销用户 {user.id}"
+    user.email = f"erased-{user.id}-{secrets.token_hex(4)}@invalid"
+    user.password_hash = hash_password(secrets.token_urlsafe(32))
+    db.commit()
+    return counts

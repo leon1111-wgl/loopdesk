@@ -40,3 +40,26 @@ def test_runs_waiting_for_approval_are_never_redacted(ask, login):
         apply_retention(db, 90)
         assert db.get(Run, run_id).input_text != REDACTED
         assert db.query(Approval).filter(Approval.run_id == run_id).count() == 1, "audit records stay"
+
+
+def test_erase_user_personal_data(client, ask, login):
+    from app.models import Order, User
+
+    customer = login("customer@leon.demo")
+    _, events = ask(customer, "SO20261008002 我要退款")
+    run_id = by_type(events, "done")[0]["run_id"]
+    other_run = by_type(ask(login("customer2@leon.demo"), "积分可以怎么抵扣？")[1], "done")[0]["run_id"]
+    with new_session() as db:
+        emma = db.query(User).filter(User.email == "customer@leon.demo").one().id
+    admin = login("admin@leon.demo")
+    assert client.delete(f"/api/admin/users/{emma}/personal-data", headers=login("admin@iris.demo")).status_code == 404
+    assert client.delete(f"/api/admin/users/{emma}/personal-data", headers=login("agent@leon.demo")).status_code == 403
+    erased = client.delete(f"/api/admin/users/{emma}/personal-data", headers=admin).json()["erased"]
+    assert erased["messages"] == 2 and erased["runs"] == 1 and erased["approvals"] == 1
+    assert client.post("/api/auth/login", json={"email": "customer@leon.demo", "password": "loopdesk-demo"}).status_code == 401
+    with new_session() as db:
+        assert db.get(Run, run_id).input_text == REDACTED
+        approval = db.query(Approval).filter(Approval.run_id == run_id).one()
+        assert approval.evidence == [] and approval.arguments["amount"] == 1299.0, "audit record kept, quotes removed"
+        assert db.get(Order, "SO20261008002") is not None, "orders are accounting records"
+        assert db.get(Run, other_run).input_text != REDACTED, "other customers untouched"

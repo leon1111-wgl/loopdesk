@@ -85,3 +85,15 @@ def patch_tenant(body: TenantPatch, principal: Principal = Depends(require_admin
         tenant.ticket_sla_hours = body.ticket_sla_hours
     db.commit()
     return tenant_out(tenant)
+
+
+@router.delete("/admin/users/{user_id}/personal-data")
+def erase_personal_data(user_id: int, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Right to erasure (PIPL / GDPR style) for one user of the admin's tenant."""
+    from ..ops.retention import erase_user
+    from .common import get_owned
+
+    target = get_owned(db, User, user_id, principal.tenant.id)
+    if target.id == principal.user.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "不能抹除自己的账号")
+    return {"user_id": target.id, "erased": erase_user(db, target.id)}
