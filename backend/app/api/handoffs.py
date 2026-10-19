@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..agent import handoff
@@ -75,15 +75,27 @@ def list_handoffs(principal: Principal = Depends(require_staff), db: Session = D
     return [handoff_out(db, t) for t in tickets]
 
 
+def _transition(db: Session, ticket: Ticket, to: str, user_id: int, **values) -> None:
+    """Change a live ticket in one conditional UPDATE. The check in _active is a read: a reply
+    and a close arriving together could both pass it, and the reply would reopen a ticket that
+    had just been closed. The first person to act owns the ticket (COALESCE keeps an owner)."""
+    claimed = db.execute(
+        update(Ticket).where(Ticket.id == ticket.id, Ticket.status.in_(handoff.ACTIVE))
+        .values(status=to, assignee_id=func.coalesce(Ticket.assignee_id, user_id), **values)
+        .execution_options(synchronize_session="fetch")
+    ).rowcount
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "该转人工请求已经结束")
+
+
 @router.post("/{ticket_id}/reply")
 def reply(ticket_id: int, body: ReplyIn, principal: Principal = Depends(require_staff),
           db: Session = Depends(get_db)) -> dict:
     ticket, conversation = _active(db, principal, ticket_id)
-    ticket.status = "in_progress"
-    ticket.assignee_id = ticket.assignee_id or principal.user.id  # the first person to answer owns it
+    _transition(db, ticket, "in_progress", principal.user.id)
     message = Message(tenant_id=ticket.tenant_id, conversation_id=conversation.id, role="agent",
                       content=body.content.strip(), meta={"agent": principal.user.name, "agent_id": principal.user.id})
-    conversation.status = "handoff"
     conversation.updated_at = datetime.now(timezone.utc)
     db.add(message)
     db.commit()
@@ -95,8 +107,7 @@ def reply(ticket_id: int, body: ReplyIn, principal: Principal = Depends(require_
 def close(ticket_id: int, principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
     """End the human service and hand the conversation back to the agent."""
     ticket, conversation = _active(db, principal, ticket_id)
-    ticket.status, ticket.closed_at = "closed", datetime.now(timezone.utc)
-    ticket.assignee_id = ticket.assignee_id or principal.user.id
+    _transition(db, ticket, "closed", principal.user.id, closed_at=datetime.now(timezone.utc))
     conversation.status = "bot"
     conversation.updated_at = datetime.now(timezone.utc)
     db.add(Message(tenant_id=ticket.tenant_id, conversation_id=conversation.id, role="system", content=HANDBACK_TEXT))

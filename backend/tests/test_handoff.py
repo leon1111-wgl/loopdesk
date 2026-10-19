@@ -134,3 +134,27 @@ def test_dashboard_reports_the_queue_and_first_response(client, ask, login):
     queue = client.get("/api/metrics/overview", headers=admin).json()["handoff_queue"]
     assert (queue["waiting"], queue["in_progress"], queue["handoffs"]) == (1, 1, 2)
     assert queue["avg_first_response_s"] is not None and queue["longest_wait_s"] >= 0
+
+
+def test_a_reply_that_read_the_ticket_before_a_close_cannot_reopen_it(client, ask, login, monkeypatch):
+    from app.api import handoffs as api
+    from app.api.common import get_owned
+    from app.models import Conversation, Message
+
+    emma, mia = login("customer@leon.demo"), login("agent@leon.demo")
+    conversation_id, _ = ask(emma, "转人工")
+    ticket_id = client.get("/api/handoffs", headers=mia).json()[0]["ticket_id"]
+    assert client.post(f"/api/handoffs/{ticket_id}/close", headers=mia).status_code == 200
+
+    def stale_check(db, principal, tid):  # what a reply that read the ticket just before the close saw
+        ticket = get_owned(db, Ticket, tid, principal.tenant.id)
+        return ticket, db.get(Conversation, ticket.conversation_id)
+
+    monkeypatch.setattr(api, "_active", stale_check)
+    r = client.post(f"/api/handoffs/{ticket_id}/reply", json={"content": "还在吗？"}, headers=mia)
+    assert r.status_code == 409
+    with new_session() as db:
+        assert db.get(Ticket, ticket_id).status == "closed"
+        assert db.get(Conversation, conversation_id).status == "bot"
+        assert not db.execute(select(Message).where(Message.conversation_id == conversation_id,
+                                                    Message.role == "agent")).first()
