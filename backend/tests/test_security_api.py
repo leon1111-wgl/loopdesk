@@ -1,4 +1,10 @@
-from tests.conftest import by_type
+import logging
+
+import pytest
+
+from app.config import Settings
+from app.main import create_app
+from tests.conftest import _reset_database, by_type
 
 
 def test_login_failure_and_missing_token(client):
@@ -64,6 +70,28 @@ def test_login_limit_per_account_ignores_case_and_whitespace(client):
     attempts = [" " * (i % 3) + ("Admin@Leon.Demo" if i % 2 else "admin@leon.demo") for i in range(11)]
     codes = [client.post("/api/auth/login", json={"email": e, "password": "guess"}).status_code for e in attempts]
     assert codes == [401] * 10 + [429]
+
+
+@pytest.mark.parametrize("secret", [Settings().jwt_secret, "change-me-to-a-long-random-string-before-deploying",
+                                    "short-secret"])
+def test_production_config_refuses_a_public_or_short_jwt_secret(settings, secret):
+    settings.seed_demo, settings.jwt_secret = False, secret
+    with pytest.raises(RuntimeError, match="LOOPDESK_JWT_SECRET"):
+        create_app(settings)
+
+
+def test_demo_config_starts_but_warns_about_the_default_jwt_secret(settings, caplog):
+    _reset_database(settings.database_url)
+    settings.jwt_secret = Settings().jwt_secret
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        create_app(settings)
+    assert "LOOPDESK_JWT_SECRET" in caplog.text
+
+
+def test_production_config_starts_with_a_strong_secret(settings):
+    _reset_database(settings.database_url)
+    settings.seed_demo = False  # the fixture's secret is 36 random-looking bytes
+    assert create_app(settings).title == "LoopDesk API"
 
 
 def test_upload_validation(client, login):

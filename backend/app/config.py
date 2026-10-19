@@ -30,6 +30,15 @@ DEFAULT_PRICES: dict[str, tuple[float, float]] = {
 }
 
 
+# JWT secrets published in this repository (code default, .env.example, docker-compose.yml).
+# Anyone can sign an admin token with them, so a production configuration refuses them.
+PUBLIC_JWT_SECRETS = frozenset({
+    "dev-only-insecure-secret-change-me-in-prod",
+    "please-replace-with-a-long-random-string-32-bytes-min",
+    "change-me-to-a-long-random-string-before-deploying",
+})
+
+
 def _env(name: str, default: str | None = None) -> str | None:
     value = os.environ.get(f"LOOPDESK_{name}")
     return value if value not in (None, "") else default
@@ -168,6 +177,14 @@ class Settings:
             for model, pair in json.loads(extra_prices).items():
                 s.prices[model] = (float(pair[0]), float(pair[1]))
         return s
+
+    def jwt_secret_problem(self) -> str | None:
+        """Why the JWT signing secret is unsafe, or None. HS256 wants at least 32 bytes."""
+        if self.jwt_secret in PUBLIC_JWT_SECRETS:
+            return "是仓库中公开的默认值"
+        if len(self.jwt_secret.encode()) < 32:
+            return "短于 32 字节"
+        return None
 
     def price_for(self, model: str) -> tuple[float, float]:
         return self.prices.get(model, (0.0, 0.0))

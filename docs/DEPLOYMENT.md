@@ -23,7 +23,7 @@ cp .env.example .env    # 按需修改
 docker compose up --build
 ```
 
-`docker-compose.yml` 会启动 PostgreSQL 16 和应用镜像（多阶段构建：Node 构建前端，Python 运行后端并托管静态文件，以非 root 用户运行）。上线前请务必修改 `LOOPDESK_JWT_SECRET`，并设置 `LOOPDESK_SEED_DEMO=0`。
+`docker-compose.yml` 会启动 PostgreSQL 16 和应用镜像（多阶段构建：Node 构建前端，Python 运行后端并托管静态文件，以非 root 用户运行）。上线前请务必修改 `LOOPDESK_JWT_SECRET`，并设置 `LOOPDESK_SEED_DEMO=0`。生产配置（`LOOPDESK_SEED_DEMO=0`）下，如果 JWT 密钥仍是仓库里公开的默认值（代码默认值、`.env.example`、`docker-compose.yml` 中的占位符）或短于 32 字节，服务会直接拒绝启动；演示模式下只在启动日志里打印警告。
 
 放在 Nginx 等反向代理后面时，用 `uvicorn app.main:app --proxy-headers --forwarded-allow-ips=<代理 IP>` 启动，让登录限流看到真实的客户端 IP；不要让应用直接信任任意来源的 `X-Forwarded-For`，否则攻击者可以伪造 IP 绕过限流。
 
@@ -34,7 +34,7 @@ docker compose up --build
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///./loopdesk.db` | 也支持 `postgresql+psycopg://...` |
-| `JWT_SECRET` | 开发用默认值 | 生产环境必须修改，至少 32 字节 |
+| `JWT_SECRET` | 开发用默认值 | 生产环境必须修改，至少 32 字节；`SEED_DEMO=0` 时使用公开默认值或过短的密钥会拒绝启动 |
 | `SEED_DEMO` / `SEED_DEMO_TRAFFIC` | `1` / `1` | 演示租户、账号和预置对话 |
 | `LLM_PROVIDER` | `mock` | `mock` / `openai_compat` / `anthropic` |
 | `LLM_PRESET` | — | `doubao` / `hunyuan` / `deepseek` / `qwen` / `openai`，自动填写 Base URL |

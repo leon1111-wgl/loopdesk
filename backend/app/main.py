@@ -8,6 +8,7 @@ process, so a single container is enough for a demo deployment.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -22,10 +23,27 @@ from .seed import seed_demo, seed_demo_traffic
 from .services import Services, set_services
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+logger = logging.getLogger(__name__)
+
+
+def check_jwt_secret(settings: Settings) -> None:
+    """A known or short signing secret lets anyone forge an admin token. Refuse to start in
+    a production configuration (LOOPDESK_SEED_DEMO=0); in demo mode, warn loudly."""
+    problem = settings.jwt_secret_problem()
+    if problem is None:
+        return
+    message = f"LOOPDESK_JWT_SECRET {problem}，任何人都可以用它伪造登录令牌"
+    if not settings.seed_demo:
+        raise RuntimeError(
+            f"{message}。生产配置（LOOPDESK_SEED_DEMO=0）拒绝启动：请设置至少 32 字节的随机字符串，"
+            "例如 python -c 'import secrets; print(secrets.token_urlsafe(48))'"
+        )
+    logger.warning("%s。演示模式继续启动，部署前务必更换并设置 LOOPDESK_SEED_DEMO=0。", message)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    check_jwt_secret(settings)
     set_settings(settings)
     init_engine(settings.database_url)
     create_all()
