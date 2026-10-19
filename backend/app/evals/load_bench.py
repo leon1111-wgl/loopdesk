@@ -60,7 +60,8 @@ def _prepare_database(database_url: str) -> None:
                    env={**os.environ, "LOOPDESK_DATABASE_URL": database_url, "LOOPDESK_SEED_DEMO_TRAFFIC": "0"})
 
 
-def _start_server(database_url: str, workers: int, cache_hours: float) -> tuple[subprocess.Popen, str]:
+def _start_server(database_url: str, workers: int, cache_hours: float,
+                  extra_env: dict[str, str] | None = None) -> tuple[subprocess.Popen, str]:
     port = _free_port()
     env = {
         **os.environ,
@@ -72,6 +73,7 @@ def _start_server(database_url: str, workers: int, cache_hours: float) -> tuple[
         "LOOPDESK_MOCK_STREAM_DELAY": "0",
         "LOOPDESK_LOG_LEVEL": "WARNING",
         "LOOPDESK_ANSWER_CACHE_TTL_HOURS": str(cache_hours),
+        **(extra_env or {}),
     }
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(port), "--workers", str(workers),

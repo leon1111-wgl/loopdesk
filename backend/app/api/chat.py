@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+import queue
+import threading
+from collections.abc import Callable, Iterator
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -116,23 +118,48 @@ def stream_message(conversation_id: int, body: ChatIn, principal: Principal = De
     options = _options(principal, body)
     user_id, tenant_id = principal.user.id, principal.tenant.id
 
-    def events() -> Iterator[str]:
+    def run() -> Iterator[dict]:
         session = new_session()  # the request-scoped session is closed once streaming starts
         try:
             runtime = get_services().runtime(session)
-            for event in runtime.start(
+            yield from runtime.start(
                 tenant=session.get(Tenant, tenant_id), user=session.get(User, user_id),
                 text=body.content, conversation=session.get(Conversation, conversation_id), options=options,
-            ):
-                yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+            )
         except Exception as exc:  # report instead of silently cutting the stream
             session.rollback()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)[:300]}, ensure_ascii=False)}\n\n"
+            yield {"type": "error", "message": str(exc)[:300]}
         finally:
             session.close()
 
+    def events() -> Iterator[str]:
+        for event in detached(run):
+            yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def detached(produce: Callable[[], Iterator[dict]]) -> Iterator[dict]:
+    """Run a generator to completion in its own thread and relay its items.
+
+    A customer who closes the tab mid-answer stops consuming the stream. Without this,
+    the run would stop at its current step and stay "running" forever, with tool side
+    effects (a refund) but no answer saved. Here the run always finishes: the answer is
+    in the conversation when the customer comes back, and the trace is complete."""
+    items: queue.Queue = queue.Queue()
+    done = object()
+
+    def worker() -> None:
+        try:
+            for item in produce():
+                items.put(item)
+        finally:
+            items.put(done)
+
+    threading.Thread(target=worker, name="loopdesk-run", daemon=True).start()
+    while (item := items.get()) is not done:
+        yield item
 
 
 @router.post("/chat")
