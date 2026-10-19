@@ -63,7 +63,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 
 **集成**
 - 模型：豆包（火山方舟）、混元、DeepSeek、通义、OpenAI 统一走 OpenAI 兼容协议；Claude 使用官方 SDK；没有 Key 时使用离线确定性模型。
-- 渠道：飞书机器人事件回调（challenge 校验、事件去重、3 秒内先回 200）、企业微信群机器人审批提醒。
+- 渠道：飞书机器人事件回调（challenge 校验、事件去重、3 秒内先回 200，后台处理失败时记录日志并回复兜底话术）、企业微信群机器人审批提醒。
 - MCP：只读工具通过 MCP 暴露，Claude Desktop、Cursor 等客户端可以直接接入。
 - 运维：Prometheus `/metrics`、Docker、docker-compose（PostgreSQL）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、镜像构建）。
 

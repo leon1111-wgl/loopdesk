@@ -179,6 +179,33 @@ def test_feishu_message_event_runs_agent_once(client, monkeypatch):
     assert "1-3个工作日" in replies[0][1]
 
 
+def test_feishu_background_failure_is_logged_and_answered(client, monkeypatch, caplog):
+    import logging
+
+    from app.agent.runtime import MODEL_ERROR_TEXT
+    from app.services import get_services
+
+    replies = []
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append((mid, text)) or {"sent": False})
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(get_services().provider, "stream", broken)
+    event = {
+        "schema": "2.0",
+        "header": {"event_id": "evt-fail", "event_type": "im.message.receive_v1", "token": ""},
+        "event": {"sender": {"sender_id": {"open_id": "ou_def456"}},
+                  "message": {"message_id": "om_9", "chat_id": "oc_9", "message_type": "text",
+                              "content": json.dumps({"text": "积分可以怎么抵扣？"})}},
+    }
+    deduper._seen.clear()
+    with caplog.at_level(logging.ERROR, logger="app.channels.feishu"):
+        assert client.post("/api/channels/feishu/leon/events", json=event).json() == {"code": 0}
+    assert replies == [("om_9", MODEL_ERROR_TEXT)], "the customer still gets an answer"
+    assert "om_9" in caplog.text and "database is locked" in caplog.text
+
+
 def test_mcp_server_tools_respect_permissions(settings, client, monkeypatch):
     from app import mcp_server
     from app.agent.business_tools import get_order

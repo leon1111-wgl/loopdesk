@@ -8,11 +8,14 @@ Inbound: the event subscription posts to /api/channels/feishu/{tenant}/events.
 Outbound: tenant_access_token (cached until expiry) + reply / send-to-chat APIs.
 
 Without LOOPDESK_FEISHU_APP_ID / _APP_SECRET, replies are dry runs (returned, not sent).
+Failures inside the background task are logged and answered with a fallback reply,
+because FastAPI's BackgroundTasks would otherwise swallow them silently.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import threading
@@ -22,7 +25,7 @@ from collections import OrderedDict
 import httpx
 from sqlalchemy import select
 
-from ..agent.runtime import collect
+from ..agent.runtime import MODEL_ERROR_TEXT, collect
 from ..config import Settings
 from ..db import new_session
 from ..models import Conversation, Tenant, User
@@ -30,6 +33,7 @@ from ..security import hash_password
 
 API = "https://open.feishu.cn/open-apis"
 _MENTION = re.compile(r"@_user_\d+\s*")
+logger = logging.getLogger(__name__)
 
 
 class EventDeduper:
@@ -117,7 +121,21 @@ def parse_text_event(body: dict) -> dict | None:
 
 
 def handle_message(services, tenant_slug: str, parsed: dict) -> dict:
-    """Run the agent for one Feishu message and reply. Executed as a background task."""
+    """Run the agent for one Feishu message and reply. Executed as a background task:
+    the HTTP response has already been sent, so an exception here would vanish without a
+    trace and the customer would wait forever. Log it and send a fallback reply instead."""
+    try:
+        return _answer(services, tenant_slug, parsed)
+    except Exception:
+        logger.exception("feishu message %s for tenant %s failed", parsed.get("message_id"), tenant_slug)
+        try:
+            return FeishuClient(services.settings).reply(parsed["message_id"], MODEL_ERROR_TEXT)
+        except Exception:
+            logger.exception("feishu fallback reply to %s failed", parsed.get("message_id"))
+            return {"sent": False, "error": "fallback reply failed"}
+
+
+def _answer(services, tenant_slug: str, parsed: dict) -> dict:
     with new_session() as db:
         tenant = db.execute(select(Tenant).where(Tenant.slug == tenant_slug)).scalar_one_or_none()
         if tenant is None or not parsed["text"]:
@@ -140,5 +158,5 @@ def handle_message(services, tenant_slug: str, parsed: dict) -> dict:
             db.commit()
         summary = collect(services.runtime(db).start(tenant=tenant, user=user, text=parsed["text"],
                                                      conversation=conversation))
-        answer = (summary["final"] or {}).get("text", "")
+        answer = (summary["final"] or {}).get("text") or MODEL_ERROR_TEXT
         return FeishuClient(services.settings).reply(parsed["message_id"], answer)

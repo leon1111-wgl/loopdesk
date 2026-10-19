@@ -71,7 +71,7 @@ docker compose up --build
 3. **关闭 Encrypt Key**（当前版本还不支持 AES 解密），把 Verification Token 填到 `LOOPDESK_FEISHU_VERIFICATION_TOKEN`。
 4. 把 App ID 和 App Secret 填到环境变量中。
 
-收到消息后，服务会立即返回 200（飞书要求 3 秒内响应），然后在后台运行 Agent 并回复原消息。同一个 `event_id` 只处理一次。需要审批的退款处理完后，结果会主动推送到原群聊。
+收到消息后，服务会立即返回 200（飞书要求 3 秒内响应），然后在后台运行 Agent 并回复原消息。同一个 `event_id` 只处理一次。需要审批的退款处理完后，结果会主动推送到原群聊。后台任务里的异常不会再被静默吞掉：会以 ERROR 级别记录到 `app.channels.feishu` 日志（含 message_id 和堆栈），并给用户回复“智能客服暂时繁忙”的兜底话术。
 
 ## 企业微信审批提醒
 
