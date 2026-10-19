@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import get_db
 from .models import RateCounter, Tenant, User
-from .observability import tenant_var, user_var
+from .observability import identify
 
 ROLES = ("admin", "agent", "customer")
 STAFF_ROLES = ("admin", "agent")
@@ -82,8 +82,7 @@ def get_principal(request: Request, db: Session = Depends(get_db)) -> Principal:
     if user is None or user.tenant_id != claims.get("tid"):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在")
     tenant = db.get(Tenant, user.tenant_id)
-    tenant_var.set(tenant.id)
-    user_var.set(user.id)
+    identify(tenant.id, user.id)
     return Principal(user, tenant)
 
 

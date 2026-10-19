@@ -26,6 +26,19 @@ from starlette.middleware.base import BaseHTTPMiddleware
 request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 tenant_var: ContextVar[int | None] = ContextVar("tenant_id", default=None)
 user_var: ContextVar[int | None] = ContextVar("user_id", default=None)
+# Who the request is for, filled in by authentication. Sync dependencies run in a worker
+# thread on a copy of the context, so a ContextVar they set never reaches the middleware's
+# access log line; a mutable object created by the middleware is shared by both copies.
+request_scope_var: ContextVar[dict | None] = ContextVar("request_scope", default=None)
+
+
+def identify(tenant_id: int, user_id: int) -> None:
+    """Record the authenticated tenant and user for this request's log lines."""
+    tenant_var.set(tenant_id)
+    user_var.set(user_id)
+    scope = request_scope_var.get()
+    if scope is not None:
+        scope.update(tenant_id=tenant_id, user_id=user_id)
 
 # Baseline browser hardening for the API and the bundled console. The CSP allows only
 # same-origin scripts, styles (inline style attributes are used by React), images (plus
@@ -55,8 +68,8 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
             "request_id": request_id_var.get(),
-            "tenant_id": tenant_var.get(),
-            "user_id": user_var.get(),
+            "tenant_id": tenant_var.get() or (request_scope_var.get() or {}).get("tenant_id"),
+            "user_id": user_var.get() or (request_scope_var.get() or {}).get("user_id"),
         }
         for key in ("method", "path", "status", "latency_ms", "run_id"):
             if hasattr(record, key):
@@ -82,6 +95,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         request_id = incoming if _SAFE_ID.match(incoming) else uuid.uuid4().hex
         token = request_id_var.set(request_id)
         tenant_token, user_token = tenant_var.set(None), user_var.set(None)
+        scope_token = request_scope_var.set({"tenant_id": None, "user_id": None})
         started = time.perf_counter()
         status = 500
         try:
@@ -109,6 +123,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             request_id_var.reset(token)
             tenant_var.reset(tenant_token)
             user_var.reset(user_token)
+            request_scope_var.reset(scope_token)
 
 
 def _error_response(request_id: str) -> JSONResponse:

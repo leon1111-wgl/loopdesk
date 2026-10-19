@@ -89,3 +89,27 @@ def test_responses_carry_server_timing(client):
     r = client.get("/api/health")
     name, _, duration = r.headers["server-timing"].partition(";dur=")
     assert name == "app" and float(duration) >= 0
+
+
+def test_the_access_log_says_which_tenant_and_user_made_the_request(client, login):
+    # Authentication runs in a worker thread on a copy of the request context; the tenant and
+    # user it recorded never reached the access log line, which showed null for every request.
+    import io
+
+    headers = login("customer@leon.demo")
+    me = client.get("/api/auth/me", headers=headers).json()
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter())
+    access = logging.getLogger("loopdesk.access")
+    access.addHandler(handler)
+    try:
+        client.get("/api/conversations", headers=headers)
+        client.get("/api/health")
+    finally:
+        access.removeHandler(handler)
+    lines = [json.loads(line) for line in stream.getvalue().splitlines()]
+    by_path = {line["path"]: line for line in lines}
+    assert by_path["/api/conversations"]["tenant_id"] == me["tenant"]["id"]
+    assert by_path["/api/conversations"]["user_id"] == me["id"]
+    assert by_path["/api/health"]["tenant_id"] is None, "nothing leaks from the previous request"
