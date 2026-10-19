@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket
 from ..rag.retrieval import hybrid_search
@@ -317,6 +318,13 @@ def create_ticket(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _already_queued(ctx: ToolContext, ticket: Ticket) -> dict[str, Any]:
+    current = handoff.ticket_state(ctx.db, ticket)
+    message = (handoff.notice(current) if current["assignee"] else
+               f"您已在人工客服队列中，当前排第 {current['position']} 位，无需重复申请，请稍候。")
+    return {"queued": True, "already_queued": True, "queue_position": current["position"], "message": message}
+
+
 def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     reason = str(args.get("reason") or "用户要求转人工")[:200]
     if ctx.conversation_id:
@@ -325,10 +333,7 @@ def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             # Asking again must not open a second ticket or move the customer behind people who
             # queued later. (The runtime normally keeps the agent out of a conversation that is
             # with a person; this covers the agent being called anyway.)
-            current = handoff.ticket_state(ctx.db, existing)
-            message = (handoff.notice(current) if current["assignee"] else
-                       f"您已在人工客服队列中，当前排第 {current['position']} 位，无需重复申请，请稍候。")
-            return {"queued": True, "already_queued": True, "queue_position": current["position"], "message": message}
+            return _already_queued(ctx, existing)
     waiting = handoff.waiting_ahead(ctx.db, ctx.tenant.id)  # the new ticket is not in it yet
     if not ctx.dry_run:
         if ctx.conversation_id:
@@ -339,7 +344,11 @@ def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             tenant_id=ctx.tenant.id, conversation_id=ctx.conversation_id, customer_id=ctx.user.id,
             kind="handoff", title=f"转人工：{reason[:40]}", description=reason, priority="high",
         ))
-        ctx.db.commit()
+        try:
+            ctx.db.commit()
+        except IntegrityError:  # a concurrent request opened this conversation's ticket first
+            ctx.db.rollback()
+            return _already_queued(ctx, handoff.active_ticket(ctx.db, ctx.conversation_id))
     position = waiting + 1
     return {"queued": True, "already_queued": False, "queue_position": position,
             "message": handoff.notice({"position": position, "assignee": None})}

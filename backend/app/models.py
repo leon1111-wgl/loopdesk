@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -193,8 +193,17 @@ class Refund(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+LIVE_HANDOFF = "kind = 'handoff' AND status IN ('open', 'in_progress')"
+
+
 class Ticket(Base):
     __tablename__ = "tickets"
+    # At most one live handoff per conversation, enforced by the database: two concurrent
+    # "转人工" requests both pass a check-then-insert, but only one insert can succeed.
+    __table_args__ = (
+        Index("uq_tickets_live_handoff", "conversation_id", unique=True,
+              sqlite_where=text(LIVE_HANDOFF), postgresql_where=text(LIVE_HANDOFF)),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)

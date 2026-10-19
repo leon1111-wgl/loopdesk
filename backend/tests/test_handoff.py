@@ -97,3 +97,27 @@ def test_the_tool_itself_reuses_an_open_ticket(settings, ask, login):
         out = handoff_to_human(ctx, {"reason": "再次要求"})
         assert out["already_queued"] is True and out["queue_position"] == 1 and "无需重复" in out["message"]
         assert _handoffs(db, conversation_id) == 1
+
+
+def test_concurrent_handoffs_cannot_open_two_tickets(settings, ask, login, monkeypatch):
+    # Simulate the race: the check runs before the other request's insert is visible.
+    from app.agent import business_tools, handoff
+    from app.agent.tools import ToolContext
+    from app.models import Tenant, User
+
+    conversation_id, _ = ask(login("customer@leon.demo"), "转人工")
+    real_lookup = handoff.active_ticket
+    calls = []
+
+    def stale_lookup(db, cid):
+        calls.append(cid)
+        return None if len(calls) == 1 else real_lookup(db, cid)
+
+    monkeypatch.setattr(handoff, "active_ticket", stale_lookup)
+    with new_session() as db:
+        emma = db.execute(select(User).where(User.email == "customer@leon.demo")).scalar_one()
+        ctx = ToolContext(db=db, settings=settings, tenant=db.get(Tenant, emma.tenant_id), user=emma,
+                          embedder=None, run_id="test", conversation_id=conversation_id)
+        out = business_tools.handoff_to_human(ctx, {"reason": "并发的第二次请求"})
+        assert out["already_queued"] is True, "the unique index rejected the second insert"
+        assert _handoffs(db, conversation_id) == 1
