@@ -338,3 +338,14 @@ class EvalResult(Base):
     tools_called: Mapped[list] = mapped_column(JSON, default=list)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+
+class RateCounter(Base):
+    """Attempts per key in a one-minute window, in the database so that every worker process
+    shares the count (an in-process limiter lets N workers allow N times the limit)."""
+
+    __tablename__ = "rate_counters"
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)  # sha256 of "login:<email>" etc.
+    minute: Mapped[int] = mapped_column(Integer, primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, default=0)
+

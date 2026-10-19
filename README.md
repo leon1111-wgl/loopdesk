@@ -215,7 +215,7 @@ Python 3.12 · FastAPI · SQLAlchemy 2 · SQLite / PostgreSQL · jieba · httpx 
 ## 路线图
 
 - [ ] 向量库切换到 pgvector / Milvus，支持十万级片段
-- [ ] 异步化 Agent 循环（async httpx + async SQLAlchemy），并支持多副本部署（限流和事件去重改用 Redis）
+- [ ] 异步化 Agent 循环（async httpx + async SQLAlchemy），并支持多副本部署（对话限流和事件去重改用 Redis；登录限流已改为数据库计数，多 worker 共享）
 - [ ] 评测集扩展到 200 条以上，接入真实模型做 A/B 对比
 - [ ] 多 Agent：把售后和技术支持拆成两个专职 Agent，由路由 Agent 分派
 - [ ] 飞书加密事件（AES）与企业微信应用消息回调

@@ -9,7 +9,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..models import Tenant, User
 from ..security import (Principal, create_token, get_principal, rate_limiter, require_admin, require_staff,
-                        verify_password)
+                        shared_rate_limiter, verify_password)
 from ..seed import DEMO_PASSWORD, TENANTS
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -40,6 +40,16 @@ def tenant_out(tenant: Tenant) -> dict:
             "return_window_days": tenant.return_window_days, "quality_window_days": tenant.quality_window_days}
 
 
+def _login_limiter(backend: str, db: Session):
+    """(check, release) for login attempts. With several worker processes an in-memory
+    limiter multiplies the limit by the number of workers, so PostgreSQL deployments (the
+    multi-worker setup) count in the database by default."""
+    if backend == "database" or (backend == "auto" and db.get_bind().dialect.name == "postgresql"):
+        return (lambda key, limit: shared_rate_limiter.check(db, key, limit),
+                lambda key, hit: shared_rate_limiter.release(db, hit))
+    return rate_limiter.check, rate_limiter.release
+
+
 @router.post("/auth/login")
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)) -> dict:
     settings = get_settings()
@@ -49,16 +59,17 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)) -> dic
     # --forwarded-allow-ips=<proxy ip> instead of trusting X-Forwarded-For from anyone.
     client_ip = request.client.host if request.client else "unknown"
     ip_key, email_key = f"login-ip:{client_ip}", f"login:{email}"
-    ip_hit = rate_limiter.check(ip_key, settings.login_attempts_per_ip)
-    email_hit = rate_limiter.check(email_key, settings.login_attempts_per_email)
+    check, release = _login_limiter(settings.rate_limit_backend, db)
+    ip_hit = check(ip_key, settings.login_attempts_per_ip)
+    email_hit = check(email_key, settings.login_attempts_per_email)
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "邮箱或密码错误")
     # Only failures use up the budget, so an office behind one NAT or a user on several
     # devices is not locked out. Every attempt still holds its slot while the (slow)
     # password check runs, so a burst of parallel guesses cannot slip past the limit.
-    rate_limiter.release(ip_key, ip_hit)
-    rate_limiter.release(email_key, email_hit)
+    release(ip_key, ip_hit)
+    release(email_key, email_hit)
     tenant = db.get(Tenant, user.tenant_id)
     return {"token": create_token(user), "user": user_out(user, tenant)}
 

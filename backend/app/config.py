@@ -107,6 +107,7 @@ class Settings:
     rate_limit_per_minute: int = 30
     login_attempts_per_email: int = 10  # per minute, against password guessing on one account
     login_attempts_per_ip: int = 30  # per minute, against spraying many accounts from one client
+    rate_limit_backend: str = "auto"  # login limits: database (shared by workers) on PostgreSQL, memory on SQLite
     # Velocity limits for automatic refunds (anti-abuse): a run of small refunds that each
     # stay under the per-refund limit still goes to a human once these are exceeded.
     refund_window_days: int = 30
@@ -177,6 +178,9 @@ class Settings:
         s.rate_limit_per_minute = _env_int("RATE_LIMIT_PER_MINUTE", s.rate_limit_per_minute)
         s.login_attempts_per_email = _env_int("LOGIN_ATTEMPTS_PER_EMAIL", s.login_attempts_per_email)
         s.login_attempts_per_ip = _env_int("LOGIN_ATTEMPTS_PER_IP", s.login_attempts_per_ip)
+        s.rate_limit_backend = _env("RATE_LIMIT_BACKEND") or s.rate_limit_backend
+        if s.rate_limit_backend not in ("auto", "memory", "database"):
+            raise ValueError("LOOPDESK_RATE_LIMIT_BACKEND must be auto, memory or database")
         s.refund_window_days = _env_int("REFUND_WINDOW_DAYS", s.refund_window_days)
         s.refund_window_max_count = _env_int("REFUND_WINDOW_MAX_COUNT", s.refund_window_max_count)
         s.refund_window_max_amount = _env_float("REFUND_WINDOW_MAX_AMOUNT", s.refund_window_max_amount)

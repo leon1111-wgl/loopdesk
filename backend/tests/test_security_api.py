@@ -193,3 +193,86 @@ def test_feishu_webhook_fails_closed_outside_the_demo(settings, client):
     settings.seed_demo, settings.feishu_verification_token = False, None
     r = client.post("/api/channels/feishu/leon/events", json={"type": "url_verification", "challenge": "x"})
     assert r.status_code == 503
+
+
+def test_login_limits_are_shared_across_worker_processes(settings, client, monkeypatch):
+    # Review round 2, N-017: with 4 workers the in-memory limiter let 21 of 40 guesses reach
+    # the password check. The database counter is shared; clearing this process's memory (as
+    # another worker would see it) does not reset the budget.
+    from app.security import rate_limiter, shared_rate_limiter
+
+    settings.rate_limit_backend = "database"
+    monkeypatch.setattr(shared_rate_limiter, "clock", lambda: 60_000.0)  # no minute boundary mid-test
+
+    def guess():
+        return client.post("/api/auth/login", json={"email": "admin@leon.demo", "password": "guess"}).status_code
+
+    codes = [guess() for _ in range(6)]
+    rate_limiter._hits.clear()  # another process knows nothing about these attempts
+    codes += [guess() for _ in range(5)]
+    assert codes == [401] * 10 + [429]
+    ok = client.post("/api/auth/login", json={"email": "customer@leon.demo", "password": DEMO_PASSWORD})
+    assert ok.status_code == 200
+
+
+def test_database_limiter_gives_out_exactly_the_limit_under_concurrency(client, monkeypatch):
+    # Separate sessions (separate connections, as separate workers would have) race for the
+    # same key; the conditional upsert lets exactly `limit` of them through. On PostgreSQL
+    # in CI these really run in parallel.
+    import threading
+
+    from fastapi import HTTPException
+    from sqlalchemy import select
+
+    from app.db import new_session
+    from app.models import RateCounter
+    from app.security import shared_rate_limiter
+
+    monkeypatch.setattr(shared_rate_limiter, "clock", lambda: 60_000.0)
+    barrier, results = threading.Barrier(12, timeout=10), []
+
+    def attempt():
+        db = new_session()
+        try:
+            barrier.wait()
+            results.append(shared_rate_limiter.check(db, "login:race@leon.demo", 5) is not None)
+        except HTTPException as exc:
+            results.append(exc.status_code)
+        finally:
+            db.close()
+
+    threads = [threading.Thread(target=attempt) for _ in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results, key=str) == [429] * 7 + [True] * 5
+    with new_session() as db:
+        rows = db.execute(select(RateCounter.key, RateCounter.count)).all()
+    assert [count for _, count in rows] == [5]
+    assert "race@leon.demo" not in rows[0][0]  # stored hashed, not as the e-mail address
+
+
+def test_database_limiter_drops_expired_windows(client, monkeypatch):
+    from sqlalchemy import select
+
+    from app.db import new_session
+    from app.models import RateCounter
+    from app.security import DatabaseRateLimiter
+
+    now = [60_000.0]
+    limiter = DatabaseRateLimiter(clock=lambda: now[0])
+    with new_session() as db:
+        limiter.check(db, "login-ip:203.0.113.7", 30)
+        now[0] += 180  # three minutes later, a different client
+        limiter.check(db, "login-ip:198.51.100.2", 30)
+        minutes = db.execute(select(RateCounter.minute)).scalars().all()
+    assert minutes == [int(now[0] // 60)]
+
+
+def test_rate_limit_backend_is_validated(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("LOOPDESK_RATE_LIMIT_BACKEND", "redis")
+    with pytest.raises(ValueError, match="RATE_LIMIT_BACKEND"):
+        Settings.from_env()

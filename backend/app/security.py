@@ -12,11 +12,14 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy import delete, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_db
-from .models import Tenant, User
+from .models import RateCounter, Tenant, User
 from .observability import tenant_var, user_var
 
 ROLES = ("admin", "agent", "customer")
@@ -131,3 +134,48 @@ class RateLimiter:
 
 
 rate_limiter = RateLimiter()
+
+
+class DatabaseRateLimiter:
+    """Fixed one-minute windows in the rate_counters table, shared by every worker process.
+
+    One conditional upsert both checks and counts ("insert 1, or add 1 while below the
+    limit"), so of two concurrent attempts at the limit exactly one gets the last slot. A
+    fixed window can let up to twice the limit through across a minute boundary, which is
+    acceptable for slowing down password guessing. Keys are stored hashed: the table would
+    otherwise hold e-mail addresses and client IPs."""
+
+    def __init__(self, clock=time.time) -> None:
+        self.clock = clock
+        self._swept = -1  # last minute this process deleted expired windows
+
+    def check(self, db: Session, key: str, limit: int) -> tuple[str, int] | None:
+        if limit <= 0:
+            return None
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        minute = int(self.clock() // 60)
+        insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
+        allowed = db.execute(
+            insert(RateCounter).values(key=digest, minute=minute, count=1)
+            .on_conflict_do_update(index_elements=[RateCounter.key, RateCounter.minute],
+                                   set_={"count": RateCounter.count + 1}, where=RateCounter.count < limit)
+            .returning(RateCounter.count)
+        ).first() is not None
+        if self._swept != minute:  # at most once a minute per process, so the table stays small
+            db.execute(delete(RateCounter).where(RateCounter.minute < minute - 1))
+            self._swept = minute
+        db.commit()
+        if not allowed:
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "请求过于频繁，请稍后再试")
+        return digest, minute
+
+    def release(self, db: Session, hit: tuple[str, int] | None) -> None:
+        if hit is None:
+            return
+        digest, minute = hit
+        db.execute(update(RateCounter).where(RateCounter.key == digest, RateCounter.minute == minute,
+                                             RateCounter.count > 0).values(count=RateCounter.count - 1))
+        db.commit()
+
+
+shared_rate_limiter = DatabaseRateLimiter()
