@@ -84,7 +84,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 
 **集成**
 - 模型：豆包（火山方舟）、混元、DeepSeek、通义、OpenAI 统一走 OpenAI 兼容协议；Claude 使用官方 SDK；没有 Key 时使用离线确定性模型。
-- 渠道：飞书机器人事件回调（challenge 校验、事件去重（记在数据库里，多 worker 和重启后都有效）、3 秒内先回 200，后台处理失败时记录日志并回复兜底话术）、企业微信群机器人审批提醒。
+- 渠道：飞书机器人事件回调（challenge 校验、事件去重（记在数据库里，多 worker 和重启后都有效）、先落库再在 3 秒内回 200、后台处理失败时记录日志并回复兜底话术；处理中的进程崩溃时，补偿任务会重新认领并回答，最多重试 3 次，之后回复兜底话术）、企业微信群机器人审批提醒。
 - MCP：只读工具通过 MCP 暴露，Claude Desktop、Cursor 等客户端可以直接接入。
 - 运维：Prometheus `/metrics`、Docker、docker-compose（PostgreSQL）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、Playwright 端到端走查、镜像构建）。
 - 数据库迁移：Alembic 管理表结构版本，启动时自动升级；对旧版本用 `create_all` 建的库会补齐缺失的表并标记为最新版本。CI 在 SQLite 和 PostgreSQL 上都会校验“模型定义与迁移脚本完全一致”。

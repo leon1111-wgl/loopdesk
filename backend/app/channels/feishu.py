@@ -2,9 +2,12 @@
 
 Inbound: the event subscription posts to /api/channels/feishu/{tenant}/events.
 - ``url_verification``: echo the challenge (after checking the verification token);
-- ``im.message.receive_v1``: acknowledge within 3 seconds, process in the background,
-  reply to the original message. Feishu re-sends events it did not see acknowledged,
-  so event IDs are de-duplicated in the database, where every worker process sees them.
+- ``im.message.receive_v1``: store the event, acknowledge within 3 seconds, answer it in
+  the background and reply to the original message. Feishu re-sends events it did not see
+  acknowledged, so event IDs are de-duplicated in the database, where every worker process
+  sees them. The stored event is also an inbox: a worker claims it before answering, and
+  if that worker dies after the acknowledgement (Feishu will not resend), ``retry_stuck``
+  (run every minute by ``python -m app.ops.channel_retry``) claims it again.
 Outbound: tenant_access_token (cached until expiry) + reply / send-to-chat APIs.
 
 Without LOOPDESK_FEISHU_APP_ID / _APP_SECRET, replies are dry runs (returned, not sent).
@@ -23,7 +26,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -50,16 +53,20 @@ class EventDeduper:
     def __init__(self) -> None:
         self._swept: datetime | None = None  # last time this process deleted expired IDs
 
-    def first_time(self, db: Session, channel: str, event_id: str) -> bool:
+    def first_time(self, db: Session, channel: str, event_id: str, payload: dict | None = None) -> bool:
+        """Store the event (with what is needed to answer it) unless it is already stored."""
         now = datetime.now(timezone.utc)
         insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
         first = db.execute(
-            insert(ChannelEvent).values(channel=channel, event_id=event_id, received_at=now)
+            insert(ChannelEvent).values(channel=channel, event_id=event_id, received_at=now,
+                                        status="received", payload=payload)
             .on_conflict_do_nothing(index_elements=[ChannelEvent.channel, ChannelEvent.event_id])
             .returning(ChannelEvent.event_id)
         ).first() is not None
         if self._swept is None or now - self._swept > timedelta(hours=1):
-            db.execute(delete(ChannelEvent).where(ChannelEvent.received_at < now - self.retention))
+            # Answered or given-up events only: an unanswered one is still work to do.
+            db.execute(delete(ChannelEvent).where(ChannelEvent.received_at < now - self.retention,
+                                                  ChannelEvent.status.in_(("done", "failed"))))
             self._swept = now
         db.commit()
         return first
@@ -138,6 +145,84 @@ def parse_text_event(body: dict) -> dict | None:
     }
 
 
+MAX_ATTEMPTS = 3
+QUEUED_GRACE = timedelta(seconds=30)  # an accepted event's own background task normally starts sooner
+
+
+def stale_after(settings: Settings) -> timedelta:
+    """How long a claim may last before its worker counts as dead: twice the run deadline,
+    at least five minutes, so a slow run is never answered twice."""
+    return timedelta(seconds=max(300.0, 2 * settings.run_deadline_seconds))
+
+
+def _claim(db: Session, event_id: str, now: datetime, stale_before: datetime):
+    """One conditional UPDATE: an unclaimed event, or one whose worker died. Of two workers
+    (the event's own task and the sweeper, or two sweepers) exactly one gets it."""
+    row = db.execute(
+        update(ChannelEvent).where(
+            ChannelEvent.channel == "feishu", ChannelEvent.event_id == event_id,
+            ChannelEvent.attempts < MAX_ATTEMPTS,
+            or_(ChannelEvent.status == "received",
+                and_(ChannelEvent.status == "processing", ChannelEvent.claimed_at < stale_before)),
+        ).values(status="processing", attempts=ChannelEvent.attempts + 1, claimed_at=now)
+        .returning(ChannelEvent.payload).execution_options(synchronize_session=False)
+    ).first()
+    db.commit()
+    return row
+
+
+def _settle(event_id: str, status: str) -> None:
+    with new_session() as db:
+        db.execute(update(ChannelEvent).where(ChannelEvent.channel == "feishu", ChannelEvent.event_id == event_id)
+                   .values(status=status).execution_options(synchronize_session=False))
+        db.commit()
+
+
+def process_event(services, event_id: str, now: datetime | None = None) -> dict | None:
+    """Claim an accepted event and answer it; None when another worker has it. An event whose
+    answer failed got the fallback reply (handle_message) and is settled as failed, not retried."""
+    now = now or datetime.now(timezone.utc)
+    with new_session() as db:
+        claimed = _claim(db, event_id, now, now - stale_after(services.settings))
+    if claimed is None or not claimed.payload:
+        return None
+    payload = claimed.payload
+    result = handle_message(services, payload["tenant"], payload)
+    _settle(event_id, "failed" if result.get("fallback") else "done")
+    return result
+
+
+def retry_stuck(services, now: datetime | None = None) -> dict[str, int]:
+    """Answer accepted events that no worker finished: never started (the process died right
+    after the acknowledgement) or claimed by a worker that died. After MAX_ATTEMPTS the
+    customer gets the fallback reply instead of silence. Business effects of a repeated run
+    are idempotent (refund claim, handoff ticket, pending-approval dedup); the reply itself
+    can repeat only if a worker dies between replying and settling."""
+    now = now or datetime.now(timezone.utc)
+    stale_before = now - stale_after(services.settings)
+    stuck = or_(and_(ChannelEvent.status == "received", ChannelEvent.received_at < now - QUEUED_GRACE),
+                and_(ChannelEvent.status == "processing", ChannelEvent.claimed_at < stale_before))
+    with new_session() as db:
+        rows = db.execute(select(ChannelEvent.event_id, ChannelEvent.attempts)
+                          .where(ChannelEvent.channel == "feishu", stuck)).all()
+    counts = {"answered": 0, "gave_up": 0}
+    for event_id, attempts in rows:
+        if attempts < MAX_ATTEMPTS:
+            counts["answered"] += process_event(services, event_id, now) is not None
+            continue
+        with new_session() as db:  # give up once, even with several sweepers
+            payload = db.execute(
+                update(ChannelEvent).where(ChannelEvent.channel == "feishu", ChannelEvent.event_id == event_id, stuck)
+                .values(status="failed").returning(ChannelEvent.payload).execution_options(synchronize_session=False)
+            ).scalar_one_or_none()
+            db.commit()
+        if payload:
+            logger.error("feishu event %s gave up after %d attempts", event_id, attempts)
+            FeishuClient(services.settings).reply(payload["message_id"], MODEL_ERROR_TEXT)
+            counts["gave_up"] += 1
+    return counts
+
+
 def handle_message(services, tenant_slug: str, parsed: dict) -> dict:
     """Run the agent for one Feishu message and reply. Executed as a background task:
     the HTTP response has already been sent, so an exception here would vanish without a
@@ -147,10 +232,10 @@ def handle_message(services, tenant_slug: str, parsed: dict) -> dict:
     except Exception:
         logger.exception("feishu message %s for tenant %s failed", parsed.get("message_id"), tenant_slug)
         try:
-            return FeishuClient(services.settings).reply(parsed["message_id"], MODEL_ERROR_TEXT)
+            return {**FeishuClient(services.settings).reply(parsed["message_id"], MODEL_ERROR_TEXT), "fallback": True}
         except Exception:
             logger.exception("feishu fallback reply to %s failed", parsed.get("message_id"))
-            return {"sent": False, "error": "fallback reply failed"}
+            return {"sent": False, "error": "fallback reply failed", "fallback": True}
 
 
 def _answer(services, tenant_slug: str, parsed: dict) -> dict:

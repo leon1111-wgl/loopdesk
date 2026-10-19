@@ -233,12 +233,124 @@ def test_feishu_event_ids_expire_after_a_day(client):
     from app.db import new_session
     from app.models import ChannelEvent
 
+    two_days_ago = datetime.now(timezone.utc) - timedelta(days=2)
     with new_session() as db:
-        db.add(ChannelEvent(channel="feishu", event_id="evt-old",
-                            received_at=datetime.now(timezone.utc) - timedelta(days=2)))
+        db.add(ChannelEvent(channel="feishu", event_id="evt-old", received_at=two_days_ago, status="done"))
+        db.add(ChannelEvent(channel="feishu", event_id="evt-unanswered", received_at=two_days_ago, status="received"))
         db.commit()
         assert EventDeduper().first_time(db, "feishu", "evt-new")
-        assert db.execute(select(ChannelEvent.event_id)).scalars().all() == ["evt-new"]
+        assert sorted(db.execute(select(ChannelEvent.event_id)).scalars()) == ["evt-new", "evt-unanswered"], \
+            "an answered event expires; one nobody answered is still work to do"
+
+
+def _stored_events():
+    from sqlalchemy import select
+
+    from app.db import new_session
+    from app.models import ChannelEvent
+
+    with new_session() as db:
+        return {e.event_id: (e.status, e.attempts) for e in db.execute(select(ChannelEvent)).scalars()}
+
+
+def _accept_without_answering(event_id: str, text: str = "退款多久能到账？") -> None:
+    # The process died right after Feishu got its acknowledgement: stored, never answered.
+    from app.api.channels import _accept
+    from app.channels.feishu import parse_text_event
+
+    parsed = parse_text_event(_feishu_event(event_id, text))
+    assert _accept(event_id, {**parsed, "tenant": "leon"})
+
+
+def test_an_answered_event_is_settled(client, monkeypatch):
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: {"sent": False})
+    client.post("/api/channels/feishu/leon/events", json=_feishu_event("evt-ok"))
+    assert _stored_events()["evt-ok"] == ("done", 1)
+
+
+def test_a_message_whose_worker_died_after_the_acknowledgement_is_still_answered(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.channels.feishu import retry_stuck
+    from app.services import get_services
+
+    replies = []
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append((mid, text)) or {"sent": False})
+    _accept_without_answering("evt-lost")
+    assert retry_stuck(get_services()) == {"answered": 0, "gave_up": 0}, "its own task may still be starting"
+    later = datetime.now(timezone.utc) + timedelta(minutes=1)
+    assert retry_stuck(get_services(), now=later) == {"answered": 1, "gave_up": 0}
+    assert [mid for mid, _ in replies] == ["om_evt-lost"] and "1-3个工作日" in replies[0][1]
+    assert _stored_events()["evt-lost"] == ("done", 1)
+    assert retry_stuck(get_services(), now=later + timedelta(hours=1)) == {"answered": 0, "gave_up": 0}
+
+
+def test_a_claim_is_taken_over_only_when_its_worker_is_presumed_dead(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from app.channels.feishu import process_event, retry_stuck
+    from app.db import new_session
+    from app.services import get_services
+
+    replies = []
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append(mid) or {"sent": False})
+    _accept_without_answering("evt-slow")
+    now = datetime.now(timezone.utc)
+    with new_session() as db:  # a worker claimed it and is still running
+        from app.channels.feishu import _claim
+        assert _claim(db, "evt-slow", now, now - timedelta(minutes=5)) is not None
+    assert process_event(get_services(), "evt-slow", now) is None, "the event's own task does not run it twice"
+    assert retry_stuck(get_services(), now=now + timedelta(minutes=2)) == {"answered": 0, "gave_up": 0}
+    assert replies == []
+    assert retry_stuck(get_services(), now=now + timedelta(minutes=10)) == {"answered": 1, "gave_up": 0}
+    assert replies == ["om_evt-slow"] and _stored_events()["evt-slow"] == ("done", 2)
+
+
+def test_after_repeated_crashes_the_customer_gets_the_fallback_once(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
+
+    from app.agent.runtime import MODEL_ERROR_TEXT
+    from app.channels.feishu import MAX_ATTEMPTS, retry_stuck
+    from app.db import new_session
+    from app.models import ChannelEvent
+    from app.services import get_services
+
+    replies = []
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append((mid, text)) or {"sent": False})
+    _accept_without_answering("evt-poison")
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    with new_session() as db:  # every worker that took it died
+        db.execute(update(ChannelEvent).values(status="processing", attempts=MAX_ATTEMPTS, claimed_at=long_ago))
+        db.commit()
+    assert retry_stuck(get_services()) == {"answered": 0, "gave_up": 1}
+    assert retry_stuck(get_services()) == {"answered": 0, "gave_up": 0}
+    assert replies == [("om_evt-poison", MODEL_ERROR_TEXT)]
+    assert _stored_events()["evt-poison"] == ("failed", MAX_ATTEMPTS)
+
+
+def test_concurrent_claims_answer_an_event_once(client, monkeypatch):
+    import threading
+
+    from app.channels.feishu import process_event
+    from app.services import get_services
+
+    replies = []
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append(mid) or {"sent": False})
+    _accept_without_answering("evt-race2")
+    barrier = threading.Barrier(4, timeout=10)
+
+    def worker():
+        barrier.wait()
+        process_event(get_services(), "evt-race2")
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert replies == ["om_evt-race2"]
 
 
 def test_feishu_event_without_an_id_is_ignored(client, monkeypatch):
@@ -274,6 +386,7 @@ def test_feishu_background_failure_is_logged_and_answered(client, monkeypatch, c
         assert client.post("/api/channels/feishu/leon/events", json=event).json() == {"code": 0}
     assert replies == [("om_9", MODEL_ERROR_TEXT)], "the customer still gets an answer"
     assert "om_9" in caplog.text and "database is locked" in caplog.text
+    assert _stored_events()["evt-fail"] == ("failed", 1), "answered with the fallback: not retried"
 
 
 def test_mcp_server_tools_respect_permissions(settings, client, monkeypatch):

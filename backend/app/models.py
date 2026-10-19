@@ -361,6 +361,13 @@ class ChannelEvent(Base):
     channel: Mapped[str] = mapped_column(String(32), primary_key=True)
     event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    # Also the inbox: a worker claims the event to answer it, and ops/channel_retry.py re-claims
+    # one whose worker died after Feishu got its acknowledgement (Feishu will not resend it).
+    # received | processing | done | failed; rows from before the inbox were answered already.
+    status: Mapped[str] = mapped_column(String(16), default="received", server_default="done")
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AuditLog(Base):

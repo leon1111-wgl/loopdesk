@@ -5,16 +5,16 @@ import hmac
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 
-from ..channels.feishu import deduper, handle_message, parse_text_event
+from ..channels.feishu import deduper, parse_text_event, process_event
 from ..db import new_session
 from ..services import get_services
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
 
 
-def _first_delivery(event_id: str) -> bool:
+def _accept(event_id: str, payload: dict) -> bool:
     with new_session() as db:
-        return deduper.first_time(db, "feishu", event_id)
+        return deduper.first_time(db, "feishu", event_id, payload)
 
 
 @router.post("/feishu/{tenant_slug}/events")
@@ -37,8 +37,9 @@ async def feishu_events(tenant_slug: str, request: Request, background: Backgrou
     parsed = parse_text_event(body)
     if parsed is None:
         return {"code": 0, "msg": "ignored"}
-    if not await run_in_threadpool(_first_delivery, parsed["event_id"]):
+    # Stored before the acknowledgement, so a crash after it loses nothing (see retry_stuck).
+    if not await run_in_threadpool(_accept, parsed["event_id"], {**parsed, "tenant": tenant_slug}):
         return {"code": 0, "msg": "duplicate"}
     # Feishu expects a response within 3 seconds; the agent runs after we acknowledge.
-    background.add_task(handle_message, get_services(), tenant_slug, parsed)
+    background.add_task(process_event, get_services(), parsed["event_id"])
     return {"code": 0}

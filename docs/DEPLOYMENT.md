@@ -33,6 +33,14 @@ docker compose up --build
 - `/api/ready`：就绪检查，确认数据库可连接并且表结构已经迁移到最新版本，否则返回 503。Dockerfile 中的 `HEALTHCHECK` 和 Kubernetes 的 readinessProbe 都应该指向它。
 - 每个响应都带 `X-Request-ID`。用户报障时只要提供这个 ID，就可以在日志中找到对应的请求，在链路追踪中找到对应的 Agent 运行（trace 详情里会显示 request_id）。
 
+## 渠道消息补偿
+
+```bash
+cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.channel_retry   # 每分钟一次
+```
+
+飞书事件先写进数据库再确认。处理它的进程如果在确认之后崩溃，飞书不会重发，这个任务会重新认领并回答：没开始处理的事件等 30 秒，处理中的事件等两倍运行时限（至少 5 分钟）才认为原进程已失联；同一事件最多尝试 3 次，之后给顾客回复兜底话术。每个事件都用条件更新认领，多个实例同时运行也不会重复处理。
+
 ## 数据保留
 
 ```bash
