@@ -8,7 +8,6 @@ document was retrieved, whether the answer passed the evidence check.
 
 from __future__ import annotations
 
-import re
 import statistics
 import time
 from collections import defaultdict
@@ -18,16 +17,12 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from ..agent.outcome import is_refusal  # one definition for evals and the dashboard
 from ..agent.runtime import RunOptions, collect
 from ..db import Base
 from ..models import Chunk, Conversation, Document, EvalCase, EvalResult, EvalRun, Run, Span, Tenant, User
 from ..seed import fixture_orders, fixture_refunds
 
-_REFUSAL = re.compile(r"没有找到|无法回答|建议您转人工|无法处理|暂时无法给出")
-
-
-def is_refusal(answer: str) -> bool:
-    return bool(_REFUSAL.search(answer))
 
 
 def _percentile(values: list[int], q: float) -> int:

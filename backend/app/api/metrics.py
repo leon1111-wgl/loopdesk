@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
+from ..agent.outcome import is_refusal
 from ..models import Approval, EvalRun, Feedback, Message, Run, Span, Ticket
 from ..security import Principal, require_staff
 from .common import as_utc
@@ -72,6 +73,35 @@ def _handoff_stats(db: Session, tenant_id: int, since: datetime) -> dict:
     }
 
 
+def _conversation_outcomes(db: Session, runs: list[Run], tenant_id: int, since: datetime) -> dict:
+    """Rates per conversation, not per run: three questions in one conversation are one customer.
+
+    Resolved means the conversation never went to a person, never got a refusal, drew no
+    negative feedback or correction, and its last run completed. A refusal ("知识库中没有找到
+    依据") is not a resolution even though the run itself completed normally."""
+    groups: dict[object, list[Run]] = {}
+    for r in sorted(runs, key=lambda r: as_utc(r.created_at)):
+        groups.setdefault(r.conversation_id or f"run:{r.id}", []).append(r)
+    unhappy = set(db.execute(
+        select(Message.conversation_id).join(Feedback, Feedback.message_id == Message.id)
+        .where(Feedback.tenant_id == tenant_id, Feedback.created_at >= since, Feedback.rating.in_(("down", "correction")))
+    ).scalars())
+    resolved = refused = handed = 0
+    for key, items in groups.items():
+        handed_off = any(r.status == "handoff" for r in items)
+        was_refused = any(is_refusal(r.output_text) for r in items if r.status == "completed")
+        handed += handed_off
+        refused += was_refused
+        resolved += (not handed_off and not was_refused and key not in unhappy and items[-1].status == "completed")
+    n = len(groups)
+    return {
+        "conversations": n,
+        "resolution_rate": round(resolved / n, 4) if n else None,
+        "handoff_rate": round(handed / n, 4) if n else None,
+        "refusal_rate": round(refused / n, 4) if n else None,
+    }
+
+
 @router.get("/api/metrics/overview")
 def overview(days: int = 7, principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
     since = datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))
@@ -112,8 +142,8 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         "window_days": days,
         "runs": total,
         "status": dict(statuses),
-        "resolution_rate": round(statuses.get("completed", 0) / total, 4) if total else None,
-        "handoff_rate": round(statuses.get("handoff", 0) / total, 4) if total else None,
+        # Per conversation; see _conversation_outcomes for the definitions.
+        **_conversation_outcomes(db, runs, tenant_id, since),
         "pending_approvals": pending,
         "handoff_queue": _handoff_stats(db, tenant_id, since),
         "latency_p50_ms": _pct(latencies, 0.5),

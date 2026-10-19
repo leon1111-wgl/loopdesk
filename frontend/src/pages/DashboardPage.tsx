@@ -6,8 +6,10 @@ import { Empty, ErrorBanner, Kpi, TOOL_TEXT, ms, pct, useLoad, TIER_TEXT } from 
 interface Overview {
   runs: number;
   status: Record<string, number>;
-  resolution_rate: number | null;
+  conversations: number;
+  resolution_rate: number | null; // per conversation: no handoff, no refusal, no negative feedback
   handoff_rate: number | null;
+  refusal_rate: number | null;
   pending_approvals: number;
   handoff_queue: { waiting: number; in_progress: number; longest_wait_s: number; handoffs: number; avg_first_response_s: number | null };
   latency_p50_ms: number;
@@ -95,7 +97,8 @@ export default function DashboardPage() {
         <>
           <div className="grid grid-4">
             <Kpi label="Agent 运行" value={data.runs} sub={`已解决 ${data.status.completed ?? 0} · 转人工 ${data.status.handoff ?? 0} · 缓存命中 ${pct(data.cache_hit_rate)}`} />
-            <Kpi label="自助解决率" value={pct(data.resolution_rate)} sub={`转人工率 ${pct(data.handoff_rate)}`} />
+            <Kpi label="自助解决率（按会话）" value={pct(data.resolution_rate)}
+              sub={`${data.conversations} 个会话 · 转人工 ${pct(data.handoff_rate)} · 拒答 ${pct(data.refusal_rate)}`} />
             <Kpi label="平均证据覆盖率" value={pct(data.avg_evidence_coverage)}
               sub={`充分 ${data.verdicts.pass ?? 0} · 部分 ${data.verdicts.warn ?? 0} · 冲突 ${data.verdicts.blocked ?? 0}`} />
             <Kpi label="待审批 / 等待人工"

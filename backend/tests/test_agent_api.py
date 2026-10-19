@@ -378,3 +378,19 @@ def test_a_refund_naming_two_orders_asks_which_one(ask, login):
     _, events = ask(login("customer@leon.demo"), "SO20260918001和SO20261012003都给我退款")
     assert "request_refund" not in [e["name"] for e in by_type(events, "tool_call")], "never guess with money"
     assert MULTI_REFUND_TEXT in by_type(events, "final")[0]["text"]
+
+
+# ---------------------------------------------------------------- dashboard definitions
+def test_resolution_rate_is_per_conversation_and_excludes_refusals(client, ask, login):
+    # Review round 2, N-015: refusals counted as resolved, and every run counted separately.
+    emma, jack, mia, admin = (login(e) for e in ("customer@leon.demo", "customer2@leon.demo", "agent@leon.demo",
+                                                  "admin@leon.demo"))
+    resolved, _ = ask(emma, "退款多久能到账？")
+    ask(emma, "积分可以怎么抵扣？", conversation_id=resolved)   # a second question: still one conversation
+    ask(emma, "以旧换新活动怎么参加？")                          # refused
+    ask(jack, "转人工")                                          # handed off
+    _, events = ask(jack, "寄到新疆要额外加运费吗？")             # answered, then rated down
+    client.post(f"/api/messages/{by_type(events, 'final')[0]['message_id']}/feedback", json={"rating": "down"}, headers=jack)
+    overview = client.get("/api/metrics/overview", headers=admin).json()
+    assert overview["conversations"] == 4
+    assert (overview["resolution_rate"], overview["refusal_rate"], overview["handoff_rate"]) == (0.25, 0.25, 0.25)
