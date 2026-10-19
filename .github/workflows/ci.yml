@@ -21,6 +21,10 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
       - run: pytest -q
+      - name: Tests again with buffered trace writes (the PostgreSQL default)
+        run: pytest -q
+        env:
+          LOOPDESK_TEST_TRACE_WRITES: buffered
       - name: Regression eval gate (offline model, synthetic data)
         run: python -m app.evals.cli --fresh --gate 0.95 --report eval-report.json
       - uses: actions/upload-artifact@v4

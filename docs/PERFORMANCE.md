@@ -69,7 +69,24 @@ python -m app.evals.load_bench --database-url postgresql+psycopg://... --workers
 
   应用内耗时两者几乎一样，多出的约 41ms 全部在应用之外：客户端与 uvicorn 多进程模式之间的连接处理。每个请求固定约 40ms，是 Nagle 算法和延迟 ACK 相遇的典型特征，但这一点还没有用抓包证实。生产流量会先经过反向代理（连接池、长连接），所以这个数字要在代理后面重测，而不是在应用里调。
 
-- **结论**：生产部署用 PostgreSQL 加多 worker。只去掉刷盘等待的“异步提交”实测没有收益（见下方实验）；减少语句数和往返次数（合并提交）还没有在 PostgreSQL 上测过，应先用 `pg_stat_statements` 找出大头再决定。
+- **结论**：生产部署用 PostgreSQL 加多 worker。只去掉刷盘等待的“异步提交”实测没有收益；减少往返次数的“批量写链路”实测提升 39%–47%，已经是 PostgreSQL 上的默认做法（见下方）。
+
+## 优化：PostgreSQL 上批量写链路（已采用）
+
+异步提交实验说明瓶颈不在 WAL 刷盘，于是先数清楚一次请求到底发了多少条 SQL：用 SQLAlchemy 事件监听统计，一次对话 23.3 条语句、9.3 次提交，加上 psycopg 每个事务的隐式 BEGIN，在 PostgreSQL 上大约 40 次往返，大部分来自“每个 span 完成即提交”（以及随之更新运行记录的 token 用量）。
+
+改法：PostgreSQL 上链路先写进内存，在运行自己的提交点（结束、暂停审批、出错）一次交给数据库；每次请求的提交从 9.3 次降到 3.0 次。SQLite 仍然逐个提交，因为前面的实验证明合并写入在 SQLite 上会让 p99 变差。代价：PostgreSQL 上要等运行结束才能在链路页面看到这次运行的 span。
+
+同一次 CI 运行内对比（PostgreSQL，1 worker）：
+
+| 链路写入方式 | 并发 1 | 并发 4 | 并发 16 | 应用内 p50（并发 1） | p99（并发 16） |
+|---|---|---|---|---|---|
+| 逐个提交 | 36.5 RPS | 45.0 RPS | 40.4 RPS | 25.5ms | 528ms |
+| 批量写入 | **53.5 RPS** | **62.5 RPS** | **57.2 RPS** | 17.1ms | 393ms |
+
+吞吐提升 39%–47%。同一次运行里，PostgreSQL 4 workers 在并发 16 时 129.7 RPS、p99 193ms。
+
+**CI 抓到的一个 bug**：第一版推送后，CI 的 PostgreSQL job 失败了 4 个测试。运行结束时要根据本次用过的工具判断状态（是否转人工）和能否写入答案缓存，而工具列表是从数据库里的 span 查出来的；批量模式下这时 span 还在内存里，查到的是空列表。修复是在查询前先把缓冲交给会话。为了不再只靠 PostgreSQL job 发现这类问题，SQLite job 也用批量模式把整套测试再跑一遍（`LOOPDESK_TEST_TRACE_WRITES=buffered`）。
 
 ## 实验：PostgreSQL 上链路 span 异步提交（未采用）
 

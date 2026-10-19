@@ -21,6 +21,8 @@ def settings(tmp_path):
     s.seed_demo_traffic = False
     s.auto_migrate = False  # fast schema setup; migrations have their own tests
     s.log_format = "text"
+    # CI also runs the suite with buffered trace writes (the PostgreSQL default) on SQLite.
+    s.trace_writes = os.environ.get("LOOPDESK_TEST_TRACE_WRITES") or s.trace_writes
     return s
 
 

@@ -477,6 +477,9 @@ class AgentRuntime:
                 final_text = STRICT_FALLBACK
                 yield {"type": "answer_replaced", "text": final_text, "reason": "证据校验未通过（严格模式）"}
 
+        # The tools this run used are read from its spans. With buffered trace writes they are
+        # still in memory: hand them to the session first, and the query's autoflush sees them.
+        tracer.flush()
         tools_used = [s for s in self._tool_names(run.id)]
         if status is None:
             status = "handoff" if "handoff_to_human" in tools_used else "completed"
