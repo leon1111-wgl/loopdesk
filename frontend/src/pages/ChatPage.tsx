@@ -91,7 +91,9 @@ function EventItem({ event }: { event: AgentEvent }) {
       return (
         <div className="event guard">
           <div className="row"><ShieldAlert size={14} color="var(--danger)" /> <b>疑似提示注入</b></div>
-          <div className="faint">命中规则：{event.matches.join("、")}。已记录，权限由工具层强制校验。</div>
+          <div className="faint">
+            {event.matches ? `命中规则：${event.matches.join("、")}。` : ""}已记录，权限由工具层强制校验。
+          </div>
         </div>
       );
     case "rewrite":
@@ -125,7 +127,7 @@ function EventItem({ event }: { event: AgentEvent }) {
       return (
         <div className="event approval">
           <b>需要人工审批</b>
-          <div className="faint">{event.reason}</div>
+          <div className="faint">{event.reason || "已提交人工审核，审核完成后会在这里通知您。"}</div>
         </div>
       );
     case "verification":
@@ -143,12 +145,16 @@ function EventItem({ event }: { event: AgentEvent }) {
     case "answer_replaced":
       return <div className="event guard"><b>回答已被替换</b><div className="faint">{event.reason}</div></div>;
     case "done":
+      if (event.route_tier === undefined) {
+        // Customers get no model, cost or trace details.
+        return <div className="event"><b>完成</b><div className="faint">{event.latency_ms}ms</div></div>;
+      }
       return (
         <div className="event">
           <b>完成</b>
           <div className="faint">
             {tierText(event.route_tier)} {event.route_tier === "cache" ? "" : event.model} · {event.latency_ms}ms ·{" "}
-            {event.prompt_tokens + event.completion_tokens} tokens
+            {(event.prompt_tokens ?? 0) + (event.completion_tokens ?? 0)} tokens
           </div>
           <Link to={`/traces/${event.run_id}`} className="small">查看完整链路 →</Link>
         </div>

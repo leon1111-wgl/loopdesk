@@ -33,12 +33,13 @@ POST /api/conversations/{id}/stream   (SSE)
  │     LLM → get_order(SO20261008002)            风险 read，直接执行
  │     LLM → search_knowledge("退款 到账 工作日")  证据编号 [2] 加入证据清单
  │     LLM → request_refund(amount=1299)         风险 high
- │            ├─ precheck：订单存在且属于本人、金额为有限正数且 ≤ 实付、状态可退、没有待审批的同单申请；
+ │            ├─ precheck：订单存在且属于本人、金额为有限正数且 ≤ 实付、状态可退、未超过售后期限、没有待审批的同单申请；
  │            │            返回规范化参数（省略的金额补成实付金额、订单号转大写）
  │            └─ approval policy：按规范化后的金额判断，1299 > 租户额度 50 → 需要人工；
  │                         审批卡片、企业微信通知和审批后的执行都用这份参数，而不是模型的原始参数
  │     暂停：保存消息历史、证据清单和剩余工具调用到 Run.state；创建 Approval；企业微信通知
- ├─ 6. 回复顾客：“您的退款申请（¥1299.00）超过自动审批额度 ¥50.00，需要人工审核……”
+ ├─ 6. 回复顾客：“您的退款申请（¥1299.00）已提交人工审核……”。完整原因（超过额度 ¥50）只写进审批单给审批人看；
+ │      额度、累计风控这类规则不告诉顾客，只有公开的售后政策（例如超过 7 天无理由期限）会说明
  │
  └─ （之后）POST /api/approvals/{id}/decide
        ├─ 四眼原则：审批人不能是申请人
@@ -51,7 +52,7 @@ POST /api/conversations/{id}/stream   (SSE)
        └─ Trace 中追加 approval / tool / llm / verify 四个 span
 ```
 
-运行时被实现成**事件生成器**（`run_started`、`token`、`tool_call`、`tool_result`、`approval_required`、`verification`、`final`、`done`）。SSE 接口、非流式接口、飞书渠道和评测器复用同一段代码，只是消费事件的方式不同。
+运行时被实现成**事件生成器**（`run_started`、`token`、`tool_call`、`tool_result`、`approval_required`、`verification`、`final`、`done`）。SSE 接口、非流式接口、飞书渠道和评测器复用同一段代码，只是消费事件的方式不同。事件按角色裁剪：顾客收到的 `done` 只有状态和耗时，没有 token、成本、模型和路由；注入告警不告诉顾客命中了哪条规则。评测和基准从运行记录读取用量，不依赖面向用户的事件。
 
 ## 3. Agent 循环
 

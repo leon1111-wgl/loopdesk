@@ -37,7 +37,7 @@ from . import answer_cache
 from .rewrite import is_followup, rewrite_followup
 from ..observability import request_id_var
 from .prompts import build_system_prompt, choose_prompt_version
-from .tools import Evidence, ToolContext, ToolError, ToolRegistry
+from .tools import ApprovalNeed, Evidence, ToolContext, ToolError, ToolRegistry
 from .tracing import Tracer
 from .verifier import verify_answer
 
@@ -68,7 +68,8 @@ class ToolOutcome:
     kind: str  # result | approval
     output: dict[str, Any] = field(default_factory=dict)
     is_error: bool = False
-    reason: str = ""
+    reason: str = ""  # for reviewers and staff
+    customer_note: str = ""  # what a customer may be told about the approval
     arguments: dict[str, Any] | None = None  # normalized arguments a human is asked to approve
 
 
@@ -106,7 +107,9 @@ class AgentRuntime:
         with tracer.span("guardrail", "input_check", {"text": text}) as span:
             span.set(pii_found=pii.found, injection_matches=injection.matches)
         if injection.suspicious:
-            yield {"type": "guardrail", "name": "prompt_injection", "matches": injection.matches}
+            # Staff see which rules matched; telling an attacker that would help them rephrase.
+            yield {"type": "guardrail", "name": "prompt_injection",
+                   **({"matches": injection.matches} if user.role in ("admin", "agent") else {})}
 
         # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
         question = pii.masked
@@ -371,10 +374,14 @@ class AgentRuntime:
                         # omitted refund amount made explicit). The approval policy, the approval
                         # card and the execution all use them, never the model's raw arguments.
                         args = {**args, **(tool.precheck(ctx, args) or {})}
-                    reason = tool.approval(ctx, args) if (tool.approval and ctx.approval_id is None) else None
-                    if reason:
-                        span.set(approval_required=True, reason=reason, arguments=args)
-                        return ToolOutcome("approval", reason=reason, arguments=args)
+                    need = tool.approval(ctx, args) if (tool.approval and ctx.approval_id is None) else None
+                    if isinstance(need, str):
+                        need = ApprovalNeed(need)
+                    if need:
+                        span.set(approval_required=True, reason=need.reason, customer_note=need.customer_note,
+                                 arguments=args)
+                        return ToolOutcome("approval", reason=need.reason, customer_note=need.customer_note,
+                                           arguments=args)
                     output = tool.handler(ctx, args)
                     outcome = ToolOutcome("result", output)
                 except ToolError as exc:
@@ -403,11 +410,14 @@ class AgentRuntime:
         args = outcome.arguments or call.arguments
         amount = args.get("amount")
         amount_text = f"（¥{float(amount):.2f}）" if amount is not None else ""
-        text = (f"您的{TOOL_LABEL.get(call.name, '操作')}申请{amount_text}{outcome.reason}。"
-                "审核完成后会第一时间在这里通知您。")
+        # The approval record keeps the full reason for the reviewer; a customer only hears
+        # the public part of it (see ApprovalNeed).
+        shown = outcome.reason if ctx.is_staff else outcome.customer_note
+        text = (f"您的{TOOL_LABEL.get(call.name, '操作')}申请{amount_text}已提交人工审核"
+                f"{'：' + shown if shown else ''}。审核完成后会第一时间在这里通知您。")
         if ctx.dry_run:
             yield {"type": "approval_required", "approval_id": None, "tool": call.name, "arguments": args,
-                   "reason": outcome.reason}
+                   "reason": shown}
             yield from self._finish(run, tracer, ctx, state, text, started, status="waiting_approval")
             return
         approval = Approval(
@@ -426,7 +436,7 @@ class AgentRuntime:
         }
         state["messages"] = [m.to_dict() for m in messages]
         yield {"type": "approval_required", "approval_id": approval.id, "tool": call.name, "arguments": args,
-               "reason": outcome.reason}
+               "reason": shown}
         yield from self._finish(run, tracer, ctx, state, text, started, status="waiting_approval",
                                 extra_meta={"approval_id": approval.id})
 
@@ -487,9 +497,11 @@ class AgentRuntime:
         self.db.commit()
         yield {"type": "final", "run_id": run.id, "message_id": message_id, "text": final_text,
                "status": status, "meta": meta}
-        yield {"type": "done", "run_id": run.id, "status": status, "latency_ms": run.latency_ms,
-               "prompt_tokens": run.prompt_tokens, "completion_tokens": run.completion_tokens,
-               "cost": run.cost, "model": run.model, "route_tier": run.route_tier}
+        done = {"type": "done", "run_id": run.id, "status": status, "latency_ms": run.latency_ms}
+        if ctx.is_staff:  # tokens, cost, model and routing are operational data, not for customers
+            done.update(prompt_tokens=run.prompt_tokens, completion_tokens=run.completion_tokens,
+                        cost=run.cost, model=run.model, route_tier=run.route_tier)
+        yield done
 
     # ================================================================ helpers
     def _context(self, tenant, user, run, conversation, dry_run, evidence) -> ToolContext:

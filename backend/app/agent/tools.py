@@ -61,8 +61,22 @@ class ToolContext:
         return item
 
 
+@dataclass
+class ApprovalNeed:
+    """Why a call has to wait for a human.
+
+    ``reason`` is for the reviewer and staff: every rule that fired, with its numbers.
+    ``customer_note`` is the part a customer may be told, i.e. public policy only. Risk
+    controls stay internal: "a fourth refund within 30 days needs review" teaches people
+    to make three.
+    """
+
+    reason: str
+    customer_note: str = ""
+
+
 Handler = Callable[[ToolContext, dict[str, Any]], dict[str, Any]]
-Policy = Callable[[ToolContext, dict[str, Any]], str | None]
+Policy = Callable[[ToolContext, dict[str, Any]], "ApprovalNeed | str | None"]
 
 
 @dataclass

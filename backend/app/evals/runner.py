@@ -177,9 +177,11 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
         rank = retrieval_rank(case, summary)
         if rank is not None:
             ranks.append(rank)
-        done = summary.get("done") or {}
-        tokens += done.get("prompt_tokens", 0) + done.get("completion_tokens", 0)
-        cost += done.get("cost", 0.0)
+        run_id = (summary.get("done") or {}).get("run_id")
+        run = sandbox.get(Run, run_id) if run_id else None
+        if run is not None:  # the run record, not the event: customers' events carry no usage data
+            tokens += run.prompt_tokens + run.completion_tokens
+            cost += run.cost
         latencies.append(latency)
         if summary.get("verification"):
             coverages.append(summary["verification"]["coverage"])
@@ -190,8 +192,8 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
         passed_count += int(passed)
         db.add(EvalResult(eval_run_id=eval_run.id, case_id=case.id, case_key=case.key, passed=passed,
                           checks=checks, answer=answer, tools_called=tools, latency_ms=latency,
-                          run_id=(summary.get("done") or {}).get("run_id")))
-        _copy_trace(sandbox, db, (summary.get("done") or {}).get("run_id"))
+                          run_id=run_id))
+        _copy_trace(sandbox, db, run_id)
         db.commit()
     sandbox.close()
 

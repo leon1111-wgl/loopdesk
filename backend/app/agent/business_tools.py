@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 
 from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket
 from ..rag.retrieval import hybrid_search
-from .tools import ToolContext, ToolDef, ToolError, ToolRegistry
+from .tools import ApprovalNeed, ToolContext, ToolDef, ToolError, ToolRegistry
 
 STATUS_TEXT = {
     "paid": "已付款，待发货",
@@ -211,7 +211,7 @@ def _refund_history(ctx: ToolContext, customer_id: int) -> tuple[int, float]:
     return int(count), float(total)
 
 
-def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> str | None:
+def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | None:
     # args went through _refund_precheck, so "amount" is the amount that would be paid.
     amount = round(float(args["amount"]), 2)
     order = ctx.db.get(Order, _order_id(args))
@@ -219,13 +219,15 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> str | None:
         return None
     tenant, settings = ctx.tenant, ctx.settings
     reasons: list[str] = []
+    customer_note = ""
 
     # Between the no-reason and the quality window only a quality problem qualifies, and
     # the tool cannot look at the customer's photos: a person decides, whatever the amount.
     days = _days_since_delivery(order, datetime.now(timezone.utc))
     if days is not None and days > tenant.return_window_days:
-        reasons.append(f"订单已签收 {days} 天，超过 {tenant.return_window_days} 天无理由退货期限，"
-                       f"{tenant.quality_window_days} 天内仅质量问题可以退换")
+        customer_note = (f"订单已签收 {days} 天，超过 {tenant.return_window_days} 天无理由退货期限，"
+                         f"{tenant.quality_window_days} 天内仅质量问题可以退换")
+        reasons.append(customer_note)  # published policy, so the customer may hear it too
         ctx.add_evidence("tool", "after_sales_window", json.dumps({
             "order_id": order.id, "delivered_at": _as_utc(order.delivered_at).strftime("%Y-%m-%d"),
             "days_since_delivery": days, "return_window_days": tenant.return_window_days,
@@ -254,7 +256,8 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> str | None:
                 "customer_id": order.customer_id, "window_days": window, "refund_count": count,
                 "refund_total": round(total, 2), "this_request": amount,
             }, ensure_ascii=False))
-    return "；".join(reasons) + "，需要人工审核" if reasons else None
+    # Amount and velocity limits are risk controls: the reviewer sees them, the customer does not.
+    return ApprovalNeed("；".join(reasons), customer_note) if reasons else None
 
 
 def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:

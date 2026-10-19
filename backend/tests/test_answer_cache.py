@@ -1,9 +1,15 @@
 from app.agent.answer_cache import normalize_question
+from app.db import new_session
+from app.models import Run
 from tests.conftest import by_type
 
 
 def _done(events):
-    return by_type(events, "done")[0]
+    """Routing and usage of the run, from its record: a customer's events do not carry them."""
+    with new_session() as db:
+        run = db.get(Run, by_type(events, "done")[0]["run_id"])
+        return {"run_id": run.id, "route_tier": run.route_tier, "prompt_tokens": run.prompt_tokens,
+                "completion_tokens": run.completion_tokens}
 
 
 def test_question_normalisation():

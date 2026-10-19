@@ -1,5 +1,7 @@
 from app.agent.prompts import PROMPT_VERSIONS, choose_prompt_version
+from app.db import new_session
 from app.evals import cli
+from app.models import Run
 from tests.conftest import by_type
 
 
@@ -27,7 +29,8 @@ def test_runs_record_the_prompt_version_and_cache_is_versioned(settings, client,
     settings.prompt_canary_version, settings.prompt_canary_percent = "v2", 100
     _, second = ask(customer, "积分可以怎么抵扣？")
     done = by_type(second, "done")[0]
-    assert done["route_tier"] != "cache", "an answer cached under v1 is not replayed for v2"
+    with new_session() as db:
+        assert db.get(Run, done["run_id"]).route_tier != "cache", "an answer cached under v1 is not replayed for v2"
     trace = client.get(f"/api/runs/{done['run_id']}", headers=login("admin@leon.demo")).json()
     router = next(s for s in trace["spans"] if s["kind"] == "router")
     assert router["output"]["prompt_version"] == "v2"

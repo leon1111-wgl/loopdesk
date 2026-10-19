@@ -62,7 +62,7 @@ export interface ChatMessage {
 
 export type AgentEvent =
   | { type: "run_started"; run_id: string }
-  | { type: "guardrail"; name: string; matches: string[] }
+  | { type: "guardrail"; name: string; matches?: string[] } // matched rules: staff only
   | { type: "rewrite"; standalone: string; method: string }
   | { type: "token"; step: number; text: string }
   | { type: "step_done"; step: number }
@@ -77,11 +77,12 @@ export type AgentEvent =
       run_id: string;
       status: string;
       latency_ms: number;
-      prompt_tokens: number;
-      completion_tokens: number;
-      cost: number;
-      model: string;
-      route_tier: string;
+      // Operational data, sent to staff only.
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      cost?: number;
+      model?: string;
+      route_tier?: string;
     }
   | { type: "error"; message: string };
 

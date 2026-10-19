@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     from ..agent.runtime import collect
     from ..config import get_settings
     from ..db import create_all, init_engine, new_session
-    from ..models import Conversation, EvalCase, Tenant, User
+    from ..models import Conversation, EvalCase, Run, Tenant, User
     from ..seed import seed_demo
     from ..services import Services
 
@@ -53,9 +53,10 @@ def main(argv: list[str] | None = None) -> int:
                 summary = collect(services.runtime(db).start(tenant=tenant, user=customer, text=case.question,
                                                              conversation=conversation))
                 done = summary["done"]
+                run = db.get(Run, done["run_id"])  # customers' events carry no usage data
                 passes[round_].append({
-                    "key": case.key, "tier": done["route_tier"], "latency_ms": done["latency_ms"],
-                    "tokens": done["prompt_tokens"] + done["completion_tokens"],
+                    "key": case.key, "tier": run.route_tier, "latency_ms": done["latency_ms"],
+                    "tokens": run.prompt_tokens + run.completion_tokens,
                     "answer": summary["final"]["text"],
                 })
 
