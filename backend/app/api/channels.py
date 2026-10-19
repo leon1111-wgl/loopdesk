@@ -3,11 +3,18 @@ from __future__ import annotations
 import hmac
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
 
 from ..channels.feishu import deduper, handle_message, parse_text_event
+from ..db import new_session
 from ..services import get_services
 
 router = APIRouter(prefix="/api/channels", tags=["channels"])
+
+
+def _first_delivery(event_id: str) -> bool:
+    with new_session() as db:
+        return deduper.first_time(db, "feishu", event_id)
 
 
 @router.post("/feishu/{tenant_slug}/events")
@@ -30,7 +37,7 @@ async def feishu_events(tenant_slug: str, request: Request, background: Backgrou
     parsed = parse_text_event(body)
     if parsed is None:
         return {"code": 0, "msg": "ignored"}
-    if not deduper.first_time(parsed["event_id"]):
+    if not await run_in_threadpool(_first_delivery, parsed["event_id"]):
         return {"code": 0, "msg": "duplicate"}
     # Feishu expects a response within 3 seconds; the agent runs after we acknowledge.
     background.add_task(handle_message, get_services(), tenant_slug, parsed)

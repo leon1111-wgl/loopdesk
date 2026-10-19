@@ -83,7 +83,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 
 **集成**
 - 模型：豆包（火山方舟）、混元、DeepSeek、通义、OpenAI 统一走 OpenAI 兼容协议；Claude 使用官方 SDK；没有 Key 时使用离线确定性模型。
-- 渠道：飞书机器人事件回调（challenge 校验、事件去重、3 秒内先回 200，后台处理失败时记录日志并回复兜底话术）、企业微信群机器人审批提醒。
+- 渠道：飞书机器人事件回调（challenge 校验、事件去重（记在数据库里，多 worker 和重启后都有效）、3 秒内先回 200，后台处理失败时记录日志并回复兜底话术）、企业微信群机器人审批提醒。
 - MCP：只读工具通过 MCP 暴露，Claude Desktop、Cursor 等客户端可以直接接入。
 - 运维：Prometheus `/metrics`、Docker、docker-compose（PostgreSQL）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、镜像构建）。
 - 数据库迁移：Alembic 管理表结构版本，启动时自动升级；对旧版本用 `create_all` 建的库会补齐缺失的表并标记为最新版本。CI 在 SQLite 和 PostgreSQL 上都会校验“模型定义与迁移脚本完全一致”。
@@ -215,7 +215,7 @@ Python 3.12 · FastAPI · SQLAlchemy 2 · SQLite / PostgreSQL · jieba · httpx 
 ## 路线图
 
 - [ ] 向量库切换到 pgvector / Milvus，支持十万级片段
-- [ ] 异步化 Agent 循环（async httpx + async SQLAlchemy），并支持多副本部署（对话限流和事件去重改用 Redis；登录限流已改为数据库计数，多 worker 共享）
+- [ ] 异步化 Agent 循环（async httpx + async SQLAlchemy），并支持多副本部署（对话限流改用 Redis；登录限流和飞书事件去重已放进数据库，多 worker 共享）
 - [ ] 评测集扩展到 200 条以上，接入真实模型做 A/B 对比
 - [ ] 多 Agent：把售后和技术支持拆成两个专职 Agent，由路由 Agent 分派
 - [ ] 飞书加密事件（AES）与企业微信应用消息回调

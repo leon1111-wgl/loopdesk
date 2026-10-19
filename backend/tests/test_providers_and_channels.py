@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from app.channels.feishu import FeishuClient, deduper
+from app.channels.feishu import FeishuClient
 from app.channels.wecom import notify_approval
 from app.config import Settings
 from app.llm.anthropic_provider import AnthropicProvider, to_anthropic
@@ -172,11 +172,82 @@ def test_feishu_message_event_runs_agent_once(client, monkeypatch):
                   "message": {"message_id": "om_1", "chat_id": "oc_1", "message_type": "text",
                               "content": json.dumps({"text": "@_user_1 退款多久能到账？"})}},
     }
-    deduper._seen.clear()
     assert client.post("/api/channels/feishu/leon/events", json=event).json() == {"code": 0}
     assert client.post("/api/channels/feishu/leon/events", json=event).json()["msg"] == "duplicate"
     assert len(replies) == 1 and replies[0][0] == "om_1"
     assert "1-3个工作日" in replies[0][1]
+
+
+def _feishu_event(event_id: str, text: str = "退款多久能到账？") -> dict:
+    return {
+        "schema": "2.0",
+        "header": {"event_id": event_id, "event_type": "im.message.receive_v1", "token": ""},
+        "event": {"sender": {"sender_id": {"open_id": "ou_abc123"}},
+                  "message": {"message_id": f"om_{event_id}", "chat_id": "oc_1", "message_type": "text",
+                              "content": json.dumps({"text": text})}},
+    }
+
+
+def test_feishu_redelivery_to_another_worker_is_still_a_duplicate(client, monkeypatch):
+    # With several workers (or after a restart) the re-sent copy reaches a process that did
+    # not receive the original. Each process has its own deduper object; the IDs they
+    # check are shared, so the customer is answered once.
+    from app.api import channels
+    from app.channels.feishu import EventDeduper
+
+    replies = []
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append((mid, text)) or {"sent": False})
+    assert client.post("/api/channels/feishu/leon/events", json=_feishu_event("evt-retry")).json() == {"code": 0}
+    monkeypatch.setattr(channels, "deduper", EventDeduper())  # the worker that gets the retry
+    assert client.post("/api/channels/feishu/leon/events", json=_feishu_event("evt-retry")).json()["msg"] == "duplicate"
+    assert len(replies) == 1
+
+
+def test_feishu_concurrent_deliveries_let_exactly_one_through(client):
+    import threading
+
+    from app.channels.feishu import EventDeduper
+    from app.db import new_session
+
+    barrier, results = threading.Barrier(8, timeout=10), []
+
+    def deliver():
+        with new_session() as db:
+            barrier.wait()
+            results.append(EventDeduper().first_time(db, "feishu", "evt-race"))
+
+    threads = [threading.Thread(target=deliver) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results) == [False] * 7 + [True]
+
+
+def test_feishu_event_ids_expire_after_a_day(client):
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from app.channels.feishu import EventDeduper
+    from app.db import new_session
+    from app.models import ChannelEvent
+
+    with new_session() as db:
+        db.add(ChannelEvent(channel="feishu", event_id="evt-old",
+                            received_at=datetime.now(timezone.utc) - timedelta(days=2)))
+        db.commit()
+        assert EventDeduper().first_time(db, "feishu", "evt-new")
+        assert db.execute(select(ChannelEvent.event_id)).scalars().all() == ["evt-new"]
+
+
+def test_feishu_event_without_an_id_is_ignored(client, monkeypatch):
+    replies = []
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append((mid, text)) or {"sent": False})
+    event = _feishu_event("evt-x")
+    del event["header"]["event_id"]
+    assert client.post("/api/channels/feishu/leon/events", json=event).json()["msg"] == "ignored"
+    assert replies == []
 
 
 def test_feishu_background_failure_is_logged_and_answered(client, monkeypatch, caplog):
@@ -199,7 +270,6 @@ def test_feishu_background_failure_is_logged_and_answered(client, monkeypatch, c
                   "message": {"message_id": "om_9", "chat_id": "oc_9", "message_type": "text",
                               "content": json.dumps({"text": "积分可以怎么抵扣？"})}},
     }
-    deduper._seen.clear()
     with caplog.at_level(logging.ERROR, logger="app.channels.feishu"):
         assert client.post("/api/channels/feishu/leon/events", json=event).json() == {"code": 0}
     assert replies == [("om_9", MODEL_ERROR_TEXT)], "the customer still gets an answer"

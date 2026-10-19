@@ -3,8 +3,8 @@
 Inbound: the event subscription posts to /api/channels/feishu/{tenant}/events.
 - ``url_verification``: echo the challenge (after checking the verification token);
 - ``im.message.receive_v1``: acknowledge within 3 seconds, process in the background,
-  reply to the original message. Feishu retries unacknowledged events, so event IDs
-  are de-duplicated.
+  reply to the original message. Feishu re-sends events it did not see acknowledged,
+  so event IDs are de-duplicated in the database, where every worker process sees them.
 Outbound: tenant_access_token (cached until expiry) + reply / send-to-chat APIs.
 
 Without LOOPDESK_FEISHU_APP_ID / _APP_SECRET, replies are dry runs (returned, not sent).
@@ -20,15 +20,18 @@ import re
 import secrets
 import threading
 import time
-from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session
 
 from ..agent.runtime import MODEL_ERROR_TEXT, collect
 from ..config import Settings
 from ..db import new_session
-from ..models import Conversation, Tenant, User
+from ..models import ChannelEvent, Conversation, Tenant, User
 from ..security import hash_password
 
 API = "https://open.feishu.cn/open-apis"
@@ -37,19 +40,29 @@ logger = logging.getLogger(__name__)
 
 
 class EventDeduper:
-    def __init__(self, capacity: int = 2048):
-        self._seen: OrderedDict[str, float] = OrderedDict()
-        self._capacity = capacity
-        self._lock = threading.Lock()
+    """Accepted event IDs, kept in the channel_events table for a day. An in-memory set
+    only knows the events its own process received: with several workers, or after a
+    restart, a re-sent event was answered twice. One insert-if-absent decides, so of two
+    deliveries arriving at the same time exactly one goes ahead."""
 
-    def first_time(self, event_id: str) -> bool:
-        with self._lock:
-            if event_id in self._seen:
-                return False
-            self._seen[event_id] = time.time()
-            while len(self._seen) > self._capacity:
-                self._seen.popitem(last=False)
-            return True
+    retention = timedelta(days=1)
+
+    def __init__(self) -> None:
+        self._swept: datetime | None = None  # last time this process deleted expired IDs
+
+    def first_time(self, db: Session, channel: str, event_id: str) -> bool:
+        now = datetime.now(timezone.utc)
+        insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
+        first = db.execute(
+            insert(ChannelEvent).values(channel=channel, event_id=event_id, received_at=now)
+            .on_conflict_do_nothing(index_elements=[ChannelEvent.channel, ChannelEvent.event_id])
+            .returning(ChannelEvent.event_id)
+        ).first() is not None
+        if self._swept is None or now - self._swept > timedelta(hours=1):
+            db.execute(delete(ChannelEvent).where(ChannelEvent.received_at < now - self.retention))
+            self._swept = now
+        db.commit()
+        return first
 
 
 deduper = EventDeduper()
@@ -111,8 +124,13 @@ def parse_text_event(body: dict) -> dict | None:
         text = json.loads(message.get("content") or "{}").get("text", "")
     except json.JSONDecodeError:
         return None
+    event_id = body["header"].get("event_id")
+    if not isinstance(event_id, str) or not 0 < len(event_id) <= 128:
+        # Without an ID a re-sent copy cannot be recognised; schema 2.0 events always carry one.
+        logger.warning("feishu event without a usable event_id ignored")
+        return None
     return {
-        "event_id": body["header"].get("event_id", ""),
+        "event_id": event_id,
         "open_id": ((event.get("sender") or {}).get("sender_id") or {}).get("open_id", ""),
         "chat_id": message.get("chat_id", ""),
         "message_id": message.get("message_id", ""),

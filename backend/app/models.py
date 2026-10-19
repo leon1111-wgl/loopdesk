@@ -349,3 +349,14 @@ class RateCounter(Base):
     minute: Mapped[int] = mapped_column(Integer, primary_key=True)
     count: Mapped[int] = mapped_column(Integer, default=0)
 
+
+class ChannelEvent(Base):
+    """Inbound channel events already accepted. Feishu re-sends an event it did not see
+    acknowledged, with the same event_id, and the copy can reach another worker process or
+    arrive after a restart; keeping the IDs here makes every process see it as a repeat."""
+
+    __tablename__ = "channel_events"
+    channel: Mapped[str] = mapped_column(String(32), primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
