@@ -42,6 +42,23 @@ REFUSAL = (
 )
 
 
+# "SO… 我要退货退款，另外发票怎么开？" carries two requests. The clause after a connector is
+# answered on its own instead of being silently dropped.
+_EXTRA = re.compile(r"[，,。；;！!？?\s]+(?:另外|还有|顺便问一下|顺便|再问一下|以及)[，,\s]*")
+MULTI_REFUND_TEXT = "一次只能为一个订单申请退款，请告诉我要退哪一个订单。"
+
+
+def split_intents(text: str) -> tuple[str, str | None]:
+    """(main request, an extra question or None)."""
+    match = _EXTRA.search(text)
+    if not match:
+        return text, None
+    extra = text[match.end():].strip()
+    if len(extra) < 2 or ORDER_ID_RE.search(extra):
+        return text, None
+    return text[:match.start()].strip(), extra
+
+
 def wants_human(text: str) -> bool:
     return bool(_HANDOFF.search(_NEGATED_HANDOFF.sub("", text)))
 
@@ -107,15 +124,36 @@ class MockLLM(LLMProvider):
 
     # ------------------------------------------------------------------ planning
     def _next_call(self, text: str, called: list[str], results: dict, available: set[str]):
+        main, extra = split_intents(text)
+        call = self._main_call(main, called, results, available)
+        if call is not None:
+            return call
+        searched = {r.get("query") for r in results.get("search_knowledge") or []}
+        if extra and "search_knowledge" in available and extra not in searched:
+            return "search_knowledge", {"query": extra}
+        return None
+
+    def _main_call(self, text: str, called: list[str], results: dict, available: set[str]):
         def can(name: str) -> bool:
             return name in available and name not in called
 
-        order_match = ORDER_ID_RE.search(text)
+        order_ids = list(dict.fromkeys(m.upper() for m in ORDER_ID_RE.findall(text)))
         if wants_human(text) and can("handoff_to_human"):
             return "handoff_to_human", {"reason": text[:120]}
 
-        if order_match:
-            order_id = order_match.group(0).upper()
+        if len(order_ids) > 1:  # look every order up; track each if asked; never guess which to refund
+            orders = results.get("get_order") or []
+            if len(orders) < len(order_ids) and "get_order" in available:
+                return "get_order", {"order_id": order_ids[len(orders)]}
+            found = [o["order_id"] for o in orders if not o.get("error")]
+            tracked = results.get("track_shipment") or []
+            if (_SHIPMENT.search(text) and not _REFUND.search(text) and "track_shipment" in available
+                    and len(tracked) < len(found)):
+                return "track_shipment", {"order_id": found[len(tracked)]}
+            return None
+
+        if order_ids:
+            order_id = order_ids[0]
             if can("get_order"):
                 return "get_order", {"order_id": order_id}
             order = (results.get("get_order") or [{}])[-1]
@@ -149,6 +187,10 @@ class MockLLM(LLMProvider):
 
     # ------------------------------------------------------------------ answering
     def _compose(self, text: str, results: dict[str, list[dict[str, Any]]]) -> str:
+        text, extra = split_intents(text)
+        searches = results.get("search_knowledge") or []
+        extra_search = next((r for r in searches if extra and r.get("query") == extra), None)
+        results = {**results, "search_knowledge": [r for r in searches if r is not extra_search]}
         parts: list[str] = []
 
         def last(name: str) -> dict[str, Any] | None:
@@ -158,22 +200,25 @@ class MockLLM(LLMProvider):
         if handoff:
             parts.append(handoff.get("message") or handoff.get("error", ""))
 
-        order = last("get_order")
+        orders = results.get("get_order") or []
         refund = last("request_refund")
-        shipment = last("track_shipment")
-        if order:
+        shipments = results.get("track_shipment") or []
+        tracked = {s.get("order_id") for s in shipments if not s.get("error")}
+        for order in orders:
             if order.get("error"):
                 parts.append(f"未能查询到该订单：{order['error']}。请核对订单号后再试。")
-            elif not refund and not (shipment and not shipment.get("error")):
+            elif not refund and order.get("order_id") not in tracked:
                 items = "、".join(f"{i['name']}×{i['qty']}" for i in order.get("items", []))
                 parts.append(
                     f"订单 {order['order_id']} 当前状态为“{order['status_text']}”，"
                     f"订单金额 ¥{order['amount']:.2f}，商品：{items}。"
                 )
-                if _REFUND.search(text) and not order.get("refundable", False):
+                if len(orders) == 1 and _REFUND.search(text) and not order.get("refundable", False):
                     parts.append(f"该订单暂不能发起退款：{order.get('refund_note', '')}。")
+        if len(orders) > 1 and _REFUND.search(text):
+            parts.append(MULTI_REFUND_TEXT)
 
-        if shipment:
+        for shipment in shipments:
             if shipment.get("error"):
                 parts.append(f"物流查询失败：{shipment['error']}。")
             elif shipment.get("message"):
@@ -198,6 +243,10 @@ class MockLLM(LLMProvider):
                     parts.append(REFUSAL)
         if ticket:
             parts.append(ticket.get("message") or f"工单创建失败：{ticket.get('error', '')}。")
+
+        if extra_search is not None:
+            sentences = self._extract(expand_query(extra), extra_search.get("results") or [], 2)
+            parts.append(f"另外，{''.join(sentences)}" if sentences else f"关于“{extra}”，知识库中没有找到相关依据。")
 
         if not parts:
             parts.append(REFUSAL)

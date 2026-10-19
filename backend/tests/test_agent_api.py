@@ -348,3 +348,33 @@ def test_colloquial_partial_refund_is_recognised(ask, login):
     refund = next(e for e in by_type(events, "tool_call") if e["name"] == "request_refund")
     assert refund["arguments"]["amount"] == 50.0
     assert "50.00" in by_type(events, "final")[0]["text"]
+
+
+# ---------------------------------------------------------------- several requests in one message
+def test_an_extra_question_is_answered_not_dropped(ask, login):
+    from app.llm.mock import split_intents
+
+    assert split_intents("SO20260918001 我要退货退款，另外发票怎么开？") == ("SO20260918001 我要退货退款", "发票怎么开？")
+    assert split_intents("退款多久能到账？") == ("退款多久能到账？", None)
+    _, events = ask(login("customer@leon.demo"), "SO20260918001 我要退货退款，另外发票怎么开？")
+    assert [e["name"] for e in by_type(events, "tool_call")] == [
+        "get_order", "search_knowledge", "request_refund", "search_knowledge"]
+    final = by_type(events, "final")[0]["text"]
+    assert "已受理" in final and "电子普通发票" in final
+    assert by_type(events, "verification")[0]["verdict"] == "pass"
+
+
+def test_every_order_in_a_message_is_looked_up(ask, login):
+    _, events = ask(login("customer@leon.demo"), "SO20261008002和SO20261012003到哪了")
+    assert [e["name"] for e in by_type(events, "tool_call")] == [
+        "get_order", "get_order", "track_shipment", "track_shipment"]
+    final = by_type(events, "final")[0]["text"]
+    assert "AT1402938475" in final and "SO20261012003 目前还未发货" in final
+
+
+def test_a_refund_naming_two_orders_asks_which_one(ask, login):
+    from app.llm.mock import MULTI_REFUND_TEXT
+
+    _, events = ask(login("customer@leon.demo"), "SO20260918001和SO20261012003都给我退款")
+    assert "request_refund" not in [e["name"] for e in by_type(events, "tool_call")], "never guess with money"
+    assert MULTI_REFUND_TEXT in by_type(events, "final")[0]["text"]
