@@ -16,12 +16,12 @@ import re
 from collections import Counter
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..agent.prompts import KB_PATCH_PROMPT
 from ..llm.base import Embedder, LLMMessage, LLMProvider
-from ..models import Document, EvalCase, EvalRun, Feedback, KBPatch, Message, Run, Span, User
+from ..models import Document, EvalCase, EvalRun, Feedback, KBPatch, Message, Run, Span, Tenant, User
 from ..rag.ingest import ingest_document
 
 REASONS = {
@@ -145,9 +145,29 @@ def submit_feedback(
     return result
 
 
-def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder) -> Document:
-    if patch.status != "proposed":
+def _claim(db: Session, patch: KBPatch, status: str, reviewer: User) -> None:
+    """Move a proposed patch to its decision in one conditional UPDATE: of two reviewers
+    acting on the same patch at once, exactly one wins."""
+    claimed = db.execute(
+        update(KBPatch).where(KBPatch.id == patch.id, KBPatch.status == "proposed")
+        .values(status=status, reviewer_id=reviewer.id, decided_at=datetime.now(timezone.utc))
+        .execution_options(synchronize_session="fetch")
+    ).rowcount
+    if claimed != 1:
+        db.rollback()
         raise FlywheelError("该补丁已处理")
+
+
+def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder) -> Document:
+    # Start from the latest committed state (the caller's session has already read), and
+    # write first: on SQLite the claim takes the write lock, so concurrent publishers take
+    # turns; on PostgreSQL the tenant row lock below does the same. Publishing is rare, so
+    # serialising it per tenant is cheap. Without this, two publishers read the same patch
+    # document and the second write dropped the first patch, or, on the very first publish,
+    # both created a patch document and every later publish failed.
+    db.commit()
+    _claim(db, patch, "applied", reviewer)
+    db.execute(select(Tenant.id).where(Tenant.id == patch.tenant_id).with_for_update())
     document = db.execute(
         select(Document).where(Document.tenant_id == patch.tenant_id, Document.source == PATCH_DOC_SOURCE)
     ).scalar_one_or_none()
@@ -157,10 +177,7 @@ def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder)
         db, tenant_id=patch.tenant_id, title="客服纠错知识补丁", content=content, embedder=embedder,
         visibility="public", source=PATCH_DOC_SOURCE, created_by=reviewer.id, document=document,
     )
-    patch.status = "applied"
     patch.document_id = document.id
-    patch.reviewer_id = reviewer.id
-    patch.decided_at = datetime.now(timezone.utc)
     for case in db.execute(select(EvalCase).where(EvalCase.feedback_id == patch.feedback_id)).scalars():
         if case.status == "candidate":
             case.status = "active"
@@ -169,11 +186,8 @@ def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder)
 
 
 def reject_patch(db: Session, patch: KBPatch, reviewer: User) -> None:
-    if patch.status != "proposed":
-        raise FlywheelError("该补丁已处理")
-    patch.status = "rejected"
-    patch.reviewer_id = reviewer.id
-    patch.decided_at = datetime.now(timezone.utc)
+    db.commit()
+    _claim(db, patch, "rejected", reviewer)
     db.commit()
 
 
