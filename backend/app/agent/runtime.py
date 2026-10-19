@@ -16,13 +16,14 @@ non-streaming API, the Feishu channel and the eval runner.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..channels.wecom import notify_approval
@@ -42,7 +43,15 @@ STRICT_FALLBACK = "抱歉，我暂时无法给出有可靠依据的答复。为�
 MAX_STEPS_TEXT = "抱歉，这个问题需要的处理步骤较多，建议您转人工客服继续处理。"
 MODEL_ERROR_TEXT = "抱歉，智能客服暂时繁忙，请稍后再试或转人工客服。"
 REFUSAL_TEXT = "抱歉，这个问题我无法处理，建议您转人工客服。"
+APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 TOOL_LABEL = {"request_refund": "退款"}
+
+logger = logging.getLogger(__name__)
+
+
+class ResumeError(RuntimeError):
+    """Resuming a run after a human decision failed before the decision took effect.
+    The approval is back to pending, so the reviewer can simply decide again."""
 
 
 @dataclass
@@ -121,7 +130,11 @@ class AgentRuntime:
         messages = [LLMMessage(role="system", content=build_system_prompt(tenant, user)), *history,
                     LLMMessage(role="user", content=pii.masked)]
         ctx = self._context(tenant, user, run, conversation, options.dry_run, [])
-        yield from self._loop(run, tracer, ctx, state, messages, queue=[], started=time.perf_counter())
+        try:
+            yield from self._loop(run, tracer, ctx, state, messages, queue=[], started=time.perf_counter())
+        except Exception as exc:  # a bug or a DB error, not a model error (those end the run politely)
+            self._mark_failed(run, exc)
+            raise
 
     def _serve_cached(self, run: Run, tracer: Tracer, tenant: Tenant, user: User,
                       conversation: Conversation | None, user_text: str, entry) -> Iterator[dict[str, Any]]:
@@ -145,51 +158,99 @@ class AgentRuntime:
 
     def resume(self, approval: Approval, decision: str, reviewer: User, comment: str = "") -> list[dict[str, Any]]:
         """Continue a paused run after a human decision. Runs synchronously; the result
-        lands in the conversation as a new assistant message."""
+        lands in the conversation as a new assistant message.
+
+        Failure handling: if anything breaks before the decision takes effect, the run is
+        marked failed and the approval goes back to pending (``ResumeError``), so it can be
+        decided again. If the approved tool already ran (money moved), the decision stands
+        and the customer gets the tool's own result instead of a model-written answer."""
         if approval.status != "pending":
             raise ValueError("该审批单已处理")
         if decision not in ("approve", "reject"):
             raise ValueError("decision 必须是 approve 或 reject")
+        # Claim the approval with a conditional UPDATE: when two reviewers decide at the
+        # same time, exactly one of them moves it out of "pending" and runs the tool.
+        claimed = self.db.execute(
+            update(Approval)
+            .where(Approval.id == approval.id, Approval.status == "pending")
+            .values(status="approved" if decision == "approve" else "rejected", reviewer_id=reviewer.id,
+                    comment=comment, decided_at=datetime.now(timezone.utc))
+        ).rowcount
+        if claimed != 1:
+            self.db.rollback()
+            raise ValueError("该审批单已处理")
         run = self.db.get(Run, approval.run_id)
-        state = dict(run.state or {})
-        pending = state.get("pending") or {}
-        approval.status = "approved" if decision == "approve" else "rejected"
-        approval.reviewer_id = reviewer.id
-        approval.comment = comment
-        approval.decided_at = datetime.now(timezone.utc)
         run.status = "running"
         self.db.commit()
 
+        state = dict(run.state or {})
         tenant = self.db.get(Tenant, run.tenant_id)
         user = self.db.get(User, run.user_id)
         conversation = self.db.get(Conversation, run.conversation_id) if run.conversation_id else None
         evidence = [Evidence(**e) for e in state.get("evidence", [])]
         ctx = self._context(tenant, user, run, conversation, False, evidence)
         tracer = Tracer(self.db, run, self.settings)
-        messages = [LLMMessage.from_dict(m) for m in state.get("messages", [])]
-        call = ToolCall(**pending["call"])
-        queue = [ToolCall(**c) for c in pending.get("queue", [])]
         started = time.perf_counter()
+        executed: ToolOutcome | None = None  # set once the approved tool has really run
 
         events: list[dict[str, Any]] = []
-        with tracer.span("approval", f"human_{approval.status}", {"approval_id": approval.id}) as span:
-            span.set(reviewer=reviewer.name, comment=comment)
-        if decision == "approve":
-            ctx.approval_id = approval.id
-            outcome = self._run_tool(tracer, ctx, call)
-            ctx.approval_id = None
-        else:
-            outcome = ToolOutcome("result", {
-                "status": "rejected",
-                "comment": comment,
-                "message": f"{TOOL_LABEL.get(call.name, '该操作')}申请未通过人工审核。审核意见：{comment or '无'}。",
-            })
-            ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
-        messages.append(self._tool_message(call, outcome))
-        events.append({"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
-                       "is_error": outcome.is_error})
-        events.extend(self._loop(run, tracer, ctx, state, messages, queue, started))
-        return events
+        try:
+            pending = state["pending"]
+            messages = [LLMMessage.from_dict(m) for m in state.get("messages", [])]
+            call = ToolCall(**pending["call"])
+            queue = [ToolCall(**c) for c in pending.get("queue", [])]
+            with tracer.span("approval", f"human_{approval.status}", {"approval_id": approval.id}) as span:
+                span.set(reviewer=reviewer.name, comment=comment)
+            if decision == "approve":
+                ctx.approval_id = approval.id
+                outcome = self._run_tool(tracer, ctx, call)
+                ctx.approval_id = None
+                if not outcome.is_error:
+                    executed = outcome
+            else:
+                outcome = ToolOutcome("result", {
+                    "status": "rejected",
+                    "comment": comment,
+                    "message": f"{TOOL_LABEL.get(call.name, '该操作')}申请未通过人工审核。审核意见：{comment or '无'}。",
+                })
+                ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
+            messages.append(self._tool_message(call, outcome))
+            events.append({"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
+                           "is_error": outcome.is_error})
+            events.extend(self._loop(run, tracer, ctx, state, messages, queue, started))
+            return events
+        except Exception as exc:
+            self._mark_failed(run, exc)
+            if executed is None:
+                self._reopen(approval, run)
+                raise ResumeError(f"审批执行失败，审批单 #{approval.id} 已退回待处理，可以重新审批。"
+                                  f"错误：{type(exc).__name__}") from exc
+            # The decision already took effect: keep it and tell the customer what happened.
+            # The run stays "failed" for operators; the customer-facing outcome is complete.
+            fallback = str(executed.output.get("message") or APPROVED_FALLBACK_TEXT)
+            events.extend(self._finish(run, tracer, ctx, state, fallback, started, status="failed",
+                                       extra_meta={"status": "completed", "fallback": True}))
+            return events
+
+    def _mark_failed(self, run: Run, exc: Exception) -> None:
+        """Record an unexpected crash on the run so it never stays "running"."""
+        logger.exception("agent run %s failed", run.id)
+        self.db.rollback()
+        run.status = "failed"
+        run.error = f"{type(exc).__name__}: {exc}"[:2000]
+        run.finished_at = datetime.now(timezone.utc)
+        self.db.commit()
+
+    def _reopen(self, approval: Approval, run: Run) -> None:
+        approval.status = "pending"
+        approval.reviewer_id = None
+        approval.comment = ""
+        approval.decided_at = None
+        run.finished_at = None
+        self.db.commit()
+        with Tracer(self.db, run, self.settings).span("approval", "reopened", {"approval_id": approval.id}) as span:
+            span.status = "error"
+            span.set(error=run.error, approval_status="pending")
 
     # ================================================================ the loop
     def _loop(self, run: Run, tracer: Tracer, ctx: ToolContext, state: dict[str, Any],

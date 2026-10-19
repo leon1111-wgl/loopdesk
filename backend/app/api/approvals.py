@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..agent.runtime import ResumeError
 from ..channels.feishu import FeishuClient
 from ..db import get_db
 from ..models import Approval, Conversation, Run, User
@@ -53,7 +54,12 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
     if approval.requested_by == principal.user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "不能审批自己发起的申请（四眼原则）")
     services = get_services()
-    events = services.runtime(db).resume(approval, body.decision, principal.user, body.comment)
+    try:
+        events = services.runtime(db).resume(approval, body.decision, principal.user, body.comment)
+    except ResumeError as exc:  # the approval is pending again and can be retried
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except ValueError as exc:  # another reviewer decided first
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     final = next((e for e in events if e["type"] == "final"), {})
 
     conversation = db.get(Conversation, approval.conversation_id) if approval.conversation_id else None

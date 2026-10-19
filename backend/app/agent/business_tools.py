@@ -123,7 +123,17 @@ def track_shipment(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- refunds (high risk)
+def _refund_for_approval(ctx: ToolContext) -> Refund | None:
+    """The approval id is the idempotency key: retrying an approved run must not move money twice."""
+    if ctx.approval_id is None or ctx.dry_run:
+        return None
+    return ctx.db.execute(select(Refund).where(Refund.approval_id == ctx.approval_id)).scalar_one_or_none()
+
+
 def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    done = _refund_for_approval(ctx)
+    if done is not None:  # already executed; the order is "refunding" now, so skip re-validation
+        return {"order_id": done.order_id, "amount": done.amount}
     order = _load_order(ctx, _order_id(args))
     try:
         amount = round(float(args.get("amount") or order.amount), 2)
@@ -186,6 +196,12 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> str | None:
 
 
 def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    done = _refund_for_approval(ctx)
+    if done is not None:
+        return {
+            "status": "approved", "refund_id": done.id, "order_id": done.order_id, "amount": done.amount,
+            "message": f"退款单 #{done.id} 已受理，退款金额 ¥{done.amount:.2f} 将按原支付方式退回。",
+        }
     # Re-validate at execution time: the order may have changed while waiting for approval.
     checked = _refund_precheck(ctx, args)
     amount = checked["amount"]
