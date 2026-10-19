@@ -38,6 +38,7 @@ STOP_TOKENS = {
     "可以", "什么", "怎么", "如何", "请问", "我的", "你们", "是否", "一下", "这个", "那个", "多久",
     "多少", "哪些", "为什么", "怎样", "能否", "能不能", "是不是", "有没有", "没有", "知道", "告诉",
     "现在", "目前", "已经", "我们", "你好", "您好", "帮我", "一个", "需要", "时候", "情况", "问题",
+    "啥时候", "什么时候", "几时", "多会儿", "啥", "咋", "咋样",
     "the", "a", "an", "is", "are", "to", "of", "and", "or", "for", "my", "i", "you", "can", "how", "what",
 }
 
@@ -67,6 +68,33 @@ def tokenize(text: str) -> list[str]:
             continue
         tokens.append(t)
     return tokens
+
+
+# Query normalisation for how customers actually type. Variant characters are folded, and
+# colloquial phrases are *expanded* with the knowledge base's own wording (never replaced,
+# so recall can only grow). Kept small and domain-specific on purpose: every entry should
+# be justified by an eval case ("colloquial" tag) or a real bad case from the flywheel.
+_VARIANT_CHARS = str.maketrans({"帐": "账"})
+QUERY_SYNONYMS: dict[str, str] = {
+    "退回来": "退款 到账",
+    "退钱": "退款",
+    "钱啥时候": "退款 到账",
+    "不想要": "七天无理由退货",
+    "能退吗": "退货",
+    "能不能退": "退货",
+    "专票": "增值税专用发票",
+    "开票": "发票",
+    "多掏钱": "额外支付 运费",
+    "加钱": "额外支付",
+    "快递费": "运费",
+}
+
+
+def expand_query(text: str) -> str:
+    """"钱啥时候能退回来？" -> "钱啥时候能退回来？ 退款 到账"."""
+    folded = text.translate(_VARIANT_CHARS)
+    extras = list(dict.fromkeys(canonical for phrase, canonical in QUERY_SYNONYMS.items() if phrase in folded))
+    return f"{folded} {' '.join(extras)}" if extras else folded
 
 
 def token_set(text: str) -> set[str]:

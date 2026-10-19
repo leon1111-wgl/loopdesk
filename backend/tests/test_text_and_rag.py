@@ -64,3 +64,13 @@ def test_injected_chunk_is_flagged_at_ingestion(client, login):
     detail = client.get(f"/api/kb/documents/{supplier['id']}", headers=admin).json()
     flagged = [c for c in detail["chunks"] if c["flagged_injection"]]
     assert "忽略之前的所有指令" in flagged[0]["text"]
+
+
+def test_query_expansion_folds_variants_and_adds_canonical_terms():
+    from app.textutil import expand_query, tokenize
+
+    assert "到账" in expand_query("退款到帐要几天"), "帐 is folded to 账"
+    expanded = expand_query("公司开专票要啥材料")
+    assert "增值税专用发票" in expanded and expanded.count("增值税专用发票") == 1
+    assert "啥时候" not in tokenize("钱啥时候能退回来"), "colloquial question words carry no topic"
+    assert expand_query("积分可以怎么抵扣？") == "积分可以怎么抵扣？", "no expansion without a matching phrase"

@@ -17,7 +17,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..textutil import ORDER_ID_RE, estimate_tokens, split_sentences, token_set
+from ..textutil import ORDER_ID_RE, estimate_tokens, expand_query, split_sentences, token_set
 from .base import ChatResult, LLMMessage, LLMProvider, StreamEvent, ToolCall, ToolSpec, Usage
 
 _HANDOFF = re.compile(r"人工|真人|投诉|转接")
@@ -176,7 +176,7 @@ class MockLLM(LLMProvider):
         ticket = last("create_ticket")
         knowledge = last("search_knowledge")
         if knowledge:
-            query = "退款 到账 工作日" if refund and not refund.get("error") else text
+            query = "退款 到账 工作日" if refund and not refund.get("error") else expand_query(text)
             if not (refund and refund.get("error")):
                 limit = 1 if (refund or ticket) else 3
                 sentences = self._extract(query, knowledge.get("results") or [], limit)

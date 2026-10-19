@@ -21,3 +21,8 @@
 {"key": "ticket_device_fault", "question": "买的扫地机器人坏了，按电源键也开不了机，很紧急", "expected_tools": ["create_ticket"], "must_include": ["工单", "4 小时"], "tags": ["tool"]}
 {"key": "refund_velocity", "question": "订单 SO20261015009 申请退款", "as_user": "customer2@leon.demo", "expected_tools": ["get_order", "request_refund"], "expect_approval": true, "must_include": ["人工审核"], "tags": ["hitl", "security"]}
 {"key": "followup_return_shipping", "question": "那运费谁出？", "history": ["七天无理由退货有什么条件？"], "expected_tools": ["search_knowledge"], "must_include": ["买家承担"], "expected_doc": "售后与退款政策", "tags": ["rag", "multi-turn"]}
+{"key": "colloquial_refund_time", "question": "钱啥时候能退回来？", "expected_tools": ["search_knowledge"], "must_include": ["1-3个工作日"], "expected_doc": "售后与退款政策", "tags": ["rag", "colloquial"]}
+{"key": "typo_refund_arrival", "question": "退款到帐要几天", "expected_tools": ["search_knowledge"], "must_include": ["1-3个工作日"], "expected_doc": "售后与退款政策", "tags": ["rag", "colloquial"]}
+{"key": "colloquial_return", "question": "东西不想要了能退吗", "expected_tools": ["search_knowledge"], "must_include": ["7天"], "expected_doc": "售后与退款政策", "tags": ["rag", "colloquial"]}
+{"key": "colloquial_invoice", "question": "公司开专票要啥材料", "expected_tools": ["search_knowledge"], "must_include": ["营业执照"], "expected_doc": "发票开具指南", "tags": ["rag", "colloquial"]}
+{"key": "colloquial_shipping_fee", "question": "寄个东西到西藏得多掏钱不", "expected_tools": ["search_knowledge"], "must_include": ["15元"], "expected_doc": "配送与物流说明", "tags": ["rag", "colloquial"]}

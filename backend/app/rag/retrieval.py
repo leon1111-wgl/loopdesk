@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from ..llm.base import Embedder
 from ..models import Chunk, Document
-from ..textutil import tokenize
+from ..textutil import expand_query, tokenize
 from .embeddings import unpack
 
 RRF_K = 60
@@ -193,6 +193,7 @@ def hybrid_search(
     include_flagged: bool = False,
 ) -> tuple[list[Hit], SearchDebug]:
     index = index_manager.get(db, tenant_id)
+    query = expand_query(query)  # variant characters + colloquial phrases -> knowledge-base wording
     q_tokens = tokenize(query)
     debug = SearchDebug(query_tokens=q_tokens)
     if index.n == 0:
