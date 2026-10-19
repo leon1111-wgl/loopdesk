@@ -48,6 +48,8 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(128))
     role: Mapped[str] = mapped_column(String(16))  # admin | agent | customer
     password_hash: Mapped[str] = mapped_column(String(255))
+    # Carried in every token; bumping it (erasure) invalidates all tokens issued before.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -103,5 +103,6 @@ def erase_user(db: Session, user_id: int) -> dict[str, int]:
     user.name = f"已注销用户 {user.id}"
     user.email = f"erased-{user.id}-{secrets.token_hex(4)}@invalid"
     user.password_hash = hash_password(secrets.token_urlsafe(32))
+    user.token_version += 1  # tokens issued before the erasure stop working now, not in 12 hours
     db.commit()
     return counts

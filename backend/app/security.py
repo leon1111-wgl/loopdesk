@@ -48,6 +48,7 @@ def create_token(user: User) -> str:
         "sub": str(user.id),
         "tid": user.tenant_id,
         "role": user.role,
+        "ver": user.token_version,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
@@ -81,6 +82,8 @@ def get_principal(request: Request, db: Session = Depends(get_db)) -> Principal:
     user = db.get(User, int(claims["sub"]))
     if user is None or user.tenant_id != claims.get("tid"):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在")
+    if claims.get("ver", 0) != user.token_version:  # revoked: issued before an erasure
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "登录已失效，请重新登录")
     tenant = db.get(Tenant, user.tenant_id)
     identify(tenant.id, user.id)
     return Principal(user, tenant)

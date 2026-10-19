@@ -63,3 +63,13 @@ def test_erase_user_personal_data(client, ask, login):
         assert approval.evidence == [] and approval.arguments["amount"] == 1299.0, "audit record kept, quotes removed"
         assert db.get(Order, "SO20261008002") is not None, "orders are accounting records"
         assert db.get(Run, other_run).input_text != REDACTED, "other customers untouched"
+
+
+def test_an_erased_account_loses_its_open_sessions_too(client, login):
+    # Erasure made the account unable to log in, but a token issued before it kept working until
+    # it expired (up to 12 hours): the erased customer could still open conversations and chat.
+    customer = login("customer@leon.demo")
+    me = client.get("/api/auth/me", headers=customer).json()
+    assert client.delete(f"/api/admin/users/{me['id']}/personal-data", headers=login("admin@leon.demo")).status_code == 200
+    assert client.get("/api/auth/me", headers=customer).status_code == 401
+    assert client.post("/api/conversations", json={}, headers=customer).status_code == 401
