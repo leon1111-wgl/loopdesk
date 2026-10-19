@@ -39,6 +39,21 @@ CITE_RE = re.compile(r"\[(\d{1,2})\]")
 # boundary before "S" and \b silently fails. Explicit look-arounds work next to Chinese.
 ORDER_ID_RE = re.compile(r"(?<![A-Za-z0-9])SO\d{8,14}(?!\d)", re.IGNORECASE)
 
+# Full-width digits and Latin letters (and ＋ －, which appear in phone numbers) become ASCII:
+# "ＳＯ２０２６…" is the same order number. Chinese full-width punctuation (，？！) is left alone,
+# so what the customer typed still reads the same in the transcript.
+_HALF_WIDTH = str.maketrans({
+    **{chr(c): chr(c - 0xFEE0) for c in range(0xFF10, 0xFF1A)},  # ０-９
+    **{chr(c): chr(c - 0xFEE0) for c in range(0xFF21, 0xFF3B)},  # Ａ-Ｚ
+    **{chr(c): chr(c - 0xFEE0) for c in range(0xFF41, 0xFF5B)},  # ａ-ｚ
+    "＋": "+", "－": "-",
+})
+
+
+def normalize_width(text: str) -> str:
+    return text.translate(_HALF_WIDTH)
+
+
 # Question words and function words that carry no topical signal.
 STOP_TOKENS = {
     "可以", "什么", "怎么", "如何", "请问", "我的", "你们", "是否", "一下", "这个", "那个", "多久",

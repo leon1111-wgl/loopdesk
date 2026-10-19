@@ -327,3 +327,24 @@ def test_repeated_handoff_reuses_the_open_ticket_and_keeps_the_queue_position(as
     with new_session() as db:
         mine = [t for t in open_handoffs(db) if t.conversation_id == conversation_id]
         assert len(mine) == 1, "a repeated request must not open a second ticket"
+
+
+# ---------------------------------------------------------------- how people actually type
+def test_full_width_order_numbers_are_recognised(ask, login):
+    from app.textutil import normalize_width
+
+    assert normalize_width("ＳＯ２０２６１００８００２ 物流？") == "SO20261008002 物流？", "Chinese punctuation stays"
+    _, events = ask(login("customer@leon.demo"), "ＳＯ２０２６１００８００２ 物流")
+    assert [e["name"] for e in by_type(events, "tool_call")] == ["get_order", "track_shipment"]
+
+
+def test_english_tracking_question_looks_up_the_shipment(ask, login):
+    _, events = ask(login("customer@leon.demo"), "where is my order SO20261008002? when will it arrive")
+    assert [e["name"] for e in by_type(events, "tool_call")] == ["get_order", "track_shipment"]
+
+
+def test_colloquial_partial_refund_is_recognised(ask, login):
+    _, events = ask(login("customer@leon.demo"), "SO20261012003 先退我50块吧 剩下的再说")
+    refund = next(e for e in by_type(events, "tool_call") if e["name"] == "request_refund")
+    assert refund["arguments"]["amount"] == 50.0
+    assert "50.00" in by_type(events, "final")[0]["text"]

@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket
 from ..rag.retrieval import hybrid_search
+from ..textutil import normalize_width
 from . import handoff
 from .tools import ApprovalNeed, ToolContext, ToolDef, ToolError, ToolRegistry
 
@@ -31,7 +32,7 @@ PRIORITY_TEXT = {"low": "低", "normal": "普通", "high": "高", "urgent": "紧
 
 
 def _order_id(args: dict[str, Any]) -> str:
-    value = str(args.get("order_id") or "").strip().upper()
+    value = normalize_width(str(args.get("order_id") or "")).strip().upper()
     if not value:
         raise ToolError("缺少订单号")
     return value

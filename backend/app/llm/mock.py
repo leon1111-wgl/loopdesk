@@ -28,8 +28,9 @@ _NEG = r"(?:不用|不要|别|无需|不需要|不必|甭)(?:帮我|给我)?"
 _NEGATED_HANDOFF = re.compile(
     rf"{_NEG}(?:转接|转到|转|找|接)?(?:人工客服|人工|真人)|{_NEG}转接|不是要?投诉"
 )
-_REFUND = re.compile(r"退款|退钱|退货|退掉")
-_SHIPMENT = re.compile(r"物流|快递|到哪|发货了吗|配送|运单|什么时候到")
+_REFUND = re.compile(r"退款|退钱|退货|退掉|退我|refund", re.IGNORECASE)
+_SHIPMENT = re.compile(r"物流|快递|到哪|发货了吗|配送|运单|什么时候到|送到|where is|track|arrive|deliver|shipping",
+                       re.IGNORECASE)
 _TICKET = re.compile(r"报修|故障|坏了|工单|无法使用|打不开|不工作|失灵|连不上")
 _URGENT = re.compile(r"紧急|严重|马上|立刻")
 _AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*(?:元|块)")

@@ -36,6 +36,7 @@ from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
 from .rewrite import Frame, frame_of, is_followup, next_frame, rewrite_followup
 from ..observability import request_id_var
+from ..textutil import normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
 from .tools import ApprovalNeed, Evidence, ToolContext, ToolError, ToolRegistry
@@ -88,6 +89,7 @@ class AgentRuntime:
     def start(self, *, tenant: Tenant, user: User, text: str, conversation: Conversation | None = None,
               options: RunOptions | None = None) -> Iterator[dict[str, Any]]:
         options = options or RunOptions()
+        text = normalize_width(text)  # "ＳＯ２０２６…" is an order number too
         pii = mask_pii(text) if self.settings.pii_masking else PIIReport(text, [])
         history = self._history(conversation)
         previous, frame = self._previous_turn(conversation)
