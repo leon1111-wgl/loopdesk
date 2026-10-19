@@ -78,6 +78,15 @@ def migrate(database_url: str) -> str:
     return "upgraded"
 
 
+def head_revision() -> str:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
 def prepare_database(database_url: str, auto_migrate: bool = True) -> str:
     """Production path: Alembic migrations. Tests and throwaway eval DBs: create_all."""
     if auto_migrate:

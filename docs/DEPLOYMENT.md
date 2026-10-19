@@ -27,6 +27,12 @@ docker compose up --build
 
 放在 Nginx 等反向代理后面时，用 `uvicorn app.main:app --proxy-headers --forwarded-allow-ips=<代理 IP>` 启动，让登录限流看到真实的客户端 IP；不要让应用直接信任任意来源的 `X-Forwarded-For`，否则攻击者可以伪造 IP 绕过限流。
 
+## 健康检查与排障
+
+- `/api/health`：存活检查，只确认进程在运行。
+- `/api/ready`：就绪检查，确认数据库可连接并且表结构已经迁移到最新版本，否则返回 503。Dockerfile 中的 `HEALTHCHECK` 和 Kubernetes 的 readinessProbe 都应该指向它。
+- 每个响应都带 `X-Request-ID`。用户报障时只要提供这个 ID，就可以在日志中找到对应的请求，在链路追踪中找到对应的 Agent 运行（trace 详情里会显示 request_id）。
+
 ## 数据库迁移
 
 表结构由 Alembic 管理（`backend/migrations`）。应用启动时会自动执行 `alembic upgrade head`（`LOOPDESK_AUTO_MIGRATE=1`，默认开启）。
@@ -44,6 +50,7 @@ docker compose up --build
 | `DATABASE_URL` | `sqlite:///./loopdesk.db` | 也支持 `postgresql+psycopg://...` |
 | `JWT_SECRET` | 开发用默认值 | 生产环境必须修改，至少 32 字节；`SEED_DEMO=0` 时使用公开默认值或过短的密钥会拒绝启动 |
 | `SEED_DEMO` / `SEED_DEMO_TRAFFIC` | `1` / `1` | 演示租户、账号和预置对话 |
+| `LOG_FORMAT` / `LOG_LEVEL` | `json` / `INFO` | 结构化日志：每行一个 JSON，包含 request_id、tenant_id、user_id，可直接接入 ELK 或 Loki；本地调试可设为 `text` |
 | `AUTO_MIGRATE` | `1` | 启动时执行 Alembic 迁移；多副本部署时建议设为 0，改由发布任务执行 |
 | `LLM_PROVIDER` | `mock` | `mock` / `openai_compat` / `anthropic` |
 | `LLM_PRESET` | — | `doubao` / `hunyuan` / `deepseek` / `qwen` / `openai`，自动填写 Base URL |

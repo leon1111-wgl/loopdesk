@@ -43,6 +43,8 @@ def get_run(run_id: str, principal: Principal = Depends(require_staff), db: Sess
     return {
         **run_out(run, db.get(User, run.user_id)),
         "evidence": (run.state or {}).get("evidence", []),
+        "request_id": (run.state or {}).get("request_id"),
+        "prompt_version": (run.state or {}).get("prompt_version"),
         "spans": [
             {"id": s.id, "kind": s.kind, "name": s.name, "input": s.input, "output": s.output, "status": s.status,
              "latency_ms": s.latency_ms, "prompt_tokens": s.prompt_tokens, "completion_tokens": s.completion_tokens,

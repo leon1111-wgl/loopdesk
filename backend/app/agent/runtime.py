@@ -34,6 +34,7 @@ from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.router import ModelRouter
 from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
+from ..observability import request_id_var
 from .prompts import build_system_prompt, choose_prompt_version
 from .tools import Evidence, ToolContext, ToolError, ToolRegistry
 from .tracing import Tracer
@@ -135,6 +136,7 @@ class AgentRuntime:
             "elapsed_ms": 0,
             "cache_key": cache_key.__dict__ if cache_key else None,
             "prompt_version": prompt_version,
+            "request_id": request_id_var.get(),
         }
         messages = [LLMMessage(role="system", content=build_system_prompt(tenant, user, version=prompt_version)), *history,
                     LLMMessage(role="user", content=pii.masked)]

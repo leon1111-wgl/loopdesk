@@ -20,6 +20,7 @@ def settings(tmp_path):
     s.rate_limit_per_minute = 1000
     s.seed_demo_traffic = False
     s.auto_migrate = False  # fast schema setup; migrations have their own tests
+    s.log_format = "text"
     return s
 
 

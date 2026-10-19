@@ -70,6 +70,8 @@ class Settings:
     seed_demo: bool = True
     seed_demo_traffic: bool = True
     auto_migrate: bool = True  # run Alembic migrations at startup (tests use create_all)
+    log_format: str = "json"  # json | text
+    log_level: str = "INFO"
 
     # LLM: mock | openai_compat | anthropic
     llm_provider: str = "mock"
@@ -133,6 +135,8 @@ class Settings:
         s.seed_demo = _env_bool("SEED_DEMO", s.seed_demo)
         s.seed_demo_traffic = _env_bool("SEED_DEMO_TRAFFIC", s.seed_demo_traffic)
         s.auto_migrate = _env_bool("AUTO_MIGRATE", s.auto_migrate)
+        s.log_format = _env("LOG_FORMAT", s.log_format)
+        s.log_level = _env("LOG_LEVEL", s.log_level)
 
         s.llm_provider = _env("LLM_PROVIDER", s.llm_provider)
         s.llm_preset = _env("LLM_PRESET")

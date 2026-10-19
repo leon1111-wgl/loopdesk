@@ -11,14 +11,17 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import text
 from fastapi.staticfiles import StaticFiles
 
 from .api import approvals, auth, channels, chat, evals, exports, flywheel, kb, metrics, traces
 from .config import Settings, get_settings, set_settings
-from .db import init_engine, new_session, prepare_database
+from .db import head_revision, init_engine, new_session, prepare_database
+from .observability import configure_logging
+from .observability import install as install_observability
 from .seed import seed_demo, seed_demo_traffic
 from .services import Services, set_services
 
@@ -61,10 +64,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.add_middleware(
         CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,
-        allow_methods=["*"], allow_headers=["*"],
+        allow_methods=["*"], allow_headers=["*"], expose_headers=["X-Request-ID"],
     )
+    configure_logging(settings.log_format, settings.log_level)
+    install_observability(app)
     for module in (auth, chat, kb, approvals, traces, flywheel, evals, metrics, exports, channels):
         app.include_router(module.router)
+
+    @app.get("/api/ready", tags=["meta"])
+    def ready() -> JSONResponse:
+        """Readiness: the database answers and the schema is at the latest migration.
+        /api/health stays a cheap liveness check."""
+        checks: dict[str, str] = {}
+        try:
+            with new_session() as db:
+                db.execute(text("SELECT 1"))
+                checks["database"] = "ok"
+                if settings.auto_migrate:
+                    current = db.execute(text("SELECT version_num FROM alembic_version")).scalar()
+                    checks["migrations"] = "ok" if current == head_revision() else f"at {current}, expected {head_revision()}"
+        except Exception as exc:  # report, do not raise: probes need a status code, not a stack trace
+            checks.setdefault("database", f"error: {type(exc).__name__}")
+        ok = all(v == "ok" for v in checks.values())
+        return JSONResponse({"status": "ready" if ok else "not_ready", "checks": checks}, status_code=200 if ok else 503)
 
     @app.get("/api/health", tags=["meta"])
     def health() -> dict:
@@ -82,6 +104,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         @app.get("/{path:path}", include_in_schema=False)
         def spa(path: str) -> FileResponse:
+            if path == "api" or path.startswith("api/"):
+                # Unknown API paths must stay JSON 404s, not the console's index.html with 200.
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "接口不存在")
             candidate = FRONTEND_DIST / path
             if path and candidate.is_file() and FRONTEND_DIST in candidate.resolve().parents:
                 return FileResponse(candidate)
