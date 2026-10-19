@@ -33,6 +33,15 @@ docker compose up --build
 - `/api/ready`：就绪检查，确认数据库可连接并且表结构已经迁移到最新版本，否则返回 503。Dockerfile 中的 `HEALTHCHECK` 和 Kubernetes 的 readinessProbe 都应该指向它。
 - 每个响应都带 `X-Request-ID`。用户报障时只要提供这个 ID，就可以在日志中找到对应的请求，在链路追踪中找到对应的 Agent 运行（trace 详情里会显示 request_id）。
 
+## 数据保留
+
+```bash
+cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --days 90 --dry-run   # 先预览
+cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --days 90
+```
+
+建议用 Kubernetes CronJob 或系统定时任务每天执行一次。超过保留期的链路明细（span）会被删除；运行记录的输入输出、对话正文会被替换为“已过保留期”的标记；token、成本、延迟、校验结论等指标，以及审批、退款、反馈这些审计和数据飞轮记录都会保留；仍在等待审批的运行不会被处理。
+
 ## 数据库迁移
 
 表结构由 Alembic 管理（`backend/migrations`）。应用启动时会自动执行 `alembic upgrade head`（`LOOPDESK_AUTO_MIGRATE=1`，默认开启）。
