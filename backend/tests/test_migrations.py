@@ -66,3 +66,32 @@ def test_upgrade_closes_duplicate_live_handoffs_before_adding_the_unique_index(t
     with get_engine().connect() as conn:
         rows = conn.exec_driver_sql("SELECT id, status FROM tickets ORDER BY id").fetchall()
     assert [tuple(r) for r in rows] == [(1, "open"), (2, "closed"), (3, "closed")], "the oldest ticket keeps its place"
+
+
+def test_upgrade_detaches_duplicate_channel_conversations_before_adding_the_unique_index(tmp_path):
+    from alembic import command
+    from alembic.config import Config
+
+    from app.db import BACKEND_DIR
+
+    url = _url(tmp_path, "chat-dupes.db")
+    _reset_database(url)
+    init_engine(url)
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "0010")
+    with get_engine().begin() as conn:  # what two concurrent first messages of one Feishu chat left behind
+        conn.exec_driver_sql("INSERT INTO tenants (id, slug, name, industry, auto_refund_limit, ticket_sla_hours, "
+                             "return_window_days, quality_window_days, created_at) "
+                             "VALUES (1, 't', 'T', 'x', 50, 24, 7, 15, CURRENT_TIMESTAMP)")
+        conn.exec_driver_sql("INSERT INTO users (id, tenant_id, email, name, role, password_hash, created_at) "
+                             "VALUES (1, 1, 'f@t.channel', 'F', 'customer', 'x', CURRENT_TIMESTAMP)")
+        for conversation_id in (1, 2):
+            conn.exec_driver_sql("INSERT INTO conversations (id, tenant_id, user_id, title, channel, external_id, status, "
+                                 f"created_at, updated_at) VALUES ({conversation_id}, 1, 1, 'c', 'feishu', 'oc_1', 'bot', "
+                                 "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+    command.upgrade(config, "head")
+    with get_engine().connect() as conn:
+        rows = conn.exec_driver_sql("SELECT id, external_id FROM conversations ORDER BY id").fetchall()
+    assert [tuple(r) for r in rows] == [(1, "oc_1"), (2, None)], "the oldest keeps the chat, the duplicate its history"

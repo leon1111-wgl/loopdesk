@@ -353,6 +353,41 @@ def test_concurrent_claims_answer_an_event_once(client, monkeypatch):
     assert replies == ["om_evt-race2"]
 
 
+def test_a_new_customers_first_messages_answered_at_once_share_one_user_and_one_conversation(client, monkeypatch):
+    # Two workers answer a new Feishu customer's first two messages at the same time. Both found
+    # no user and no conversation; one insert failed (fallback reply), or two conversations were
+    # created and every later message of that chat failed on an ambiguous lookup.
+    import threading
+
+    from sqlalchemy import func, select
+
+    from app.agent.runtime import MODEL_ERROR_TEXT
+    from app.channels.feishu import process_event
+    from app.db import new_session
+    from app.models import Conversation, User
+    from app.services import get_services
+
+    replies = []
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append(text) or {"sent": False})
+    for event_id in ("evt-first-a", "evt-first-b"):
+        _accept_without_answering(event_id)
+    barrier = threading.Barrier(2, timeout=10)
+
+    def worker(event_id):
+        barrier.wait()
+        process_event(get_services(), event_id)
+
+    threads = [threading.Thread(target=worker, args=(e,)) for e in ("evt-first-a", "evt-first-b")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(replies) == 2 and MODEL_ERROR_TEXT not in replies
+    with new_session() as db:
+        assert db.execute(select(func.count(User.id)).where(User.email.like("feishu_%"))).scalar_one() == 1
+        assert db.execute(select(func.count(Conversation.id)).where(Conversation.channel == "feishu")).scalar_one() == 1
+
+
 def test_feishu_event_without_an_id_is_ignored(client, monkeypatch):
     replies = []
     monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: replies.append((mid, text)) or {"sent": False})

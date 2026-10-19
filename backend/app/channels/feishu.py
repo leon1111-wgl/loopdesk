@@ -29,6 +29,7 @@ import httpx
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..agent.runtime import MODEL_ERROR_TEXT, collect
@@ -238,27 +239,34 @@ def handle_message(services, tenant_slug: str, parsed: dict) -> dict:
             return {"sent": False, "error": "fallback reply failed", "fallback": True}
 
 
+def _get_or_create(db: Session, query, make):
+    found = db.execute(query).scalar_one_or_none()
+    if found is not None:
+        return found
+    db.add(make())
+    try:
+        db.commit()
+    except IntegrityError:  # created concurrently by another worker: use theirs
+        db.rollback()
+    return db.execute(query).scalar_one()
+
+
 def _answer(services, tenant_slug: str, parsed: dict) -> dict:
     with new_session() as db:
         tenant = db.execute(select(Tenant).where(Tenant.slug == tenant_slug)).scalar_one_or_none()
         if tenant is None or not parsed["text"]:
             return {"skipped": True}
         email = f"feishu_{parsed['open_id']}@{tenant_slug}.channel".lower()
-        user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
-        if user is None:
-            user = User(tenant_id=tenant.id, email=email, name=f"飞书用户{parsed['open_id'][-4:]}", role="customer",
-                        password_hash=hash_password(secrets.token_urlsafe(24)))
-            db.add(user)
-            db.commit()
-        conversation = db.execute(select(Conversation).where(
+        # Get or create, both guarded by unique indexes: a customer's first two messages can be
+        # answered at the same time (by two workers, or a worker and the retry sweeper).
+        user = _get_or_create(db, select(User).where(User.email == email), lambda: User(
+            tenant_id=tenant.id, email=email, name=f"飞书用户{parsed['open_id'][-4:]}", role="customer",
+            password_hash=hash_password(secrets.token_urlsafe(24))))
+        conversation = _get_or_create(db, select(Conversation).where(
             Conversation.tenant_id == tenant.id, Conversation.channel == "feishu",
             Conversation.external_id == parsed["chat_id"], Conversation.user_id == user.id,
-        )).scalar_one_or_none()
-        if conversation is None:
-            conversation = Conversation(tenant_id=tenant.id, user_id=user.id, channel="feishu",
-                                        external_id=parsed["chat_id"], title="飞书会话")
-            db.add(conversation)
-            db.commit()
+        ), lambda: Conversation(tenant_id=tenant.id, user_id=user.id, channel="feishu",
+                                external_id=parsed["chat_id"], title="飞书会话"))
         summary = collect(services.runtime(db).start(tenant=tenant, user=user, text=parsed["text"],
                                                      conversation=conversation))
         answer = (summary["final"] or {}).get("text") or MODEL_ERROR_TEXT

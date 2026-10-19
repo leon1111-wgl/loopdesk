@@ -77,8 +77,18 @@ class Chunk(Base):
     flagged_injection: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+CHANNEL_CHAT = "external_id IS NOT NULL"
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
+    # One conversation per external chat and user (a Feishu chat): two first messages arriving
+    # together both pass a check-then-insert, and a second row would make every later lookup
+    # of that chat ambiguous.
+    __table_args__ = (
+        Index("uq_conversations_channel_chat", "tenant_id", "channel", "external_id", "user_id", unique=True,
+              sqlite_where=text(CHANNEL_CHAT), postgresql_where=text(CHANNEL_CHAT)),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
