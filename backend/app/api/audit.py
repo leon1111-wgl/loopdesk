@@ -4,13 +4,19 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..audit import ACTIONS
+from ..audit import ACTIONS, verify
 from ..db import get_db
 from ..models import AuditLog, User
 from ..security import Principal, require_admin
 from .common import iso
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
+
+
+@router.get("/verify")
+def verify_audit(principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Tamper check of this tenant's audit log (see app/audit.py for what it can and cannot see)."""
+    return verify(db, principal.tenant.id)
 
 
 @router.get("")

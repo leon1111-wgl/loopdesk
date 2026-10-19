@@ -73,3 +73,65 @@ def test_the_audit_log_is_for_administrators_of_the_same_tenant(client, login):
     client.patch("/api/tenant", json={"auto_refund_limit": 300}, headers=admin)
     assert client.get("/api/audit", headers=login("agent@leon.demo")).status_code == 403
     assert client.get("/api/audit", headers=login("admin@iris.demo")).json() == []
+
+
+def _three_changes(client, admin):
+    for limit in (100, 200, 300):
+        client.patch("/api/tenant", json={"auto_refund_limit": limit}, headers=admin)
+
+
+def test_an_untouched_audit_log_verifies(client, login):
+    admin = login("admin@leon.demo")
+    _three_changes(client, admin)
+    report = client.get("/api/audit/verify", headers=admin).json()
+    assert report == {"ok": True, "entries": 3, "last_seq": 3, "altered": [], "missing": [], "unsigned": 0}
+    assert client.get("/api/audit/verify", headers=login("agent@leon.demo")).status_code == 403
+
+
+def test_editing_or_deleting_an_entry_in_the_database_is_detected(client, login):
+    # Someone with database access but without LOOPDESK_AUDIT_KEY hides that the refund limit was
+    # raised: rewriting the entry breaks its MAC, deleting it leaves a gap in the numbers.
+    from sqlalchemy import delete, select, update
+
+    from app.db import new_session
+    from app.models import AuditLog
+
+    admin = login("admin@leon.demo")
+    _three_changes(client, admin)
+    with new_session() as db:
+        first, second, _ = db.execute(select(AuditLog).order_by(AuditLog.seq)).scalars().all()
+        db.execute(update(AuditLog).where(AuditLog.id == first.id)
+                   .values(detail={"changes": {"auto_refund_limit": [50, 60]}}))
+        db.execute(delete(AuditLog).where(AuditLog.id == second.id))
+        db.commit()
+    report = client.get("/api/audit/verify", headers=admin).json()
+    assert report["ok"] is False and report["altered"] == [first.id] and report["missing"] == [2]
+
+
+def test_concurrent_entries_get_distinct_numbers_without_gaps(client, login):
+    import threading
+
+    from app.audit import record, verify
+    from app.db import new_session
+    from app.models import Tenant, User
+    from app.security import Principal
+
+    barrier = threading.Barrier(6, timeout=10)
+
+    def write():
+        with new_session() as db:
+            tenant = db.query(Tenant).filter_by(slug="leon").one()
+            admin = db.query(User).filter_by(email="admin@leon.demo").one()
+            barrier.wait()
+            record(db, Principal(admin, tenant), "tenant.update", f"tenant:{tenant.id}", changes={})
+            db.commit()
+
+    threads = [threading.Thread(target=write) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    with new_session() as db:
+        tenant_id = db.query(Tenant).filter_by(slug="leon").one().id
+        report = verify(db, tenant_id)
+    assert report["ok"] and report["last_seq"] == 6 and report["entries"] == 6

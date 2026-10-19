@@ -65,6 +65,7 @@ def _env_int(name: str, default: int) -> int:
 class Settings:
     database_url: str = "sqlite:///./loopdesk.db"
     jwt_secret: str = "dev-only-insecure-secret-change-me-in-prod"
+    audit_key: str | None = None  # HMAC key for audit entries; derived from jwt_secret when unset
     jwt_expire_minutes: int = 720
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"])
     seed_demo: bool = True
@@ -134,6 +135,7 @@ class Settings:
         s = cls()
         s.database_url = _env("DATABASE_URL", s.database_url)
         s.jwt_secret = _env("JWT_SECRET", s.jwt_secret)
+        s.audit_key = _env("AUDIT_KEY") or None
         s.jwt_expire_minutes = _env_int("JWT_EXPIRE_MINUTES", s.jwt_expire_minutes)
         origins = _env("CORS_ORIGINS")
         if origins:

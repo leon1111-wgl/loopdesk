@@ -9,7 +9,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text, text
+from sqlalchemy import (JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text,
+                        UniqueConstraint, text)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -37,6 +38,7 @@ class Tenant(Base):
     # Bumped in the same transaction as every change to the tenant's chunks: the retrieval index
     # and the answer cache compare it instead of counting the chunks on every search.
     kb_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    audit_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # last audit entry's number
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -394,6 +396,7 @@ class AuditLog(Base):
     is audited by runs, spans and approvals; this covers the administrators."""
 
     __tablename__ = "audit_logs"
+    __table_args__ = (UniqueConstraint("tenant_id", "seq", name="uq_audit_logs_tenant_seq"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -402,4 +405,8 @@ class AuditLog(Base):
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     request_id: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    # Tamper evidence (see app/audit.py): a per-tenant number without gaps, and an HMAC over the
+    # entry with a key that is not stored in the database. NULL on entries from before.
+    seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mac: Mapped[str | None] = mapped_column(String(64), nullable=True)
 

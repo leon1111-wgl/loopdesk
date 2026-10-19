@@ -68,6 +68,34 @@ function Detail({ detail }: { detail: Record<string, unknown> }) {
   );
 }
 
+interface Integrity {
+  ok: boolean;
+  entries: number;
+  last_seq: number;
+  altered: number[];
+  missing: number[];
+  unsigned: number;
+}
+
+function IntegrityNotice() {
+  const { data } = useLoad(() => api.get<Integrity>("/api/audit/verify"));
+  if (!data) return null;
+  if (data.ok) {
+    return (
+      <div className="notice" role="status">
+        完整性校验通过：{data.last_seq} 条记录编号连续、签名一致{data.unsigned ? `（另有 ${data.unsigned} 条早于签名功能的记录）` : ""}。
+      </div>
+    );
+  }
+  return (
+    <div className="error-banner" role="alert">
+      完整性校验未通过：{data.altered.length ? `${data.altered.length} 条记录内容与签名不符` : ""}
+      {data.altered.length && data.missing.length ? "，" : ""}
+      {data.missing.length ? `缺少编号 ${data.missing.join("、")}` : ""}。审计记录可能被直接改动过数据库。
+    </div>
+  );
+}
+
 export default function AuditPage() {
   const { data, error } = useLoad(() => api.get<AuditEntry[]>("/api/audit?limit=200"));
   return (
@@ -79,6 +107,7 @@ export default function AuditPage() {
         </div>
       </div>
       <ErrorBanner error={error} />
+      <IntegrityNotice />
       <div className="card table-wrap">
         <table className="table">
           <thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>对象</th><th>内容</th></tr></thead>
