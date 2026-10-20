@@ -79,3 +79,15 @@ def test_numbers_and_amounts_are_scored_on_what_the_agent_would_get():
     fleurs = rows[("fleurs-cmn-test", "sensevoice")]
     assert fleurs["number_accuracy"] == 1.0 and fleurs["cer"] == 0.0
     assert public_report.latency(records)["sensevoice"]["n"] == 2
+
+
+def test_float_wav_from_fleurs_is_read_as_16_bit():
+    import struct
+
+    samples = (np.sin(np.arange(1600) / 5) * 0.5).astype("<f4")
+    data = samples.tobytes()
+    fmt = struct.pack("<HHIIHH", 3, 1, 16000, 16000 * 4, 4, 32)
+    riff = b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(data)) + data
+    audio = public_set._pcm(b"RIFF" + struct.pack("<I", len(riff)) + riff)
+    assert audio.dtype == np.int16 and len(audio) == 1600
+    assert abs(int(audio.max()) - 16383) < 50  # 0.5 of full scale

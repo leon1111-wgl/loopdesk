@@ -21,8 +21,8 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import struct
 import tarfile
-import wave
 from pathlib import Path
 
 import numpy as np
@@ -57,11 +57,31 @@ def fleurs_rows(tsv: str) -> list[dict]:
 
 
 def _pcm(data: bytes) -> np.ndarray:
-    with wave.open(io.BytesIO(data)) as w:
-        if w.getframerate() != SAMPLE_RATE or w.getsampwidth() != 2:
-            raise ValueError(f"expected 16 kHz 16-bit, got {w.getframerate()} Hz / {w.getsampwidth() * 8} bit")
-        audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
-        return audio.reshape(-1, w.getnchannels())[:, 0].copy() if w.getnchannels() > 1 else audio
+    """A WAV as 16-bit mono. FLEURS stores 32-bit float (format 3), which the wave module cannot read,
+    so the RIFF chunks are parsed here."""
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise ValueError("not a WAV file")
+    fmt = None
+    pos = 12
+    while pos + 8 <= len(data):
+        chunk, size = data[pos:pos + 4], struct.unpack("<I", data[pos + 4:pos + 8])[0]
+        body = data[pos + 8:pos + 8 + size]
+        if chunk == b"fmt ":
+            fmt = struct.unpack("<HHIIHH", body[:16])
+        elif chunk == b"data" and fmt is not None:
+            tag, channels, rate, _, _, bits = fmt
+            if rate != SAMPLE_RATE:
+                raise ValueError(f"expected 16 kHz, got {rate} Hz")
+            if tag == 3 and bits == 32:
+                samples = np.frombuffer(body[: len(body) - len(body) % 4], dtype="<f4")
+                audio = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+            elif tag in (1, 0xFFFE) and bits == 16:
+                audio = np.frombuffer(body[: len(body) - len(body) % 2], dtype="<i2").astype(np.int16)
+            else:
+                raise ValueError(f"unsupported WAV format {tag} with {bits} bits")
+            return audio.reshape(-1, channels)[:, 0].copy() if channels > 1 else audio
+        pos += 8 + size + (size % 2)
+    raise ValueError("WAV without a data chunk")
 
 
 def _pick(ids: list[str], n: int, corpus: str) -> set[str]:
