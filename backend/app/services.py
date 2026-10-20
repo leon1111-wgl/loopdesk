@@ -1,4 +1,4 @@
-"""Process-wide singletons (model provider, embedder, tool registry)."""
+"""Process-wide singletons (model provider, embedder, tool registry, order and payment systems)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from .agent.business_tools import build_registry
 from .agent.runtime import AgentRuntime
 from .agent.tools import ToolRegistry
 from .config import Settings, get_settings
+from .integrations import Commerce
 from .llm import build_provider
 from .llm.base import Embedder, LLMProvider
 from .llm.breaker import CircuitBreaker
@@ -21,9 +22,11 @@ class Services:
         self.embedder: Embedder = build_embedder(settings)
         self.registry: ToolRegistry = build_registry()
         self.breaker = CircuitBreaker(settings)
+        self.commerce = Commerce(settings)  # the order and payment systems, per tenant
 
-    def runtime(self, db: Session) -> AgentRuntime:
-        return AgentRuntime(db, self.settings, self.provider, self.embedder, self.registry, self.breaker)
+    def runtime(self, db: Session, commerce: Commerce | None = None) -> AgentRuntime:
+        return AgentRuntime(db, self.settings, self.provider, self.embedder, self.registry, self.breaker,
+                            commerce or self.commerce)
 
 
 _services: Services | None = None

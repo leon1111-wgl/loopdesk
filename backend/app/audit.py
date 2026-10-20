@@ -51,6 +51,7 @@ ACTIONS = {
     "approval.approve": "通过审批",
     "approval.reject": "驳回审批",
     "approval.reopen": "审批执行失败，退回待审批",
+    "refund.settle": "人工确认退款结果",
     "export.download": "导出数据",
     "handoff.reply": "人工接待回复",
     "handoff.close": "结束人工服务",

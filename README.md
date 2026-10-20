@@ -97,6 +97,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 **集成**
 - 模型：豆包（火山方舟）、混元、DeepSeek、通义、OpenAI 统一走 OpenAI 兼容协议；Claude 使用官方 SDK；没有 Key 时使用离线确定性模型。
 - 渠道：飞书机器人事件回调（challenge 校验、事件去重（记在数据库里，多 worker 和重启后都有效）、先落库再在 3 秒内回 200、后台处理失败时记录日志并回复兜底话术；处理中的进程崩溃时，补偿任务会重新认领并回答，最多重试 3 次，之后回复兜底话术）、企业微信群机器人审批提醒。
+- 订单与支付系统：查订单、查物流、退款通过 `OrderGateway` / `RefundGateway` 访问外部系统，默认用演示表；按租户配置 `LOOPDESK_COMMERCE_APIS` 后接商家自己的 HTTP 接口（Bearer 令牌、可选 HMAC 签名、只重试幂等请求、回复不合约定按故障处理，每次调用记进链路）。退款先写记录再请求支付系统，随机幂等键在第一次请求前写入；支付系统没有回音时不算失败，订单继续占着，顾客被告知“正在核实”，由 `python -m app.ops.refund_reconcile` 用同一个键重发，只会退一次；确认不了的变成工单，管理员核实后记下结果（记审计）。接口约定见 [DEPLOYMENT](docs/DEPLOYMENT.md#接入你自己的订单和支付系统)。
 - MCP：只读工具通过 MCP 暴露，Claude Desktop、Cursor 等客户端可以直接接入。
 - 运维：Prometheus `/metrics`、Docker、docker-compose（PostgreSQL）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、Playwright 端到端走查、镜像构建）。
 - 数据库迁移：Alembic 管理表结构版本，启动时自动升级；对旧版本用 `create_all` 建的库会补齐缺失的表并标记为最新版本。CI 在 SQLite 和 PostgreSQL 上都会校验“模型定义与迁移脚本完全一致”。
@@ -127,7 +128,8 @@ flowchart LR
       L -- 最终回答 --> V[证据校验器]
     end
     T --> KB[(混合检索<br/>BM25 + 向量 + RRF)]
-    T --> BIZ[(订单 / 工单 / 退款)]
+    T --> BIZ[(工单 / 退款记录)]
+    T --> GW[订单与支付网关] --> OMS[(演示表 / 商家自己的<br/>订单和支付系统)]
     AQ -- 人工决定 --> RT
     T -- 转人工 --> HQ[(人工接待队列)]
     API -. 人工处理中的会话直达坐席 .-> HQ
@@ -223,6 +225,7 @@ LOOPDESK_VERIFIER=llm                   # 真实模型会改写措辞，用 LLM 
 backend/
   app/
     agent/        Agent 循环、工具注册与业务工具、证据校验器、链路追踪
+    integrations/ 订单与支付系统网关：演示表，或按租户接商家自己的 HTTP 接口
     rag/          解析与切分、Embedding、BM25 + 向量 + RRF 混合检索、入库
     llm/          OpenAI 兼容 / Claude / 离线模型适配器、模型路由
     guardrails/   PII 脱敏、提示注入检测
@@ -230,7 +233,7 @@ backend/
     evals/        沙箱评测运行器、CLI 门禁
     channels/     飞书、企业微信
     api/          REST + SSE 接口
-    ops/          运维任务：渠道补偿、中断运行收尾、数据保留、审计补签与锚点核对、上线前的模型自检
+    ops/          运维任务：渠道补偿、中断运行收尾、退款对账、数据保留、审计补签与锚点核对、上线前的模型自检
     mcp_server.py MCP 服务
   evals/          评测集（JSONL）
   seed_data/      演示知识库（Markdown）

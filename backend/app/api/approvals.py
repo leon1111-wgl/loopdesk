@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ..agent.runtime import ResumeError
 from ..channels.feishu import FeishuClient
 from ..db import get_db
-from ..models import Approval, Conversation, Run, Tenant, User
+from ..models import Approval, Conversation, Refund, Run, Tenant, User
 from ..security import Principal, require_staff
 from ..services import get_services
 from .common import get_owned, iso
@@ -32,7 +32,7 @@ def required_role(a: Approval, tenant: Tenant) -> str:
     return "admin" if amount > tenant.approval_admin_threshold else "agent"
 
 
-def approval_out(db: Session, a: Approval) -> dict:
+def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = None) -> dict:
     requester = db.get(User, a.requested_by)
     reviewer = db.get(User, a.reviewer_id) if a.reviewer_id else None
     run = db.get(Run, a.run_id)
@@ -44,7 +44,23 @@ def approval_out(db: Session, a: Approval) -> dict:
         "question": run.input_text if run else "", "comment": a.comment,
         "required_role": required_role(a, db.get(Tenant, a.tenant_id)),
         "created_at": iso(a.created_at), "decided_at": iso(a.decided_at),
+        "refund": _refund_out(db, a, refunds),
     }
+
+
+def _refund_out(db: Session, a: Approval, refunds: dict[int, Refund] | None) -> dict | None:
+    """Where the refund an approval filed stands (the ledger row): pending means the payment system
+    has not answered yet, and a ticket is opened if nobody can settle it. ``refunds``: the ledger rows
+    of a whole page of approvals, read at once."""
+    if refunds is not None:
+        refund = refunds.get(a.id)
+    else:
+        refund = db.execute(select(Refund).where(Refund.approval_id == a.id)).scalar_one_or_none()
+    if refund is None:
+        return None
+    return {"id": refund.id, "order_id": refund.order_id, "amount": refund.amount, "status": refund.status,
+            "external_id": refund.external_id, "attempts": refund.attempts, "ticket_id": refund.ticket_id,
+            "updated_at": iso(refund.updated_at)}
 
 
 @router.get("")
@@ -54,7 +70,9 @@ def list_approvals(status_filter: str = "pending", principal: Principal = Depend
     if status_filter != "all":
         query = query.where(Approval.status == status_filter)
     rows = db.execute(query.order_by(Approval.id.desc()).limit(200)).scalars().all()
-    return [approval_out(db, a) for a in rows]
+    refunds = {r.approval_id: r for r in db.execute(select(Refund).where(
+        Refund.approval_id.in_([a.id for a in rows]))).scalars()} if rows else {}
+    return [approval_out(db, a, refunds) for a in rows]
 
 
 @router.post("/{approval_id}/decide")

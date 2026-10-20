@@ -20,6 +20,7 @@ import re
 import logging
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -33,6 +34,7 @@ from ..config import Settings
 from ..guardrails.injection import Channels, detect_injection, unsafe_answer
 from ..guardrails.judge import judge as judge_answer, worth_judging
 from ..guardrails.pii import PIIReport, mask_pii
+from ..integrations import Commerce, commerce_deadline, recording
 from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.breaker import CircuitBreaker
 from ..llm.router import ModelRouter
@@ -45,7 +47,7 @@ from .. import telemetry
 from ..textutil import ORDER_ID_RE, asks_for_person, normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
-from .tools import ApprovalNeed, ApprovalRequired, Evidence, ToolContext, ToolError, ToolRegistry
+from .tools import ApprovalNeed, ApprovalRequired, Evidence, ToolContext, ToolError, ToolRegistry, ToolUnavailable
 from .tracing import Tracer
 from .verifier import Verification, verify_answer
 
@@ -124,6 +126,19 @@ def _unsafe_sources(ctx: ToolContext) -> list[dict[str, Any]]:
             for e in ctx.evidence if e.kind == "kb" and unsafe_answer(e.text, None, _channels(ctx))]
 
 
+@contextmanager
+def _integration_calls(span, deadline: float | None) -> Iterator[None]:
+    """Every order or payment system call a tool makes, on its span (app/integrations): system, status,
+    attempts, latency, a refusal's code. Set before the span is written, whichever way the tool ends.
+    The calls stop retrying at the run's deadline."""
+    with recording() as calls, commerce_deadline(deadline):
+        try:
+            yield
+        finally:
+            if calls:
+                span.set(integration=calls)
+
+
 class _StreamGate:
     """Streamed text reaches the customer a sentence at a time, each sentence checked before it is
     shown (N-038); from the first one that fails, nothing more is shown. A line break does not end
@@ -155,7 +170,7 @@ class _StreamGate:
 
 class AgentRuntime:
     def __init__(self, db: Session, settings: Settings, provider: LLMProvider, embedder: Embedder,
-                 registry: ToolRegistry, breaker: CircuitBreaker | None = None):
+                 registry: ToolRegistry, breaker: CircuitBreaker | None = None, commerce: Commerce | None = None):
         self.db = db
         self.settings = settings
         self.provider = provider
@@ -163,6 +178,7 @@ class AgentRuntime:
         self.registry = registry
         self.router = ModelRouter(settings)
         self.breaker = breaker or CircuitBreaker(settings)
+        self.commerce = commerce or Commerce.local()  # the order and payment systems the tools reach
 
     # ================================================================ entry points
     def start(self, *, tenant: Tenant, user: User, text: str, conversation: Conversation | None = None,
@@ -422,6 +438,7 @@ class AgentRuntime:
         # could hold a connection and a worker thread for over half an hour.
         budget = self.settings.run_deadline_seconds
         state["deadline"] = time.monotonic() + budget if budget > 0 else None
+        ctx.deadline = state["deadline"]
         while True:
             while queue:
                 call = queue.pop(0)
@@ -524,7 +541,8 @@ class AgentRuntime:
     def _run_tool(self, tracer: Tracer, ctx: ToolContext, call: ToolCall) -> ToolOutcome:
         tool = self.registry.get(call.name)
         allowed = {t.name for t in self.registry.for_role(ctx.user.role)}
-        with tracer.span("tool", call.name, {"arguments": call.arguments, "risk": tool.risk if tool else None}) as span:
+        with (tracer.span("tool", call.name, {"arguments": call.arguments, "risk": tool.risk if tool else None}) as span,
+              _integration_calls(span, ctx.deadline)):
             if tool is None or call.name not in allowed:
                 outcome = ToolOutcome("result", {"error": f"工具 {call.name} 不存在或当前身份无权使用"}, True)
             elif "__invalid_json__" in call.arguments:
@@ -554,6 +572,8 @@ class AgentRuntime:
                                            arguments=args)
                     outcome = ToolOutcome("result", output)
                 except ToolError as exc:
+                    if isinstance(exc, ToolUnavailable) and ctx.approval_id is not None:
+                        raise  # carrying out a reviewer's decision: resume() puts the approval back
                     span.status = "rejected"
                     outcome = ToolOutcome("result", {"error": str(exc)}, True)
                 except Exception as exc:  # unexpected bug: keep the loop alive, surface in trace
@@ -826,6 +846,7 @@ class AgentRuntime:
             db=self.db, settings=self.settings, tenant=tenant, user=user, embedder=self.embedder,
             run_id=run.id, conversation_id=conversation.id if conversation else None,
             dry_run=dry_run, evidence=evidence,
+            orders=self.commerce.orders(tenant, self.db), refunds=self.commerce.refunds(tenant, self.db),
         )
 
     def _forward_to_human(self, conversation: Conversation) -> Iterator[dict[str, Any]]:

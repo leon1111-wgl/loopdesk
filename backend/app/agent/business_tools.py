@@ -2,12 +2,18 @@
 
 Keys starting with "_" in a tool result are trace-only: the runtime records them in the
 span and strips them before the result reaches the model.
+
+Orders, shipments and refunds come from the order and payment systems through ctx.orders and
+ctx.refunds (app/integrations): the demo tables, or a merchant's own systems over HTTP. What the
+tools decide (who may see an order, which refund needs a person, the velocity limit) and what they
+record (the refund ledger) stay here, the same whichever system answers.
 """
 
 from __future__ import annotations
 
 import json
 import math
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -15,13 +21,15 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..integrations import (REFUNDABLE, GatewayError, OrderInfo, RefundGateway, RefundRejected, RefundRequest,
+                            customer_ref, reads)
 from ..localtime import local_date, zone_of
-from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket, User
+from ..models import Approval, Conversation, Refund, Tenant, Ticket, User
 from ..rag.conflicts import disputed
 from ..rag.retrieval import cosine_gate, hybrid_search
 from ..textutil import normalize_width
 from . import handoff
-from .tools import ApprovalNeed, ApprovalRequired, ToolContext, ToolDef, ToolError, ToolRegistry
+from .tools import ApprovalNeed, ApprovalRequired, ToolContext, ToolDef, ToolError, ToolRegistry, ToolUnavailable
 
 STATUS_TEXT = {
     "paid": "已付款，待发货",
@@ -30,14 +38,31 @@ STATUS_TEXT = {
     "refunding": "退款中",
     "refunded": "已退款",
 }
-REFUNDABLE = {"paid", "shipped", "delivered"}
 PRIORITY_TEXT = {"low": "低", "normal": "普通", "high": "高", "urgent": "紧急"}
+NOT_FOUND_TEXT = "订单不存在或无权查看"
+ORDER_SYSTEM_DOWN_TEXT = "订单系统暂时无法访问，请稍后再试或转人工客服"
+# A refusal from the payment system, by its code. Its own message can name internal rules or
+# accounts: that goes to the trace, the customer gets one of these.
+REFUSED_TEXT = "支付系统没有受理这笔退款，请转人工客服处理"
+REFUSAL_TEXT = {
+    "order_not_refundable": "该订单在订单系统中当前不能退款",
+    "amount_exceeds_refundable": "退款金额超过了该订单还可以退的金额",
+    "order_not_found": "支付系统查不到这个订单，请转人工客服处理",
+    "refund_declined": REFUSED_TEXT,
+}
+ONE_REFUND_TEXT = "每个订单只能在线申请一次退款，如需再退请转人工客服"
+PENDING_TEXT = ("退款申请已提交（退款单 #{id}），支付系统暂未返回结果，我们会继续核实，请勿重复申请；"
+                "处理结果以订单状态为准。")
+COUNTED = ("pending", "processing", "succeeded")  # ledger states the velocity limit counts
+LIVE = ("claiming", "pending", "processing", "succeeded")  # states that hold an order (models.LIVE_REFUND)
 
 
 def _order_id(args: dict[str, Any]) -> str:
     value = normalize_width(str(args.get("order_id") or "")).strip().upper()
     if not value:
         raise ToolError("缺少订单号")
+    if len(value) > 64:  # the ledger's column; no order system issues numbers that long
+        raise ToolError("订单号格式不正确")
     return value
 
 
@@ -45,7 +70,7 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
-def _days_since_delivery(order: Order, at: datetime) -> int | None:
+def _days_since_delivery(order: OrderInfo, at: datetime) -> int | None:
     """Whole days since delivery, the unit the policy is written in ("自签收之日起7天内");
     None while the order has not been delivered (refunding before delivery is not time-limited)."""
     if order.delivered_at is None:
@@ -58,12 +83,54 @@ def _last_refund_day(tenant: Tenant) -> int:
     return max(tenant.return_window_days, tenant.quality_window_days)
 
 
-def _load_order(ctx: ToolContext, order_id: str) -> Order:
-    order = ctx.db.get(Order, order_id)
-    # Same message for "missing" and "not yours": do not reveal that an order exists.
-    if order is None or order.tenant_id != ctx.tenant.id or (not ctx.is_staff and order.customer_id != ctx.user.id):
-        raise ToolError("订单不存在或无权查看")
+def _load_order(ctx: ToolContext, order_id: str) -> OrderInfo:
+    # One snapshot per tool call: the precheck, the approval policy and the handler of one refund read
+    # the order once. A resumed approval is a new call and reads it afresh.
+    seen = reads()
+    if seen is not None and ("order", order_id) in seen:
+        order = seen[("order", order_id)]
+    else:
+        try:
+            order = ctx.orders.get_order(order_id)
+        except GatewayError as exc:  # the details (status, attempts) are in the tool span's "integration"
+            raise ToolUnavailable(ORDER_SYSTEM_DOWN_TEXT) from exc
+        if seen is not None:
+            seen[("order", order_id)] = order
+    # Same message for "missing" and "not yours": do not reveal that an order exists. Identity comes
+    # from the logged-in user, never from the model or from what the order system was asked.
+    if order is None or (not ctx.is_staff and order.customer_ref != customer_ref(ctx.user)):
+        raise ToolError(NOT_FOUND_TEXT)
     return order
+
+
+def _customer_id(ctx: ToolContext, order: OrderInfo) -> int:
+    """The account the order belongs to: velocity limits and the refund lock are per customer. Staff
+    acting for a customer the order system knows but LoopDesk does not are sent to the back office:
+    a refund nobody's limit counts would be one the limit cannot stop."""
+    if not ctx.is_staff:
+        return ctx.user.id  # _load_order checked the order is theirs
+    customer = ctx.db.execute(select(User.id).where(
+        User.tenant_id == ctx.tenant.id, func.lower(User.email) == order.customer_ref)).scalar_one_or_none()
+    if customer is None:
+        raise ToolError("这笔订单的顾客没有本系统的账号，请在订单系统里为其办理退款")
+    return customer
+
+
+def _live_refund(ctx: ToolContext, order_id: str) -> Refund | None:
+    return ctx.db.execute(select(Refund).where(
+        Refund.tenant_id == ctx.tenant.id, Refund.order_id == order_id, Refund.idempotency_key.is_not(None),
+        Refund.status.in_(LIVE),
+    ).limit(1)).scalar_one_or_none()
+
+
+def _held_by(refund: Refund | None) -> str:
+    """Why an order with a live refund cannot get another one, as the customer is told. An order has
+    one refund through the agent, a partial one included: a further one is a person's call."""
+    if refund is None or refund.status in ("claiming", "pending"):
+        return "该订单已有一笔退款正在处理，请勿重复提交"
+    if refund.status == "succeeded":
+        return f"该订单已退款（退款单 #{refund.id}），{ONE_REFUND_TEXT}"
+    return f"该订单的退款已受理（退款单 #{refund.id}），{ONE_REFUND_TEXT}"
 
 
 # ---------------------------------------------------------------- search_knowledge
@@ -118,6 +185,9 @@ def get_order(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     status_text = STATUS_TEXT.get(order.status, order.status)
     refundable = order.status in REFUNDABLE
     refund_note = "" if refundable else f"该订单当前状态为“{status_text}”，不能重复申请退款"
+    live = _live_refund(ctx, order.order_id) if refundable else None
+    if live is not None:  # filed here, and the order system does not show it (yet, or keeps partly refunded orders open)
+        refundable, refund_note = False, _held_by(live).removesuffix("，请勿重复提交")
     days = _days_since_delivery(order, datetime.now(timezone.utc))
     if refundable and days is not None:
         tenant = ctx.tenant
@@ -128,37 +198,57 @@ def get_order(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             refund_note = (f"订单已签收 {days} 天，已超过 {tenant.return_window_days} 天无理由退货期限，"
                            f"{tenant.quality_window_days} 天内仅质量问题可以退换，提交后需要人工核实")
     return {
-        "order_id": order.id,
+        "order_id": order.order_id,
         "status": order.status,
         "status_text": status_text,
         "amount": round(order.amount, 2),
         "items": order.items,
         # Local dates: a delivery at 06:30 Beijing time is 22:30 UTC the day before (N-024).
-        "paid_at": local_date(order.paid_at, zone_of(ctx.tenant)),
+        "paid_at": local_date(order.paid_at, zone_of(ctx.tenant)) if order.paid_at else None,
         "delivered_at": local_date(order.delivered_at, zone_of(ctx.tenant)) if order.delivered_at else None,
         "days_since_delivery": days,
         "region": order.region,
         "refundable": refundable,
         "refund_note": refund_note,
-        "summary": f"订单 {order.id} 当前状态为“{status_text}”，订单金额 ¥{order.amount:.2f}",
+        "summary": f"订单 {order.order_id} 当前状态为“{status_text}”，订单金额 ¥{order.amount:.2f}",
     }
+
+
+def list_orders(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """A customer's recent orders: staff name the customer by e-mail, a customer gets their own
+    whatever they name. Not one of the agent's tools; the MCP server offers it to staff tools."""
+    customer = (str(args.get("customer_email") or "").strip().lower() if ctx.is_staff
+                else customer_ref(ctx.user))
+    if not customer:
+        raise ToolError("缺少顾客邮箱")
+    try:
+        orders = ctx.orders.list_orders(customer, limit=10)
+    except GatewayError as exc:
+        raise ToolUnavailable(ORDER_SYSTEM_DOWN_TEXT) from exc
+    zone = zone_of(ctx.tenant)
+    return {"customer": customer, "orders": [{
+        "order_id": o.order_id, "status_text": STATUS_TEXT.get(o.status, o.status), "amount": round(o.amount, 2),
+        "paid_at": local_date(o.paid_at, zone) if o.paid_at else None, "items": [i["name"] for i in o.items],
+    } for o in orders]}
 
 
 def track_shipment(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     order = _load_order(ctx, _order_id(args))
-    shipment = order.shipment or {}
-    events = shipment.get("events") or []
-    if order.status == "paid" or not events:
-        return {"order_id": order.id, "shipped": False, "message": f"订单 {order.id} 目前还未发货。"}
-    latest = events[-1]
+    try:
+        shipment = ctx.orders.get_shipment(order.order_id) if order.status != "paid" else None
+    except GatewayError as exc:
+        raise ToolUnavailable(ORDER_SYSTEM_DOWN_TEXT) from exc
+    if shipment is None or not shipment.events:
+        return {"order_id": order.order_id, "shipped": False, "message": f"订单 {order.order_id} 目前还未发货。"}
+    latest = shipment.events[-1]
     return {
-        "order_id": order.id,
+        "order_id": order.order_id,
         "shipped": True,
-        "carrier": shipment.get("carrier"),
-        "tracking_no": shipment.get("tracking_no"),
-        "events": events,
+        "carrier": shipment.carrier,
+        "tracking_no": shipment.tracking_no,
+        "events": shipment.events,
         "message": (
-            f"订单 {order.id} 由{shipment.get('carrier')}承运，运单号 {shipment.get('tracking_no')}。"
+            f"订单 {order.order_id} 由{shipment.carrier}承运，运单号 {shipment.tracking_no}。"
             f"最新进度（{latest['time']}）：{latest['desc']}。"
         ),
     }
@@ -170,25 +260,71 @@ def _refund_of(db: Session, approval_id: int) -> Refund | None:
 
 
 def _refund_for_approval(ctx: ToolContext) -> Refund | None:
-    """The approval id is the idempotency key: retrying an approved run must not move money twice."""
+    """An approval files one refund: retrying an approved run finds its ledger row (and the
+    row's idempotency key) instead of filing another."""
     if ctx.approval_id is None or ctx.dry_run:
         return None
     return _refund_of(ctx.db, ctx.approval_id)
 
 
 def _refund_executed(db: Session, approval_id: int) -> dict[str, Any] | None:
-    """The refund an approval already made, as request_refund reports it (ToolDef.executed). A
-    refund row is there exactly when the refund was made: the row and the order's claim commit
-    together."""
+    """The refund an approval already filed, as request_refund reports it (ToolDef.executed). A
+    ledger row is there exactly when the refund was filed: it commits before the payment system is
+    asked, so a refund still waiting for its answer counts (it may have been made). Asked again, it
+    goes out under the row's key and is made once."""
     refund = _refund_of(db, approval_id)
     return _refund_result(refund, "approved") if refund is not None else None
 
 
+def _refusal(code: str) -> str:
+    return REFUSAL_TEXT.get(code, REFUSED_TEXT)
+
+
 def _refund_result(refund: Refund, status: str) -> dict[str, Any]:
-    return {
-        "status": status, "refund_id": refund.id, "order_id": refund.order_id, "amount": refund.amount,
-        "message": f"退款单 #{refund.id} 已受理，退款金额 ¥{refund.amount:.2f} 将按原支付方式退回。",
-    }
+    """``status`` is the decision (auto_approved / approved); ``refund_status`` is where the money is."""
+    result = {"status": status, "refund_status": refund.status, "refund_id": refund.id,
+              "order_id": refund.order_id, "amount": refund.amount}
+    if refund.status == "pending":
+        result["message"] = PENDING_TEXT.format(id=refund.id)
+    elif refund.status == "failed":
+        result["message"] = f"退款单 #{refund.id} 未能完成：{_refusal(refund.error)}。"
+    elif refund.status == "succeeded":
+        result["message"] = f"退款单 #{refund.id} 已退款成功，¥{refund.amount:.2f} 已按原支付方式退回。"
+    else:
+        result["message"] = f"退款单 #{refund.id} 已受理，退款金额 ¥{refund.amount:.2f} 将按原支付方式退回。"
+    return result
+
+
+def refund_request(refund: Refund) -> RefundRequest:
+    """The request a ledger row stands for, built from columns that never change: every attempt (the
+    first, the gateway's retries, a retried approval, app.ops.refund_reconcile) sends the same one."""
+    return RefundRequest(
+        idempotency_key=refund.idempotency_key, order_id=refund.order_id, amount=refund.amount,
+        reason=refund.reason, approval_id=refund.approval_id, loopdesk_refund_id=refund.id,
+    )
+
+
+def file_refund(db: Session, gateway: RefundGateway, refund: Refund) -> None:
+    """Ask the payment system for the refund a ledger row records, and write its answer on the row
+    (the caller commits). No answer leaves the row pending: it keeps the order held, and the same
+    request goes out again later. ``error`` holds a refusal's contract code, or "unanswered: …"."""
+    try:
+        result = gateway.create_refund(refund_request(refund))
+    except RefundRejected as exc:  # nothing was paid: the order is free again
+        values = {"status": "failed", "error": exc.code[:255]}
+    except GatewayError as exc:
+        values = {"error": f"unanswered: {exc.detail}"[:255]}
+    else:
+        values = {"status": result.status, "external_id": result.refund_id,
+                  "error": "failed" if result.status == "failed" else ""}
+    # Only a row still waiting for its answer takes this one. Two attempts can hold the same row (the
+    # reconciliation job and a retried approval); under one key the payment system answers both alike,
+    # but the demo order table refuses the second, and that refusal must not undo the refund the first
+    # one made. The row as it now stands is what the caller reports.
+    db.execute(update(Refund).where(Refund.id == refund.id, Refund.status == "pending")
+               .values(**values, attempts=Refund.attempts + 1, updated_at=datetime.now(timezone.utc))
+               .execution_options(synchronize_session=False))
+    db.refresh(refund)
 
 
 def _application_time(ctx: ToolContext) -> datetime:
@@ -199,10 +335,8 @@ def _application_time(ctx: ToolContext) -> datetime:
     return _as_utc(approval.created_at) if approval is not None else datetime.now(timezone.utc)
 
 
-def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    done = _refund_for_approval(ctx)
-    if done is not None:  # already executed; the order is "refunding" now, so skip re-validation
-        return {"order_id": done.order_id, "amount": done.amount}
+def _validated(ctx: ToolContext, args: dict[str, Any]) -> tuple[OrderInfo, float]:
+    """The order as the order system has it now, and the amount that would be paid."""
     order = _load_order(ctx, _order_id(args))
     raw = args.get("amount")
     try:  # an omitted amount means the full paid amount (see the tool schema); 0 is not "omitted"
@@ -227,18 +361,27 @@ def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         pending = ctx.db.execute(select(Approval).where(
             Approval.tenant_id == ctx.tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
         )).scalars()
-        if any(a.arguments.get("order_id") == order.id for a in pending):
+        if any(a.arguments.get("order_id") == order.order_id for a in pending):
             raise ToolError("该订单已有一笔退款申请在等待人工审核，请勿重复提交")
-    return {"order_id": order.id, "amount": amount}
+    return order, amount
+
+
+def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    done = _refund_for_approval(ctx)
+    if done is not None:  # already filed; the order is held now, so skip re-validation
+        return {"order_id": done.order_id, "amount": done.amount}
+    order, amount = _validated(ctx, args)
+    return {"order_id": order.order_id, "amount": amount}
 
 
 def _refund_history(ctx: ToolContext, customer_id: int) -> tuple[int, float]:
-    """Refunds already executed for this customer inside the velocity window."""
+    """Refunds filed for this customer inside the velocity window, wherever their orders live; a
+    refund the payment system refused paid nothing and does not count."""
     since = datetime.now(timezone.utc) - timedelta(days=ctx.settings.refund_window_days)
     count, total = ctx.db.execute(
         select(func.count(Refund.id), func.coalesce(func.sum(Refund.amount), 0.0))
-        .join(Order, Order.id == Refund.order_id)
-        .where(Refund.tenant_id == ctx.tenant.id, Order.customer_id == customer_id, Refund.created_at >= since)
+        .where(Refund.tenant_id == ctx.tenant.id, Refund.customer_id == customer_id, Refund.created_at >= since,
+               Refund.status.in_(COUNTED))
     ).one()
     return int(count), float(total)
 
@@ -267,9 +410,7 @@ def _velocity_reason(ctx: ToolContext, customer_id: int, amount: float) -> str |
 def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | None:
     # args went through _refund_precheck, so "amount" is the amount that would be paid.
     amount = round(float(args["amount"]), 2)
-    order = ctx.db.get(Order, _order_id(args))
-    if order is None:
-        return None
+    order = _load_order(ctx, _order_id(args))
     tenant, settings = ctx.tenant, ctx.settings
     reasons: list[str] = []
     customer_note = ""
@@ -282,7 +423,7 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
                          f"{tenant.quality_window_days} 天内仅质量问题可以退换")
         reasons.append(customer_note)  # published policy, so the customer may hear it too
         ctx.add_evidence("tool", "after_sales_window", json.dumps({
-            "order_id": order.id, "delivered_at": local_date(order.delivered_at, zone_of(tenant)),
+            "order_id": order.order_id, "delivered_at": local_date(order.delivered_at, zone_of(tenant)),
             "days_since_delivery": days, "return_window_days": tenant.return_window_days,
             "quality_window_days": tenant.quality_window_days,
         }, ensure_ascii=False))
@@ -291,45 +432,62 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
     if amount > limit:
         reasons.append(f"超过自动审批额度 ¥{limit:.2f}")
     else:
-        velocity = _velocity_reason(ctx, order.customer_id, amount)
+        velocity = _velocity_reason(ctx, _customer_id(ctx, order), amount)
         if velocity:
             reasons.append(velocity)
     # Amount and velocity limits are risk controls: the reviewer sees them, the customer does not.
     return ApprovalNeed("；".join(reasons), customer_note) if reasons else None
 
 
+def _settle(ctx: ToolContext, refund: Refund, status: str) -> dict[str, Any]:
+    """File the refund with the payment system and say where it stands. A refusal is a tool error
+    (the customer gets the reason, the trace the payment system's code and message)."""
+    file_refund(ctx.db, ctx.refunds, refund)
+    ctx.db.commit()
+    if refund.status == "failed":
+        raise ToolError(_refusal(refund.error))
+    return _refund_result(refund, status)
+
+
 def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     done = _refund_for_approval(ctx)
     if done is not None:
+        if done.status == "pending":  # filed, never answered: ask again, under the same key
+            return _settle(ctx, done, "approved")
+        if done.status == "failed":
+            raise ToolError(_refusal(done.error))
         return _refund_result(done, "approved")
     # Re-validate at execution time: the order may have changed while waiting for approval.
-    checked = _refund_precheck(ctx, args)
-    amount = checked["amount"]
+    order, amount = _validated(ctx, args)
     status = "approved" if ctx.approval_id else "auto_approved"
     if ctx.dry_run:
         return {
-            "status": status, "refund_id": None, "order_id": checked["order_id"], "amount": amount,
+            "status": status, "refund_id": None, "order_id": order.order_id, "amount": amount,
             "message": f"（演练）退款申请已受理，退款金额 ¥{amount:.2f} 将按原支付方式退回。",
         }
-    customer_id = ctx.db.get(Order, checked["order_id"]).customer_id
-    # The lock, the claim and the re-check run in a savepoint: undoing them must not undo what the
+    customer_id = _customer_id(ctx, order)
+    # The claim, the lock and the re-check run in a savepoint: undoing them must not undo what the
     # run has not committed yet (its model and route; with buffered trace writes nothing is
     # committed until the run's own commit points). Reviewed after N-039.
     try:
         with ctx.db.begin_nested():
-            # Claim the order in one conditional UPDATE. The precheck above is a read: two requests
-            # for the same order (a double click, a retry) can both pass it, and both used to pay
-            # out. Only one UPDATE can move the order out of a refundable state; SQLite serialises
-            # writers and PostgreSQL re-checks the condition after the row lock. No read comes
-            # before it inside the savepoint, so on SQLite the write lock is taken with a fresh
-            # snapshot (by this UPDATE, or by the flush of the run's pending changes that opening
-            # the savepoint triggers); a read first could not have been upgraded to a write.
-            claimed = ctx.db.execute(
-                update(Order).where(Order.id == checked["order_id"], Order.status.in_(REFUNDABLE))
-                .values(status="refunding").execution_options(synchronize_session="fetch")
-            ).rowcount
-            if claimed != 1:
-                raise ToolError("该订单已有一笔退款正在处理，请勿重复提交")
+            # Claim the order by writing its ledger row. The checks above are reads: two requests for
+            # the same order (a double click, a retry) can both pass them, and both used to pay out.
+            # The partial unique index lets one live refund per order exist: on SQLite the second
+            # insert waits for the first transaction and fails, on PostgreSQL it waits on the index
+            # entry and fails once the first commits. It is the first write in the savepoint, and no
+            # read comes before it, so on SQLite the write lock is taken with a fresh snapshot (by this
+            # insert, or by the flush of the run's pending changes that opening the savepoint
+            # triggers); a read first could not have been upgraded to a write. "claiming" keeps the
+            # row out of the velocity count below; nobody else ever sees that state.
+            refund = Refund(
+                tenant_id=ctx.tenant.id, order_id=order.order_id, customer_id=customer_id, amount=amount,
+                reason=str(args.get("reason") or "")[:500], approval_id=ctx.approval_id, status="claiming",
+                conversation_id=ctx.conversation_id,
+                idempotency_key=f"ld-{uuid.uuid4().hex}",  # never reused: not a sequence number (N-028)
+            )
+            ctx.db.add(refund)
+            ctx.db.flush()
             # Refunds for one customer run one at a time from here: the velocity limit below must
             # count the refunds of requests that passed the same policy read concurrently (N-039).
             # PostgreSQL locks the customer's row FOR NO KEY UPDATE, which queues refunds for that
@@ -338,18 +496,19 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             ctx.db.execute(select(User.id).where(User.id == customer_id).with_for_update(key_share=True))
             if ctx.approval_id is None:  # an automatic refund: the velocity limit again, under the lock
                 velocity = _velocity_reason(ctx, customer_id, amount)
-                if velocity:  # the savepoint's rollback releases the order and the lock
+                if velocity:  # the savepoint's rollback removes the row: the order is free again
                     raise ApprovalRequired(ApprovalNeed(velocity))
-            refund = Refund(
-                tenant_id=ctx.tenant.id, order_id=checked["order_id"], amount=amount,
-                reason=str(args.get("reason") or "")[:500], approval_id=ctx.approval_id,
-            )
-            ctx.db.add(refund)
-    except (ToolError, ApprovalRequired):
+            refund.status = "pending"
+    except IntegrityError:
         ctx.db.commit()  # keep what the run had pending, and end the transaction (SQLite's write lock)
+        raise ToolError(_held_by(_live_refund(ctx, order.order_id))) from None
+    except (ToolError, ApprovalRequired):
+        ctx.db.commit()
         raise
+    # The row and the claim are durable before the payment system is asked: from here on, whatever
+    # happens to this process, the refund is filed once, under this key (app.ops.refund_reconcile).
     ctx.db.commit()
-    return _refund_result(refund, status)
+    return _settle(ctx, refund, status)
 
 
 # ---------------------------------------------------------------- tickets & handoff

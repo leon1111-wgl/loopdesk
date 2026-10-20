@@ -206,8 +206,9 @@ class MockLLM(LLMProvider):
         shipments = results.get("track_shipment") or []
         tracked = {s.get("order_id") for s in shipments if not s.get("error")}
         for order in orders:
-            if order.get("error"):
-                parts.append(f"未能查询到该订单：{order['error']}。请核对订单号后再试。")
+            if order.get("error"):  # a wrong number is worth checking; an outage is not
+                check = "请核对订单号后再试。" if "订单不存在" in order["error"] else ""
+                parts.append(f"未能查询到该订单：{order['error']}。{check}")
             elif not refund and order.get("order_id") not in tracked:
                 items = "、".join(f"{i['name']}×{i['qty']}" for i in order.get("items", []))
                 parts.append(
@@ -227,7 +228,8 @@ class MockLLM(LLMProvider):
 
         # Only a refund that went through gets the payout timing; a rejected or failed one
         # gets its reason and a next step, never "arrives in 1-3 working days".
-        refund_failed = bool(refund) and (bool(refund.get("error")) or refund.get("status") == "rejected")
+        refund_failed = bool(refund) and (bool(refund.get("error")) or refund.get("status") == "rejected"
+                                          or refund.get("refund_status") == "pending")  # not paid, or not yet known
         if refund:
             if refund.get("error"):
                 parts.append(f"退款申请未能提交：{refund['error']}。")

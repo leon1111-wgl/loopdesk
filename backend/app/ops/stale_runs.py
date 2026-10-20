@@ -62,11 +62,16 @@ def stale_after(settings: Settings) -> timedelta:
 
     Too short, and a run that is still going is failed: the customer is told it broke, then
     gets the answer, and the run's final write flips its status back. Too long only delays
-    the cleanup."""
+    the cleanup.
+
+    With a merchant's own order and payment systems (LOOPDESK_COMMERCE_APIS), a resumed approval
+    reads the order and files the refund before its loop, outside the deadline: two of the slowest
+    tenant's calls (CommerceApi.call_seconds) are added."""
     call = CALL_ATTEMPTS * settings.llm_timeout
     deadline = settings.run_deadline_seconds
     loop = deadline if deadline > 0 else settings.max_agent_steps * 2 * call
-    return timedelta(seconds=loop + REWRITE_BUDGET_SECONDS + call + 60)
+    commerce = 2 * max((api.call_seconds for api in settings.commerce_apis.values()), default=0.0)
+    return timedelta(seconds=loop + REWRITE_BUDGET_SECONDS + call + 60 + commerce)
 
 
 def _stale(cutoff: datetime) -> tuple:

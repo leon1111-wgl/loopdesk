@@ -136,15 +136,16 @@ def fixture_orders(tenant_slug: str, users_by_email: dict[str, User]) -> list[Or
     return _orders(emma, jack) + extra
 
 
-def fixture_refunds(tenant_slug: str, tenant_id: int) -> list[Refund]:
+def fixture_refunds(tenant_slug: str, users_by_email: dict[str, User]) -> list[Refund]:
     """Jack's three small refunds inside the 30-day velocity window. Timestamps are
     relative to now so the fixture never ages out of the window."""
     if tenant_slug != "leon":
         return []
+    jack = users_by_email["customer2@leon.demo"]
     now = datetime.now(timezone.utc)
     return [
-        Refund(tenant_id=tenant_id, order_id=oid, amount=amount, reason="不想要了", status="processing",
-               created_at=now - timedelta(days=days_ago))
+        Refund(tenant_id=jack.tenant_id, order_id=oid, customer_id=jack.id, amount=amount, reason="不想要了",
+               status="processing", created_at=now - timedelta(days=days_ago))
         for oid, amount, days_ago in (("SO20261001006", 35.0, 6), ("SO20261005007", 42.0, 4), ("SO20261010008", 28.0, 2))
     ]
 
@@ -195,7 +196,7 @@ def seed_demo(db: Session, embedder: Embedder) -> bool:
         for order in fixture_orders(spec["slug"], users):
             db.add(order)
         db.flush()
-        db.add_all(fixture_refunds(spec["slug"], tenant.id))
+        db.add_all(fixture_refunds(spec["slug"], users))
         db.commit()
         load_eval_cases(db, tenant, EVAL_DIR / f"{spec['slug']}_default.jsonl")
         # "hard" suite: paraphrases the offline lexical embedder is known to miss; run with
@@ -222,7 +223,10 @@ def seed_demo_traffic(db: Session, services) -> None:
     """A handful of real conversations so a fresh demo already has traces, a pending
     approval and a knowledge-gap answer to correct."""
     from .agent.runtime import collect
+    from .integrations import Commerce
     from .models import Conversation
+
+    demo_orders = Commerce.local()  # the demo's own orders, even for a tenant with its own systems configured
 
     for email, questions in DEMO_TRAFFIC:
         user = db.execute(select(User).where(User.email == email)).scalar_one()
@@ -231,7 +235,8 @@ def seed_demo_traffic(db: Session, services) -> None:
         db.add(conversation)
         db.commit()
         for question in questions:
-            collect(services.runtime(db).start(tenant=tenant, user=user, text=question, conversation=conversation))
+            collect(services.runtime(db, demo_orders).start(tenant=tenant, user=user, text=question,
+                                                            conversation=conversation))
 
 
 def main() -> None:  # pragma: no cover - CLI

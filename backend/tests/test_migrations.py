@@ -95,3 +95,76 @@ def test_upgrade_detaches_duplicate_channel_conversations_before_adding_the_uniq
     with get_engine().connect() as conn:
         rows = conn.exec_driver_sql("SELECT id, external_id FROM conversations ORDER BY id").fetchall()
     assert [tuple(r) for r in rows] == [(1, "oc_1"), (2, None)], "the oldest keeps the chat, the duplicate its history"
+
+
+def test_upgrade_turns_refunds_into_a_ledger_that_needs_no_local_order(tmp_path):
+    # N-028: a refund can be for an order that only the merchant's own system knows, so the ledger
+    # carries its customer instead of reaching it through the demo orders table.
+    import pytest
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy.exc import IntegrityError
+
+    from app.db import BACKEND_DIR
+
+    url = _url(tmp_path, "ledger.db")
+    _reset_database(url)
+    init_engine(url)
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "0020")
+    with get_engine().begin() as conn:  # a refund made by an earlier version
+        conn.exec_driver_sql("INSERT INTO tenants (id, slug, name, industry, auto_refund_limit, ticket_sla_hours, "
+                             "return_window_days, quality_window_days, created_at) "
+                             "VALUES (1, 't', 'T', 'x', 50, 24, 7, 15, CURRENT_TIMESTAMP)")
+        conn.exec_driver_sql("INSERT INTO users (id, tenant_id, email, name, role, password_hash, created_at) "
+                             "VALUES (7, 1, 'c@t', 'C', 'customer', 'x', CURRENT_TIMESTAMP)")
+        conn.exec_driver_sql("INSERT INTO orders (id, tenant_id, customer_id, items, amount, status, region, paid_at, "
+                             "shipment) VALUES ('SO1', 1, 7, '[]', 10, 'refunding', 'domestic', CURRENT_TIMESTAMP, '{}')")
+        conn.exec_driver_sql("INSERT INTO refunds (id, tenant_id, order_id, amount, reason, status, created_at) "
+                             "VALUES (1, 1, 'SO1', 10, '', 'processing', CURRENT_TIMESTAMP)")
+    command.upgrade(config, "head")
+
+    def refund(order_id: str, key: str | None, status: str) -> None:
+        with get_engine().begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO refunds (tenant_id, order_id, customer_id, amount, reason, status, idempotency_key, "
+                f"error, created_at) VALUES (1, '{order_id}', 7, 5, '', '{status}', "
+                f"{'NULL' if key is None else repr(key)}, '', CURRENT_TIMESTAMP)")
+
+    with get_engine().connect() as conn:
+        assert tuple(conn.exec_driver_sql("SELECT customer_id, idempotency_key FROM refunds WHERE id = 1").one()) == (
+            7, None), "the customer comes from the order"
+    refund("SO-REMOTE", "k-1", "pending")  # no row in orders: the merchant's system has it
+    with pytest.raises(IntegrityError):
+        refund("SO-REMOTE", "k-2", "pending")  # one live refund per order
+    refund("SO-REMOTE", "k-3", "failed")  # a refused one does not hold the order
+    refund("SO1", None, "processing")  # rows from before the ledger keep their history, outside the rule
+
+
+def test_downgrading_below_the_ledger_is_refused_while_it_holds_outside_orders(tmp_path):
+    import pytest
+    from alembic import command
+    from alembic.config import Config
+
+    from app.db import BACKEND_DIR
+
+    url = _url(tmp_path, "ledger-down.db")
+    _reset_database(url)
+    init_engine(url)
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    with get_engine().begin() as conn:
+        conn.exec_driver_sql("INSERT INTO tenants (id, slug, name, industry, auto_refund_limit, ticket_sla_hours, "
+                             "return_window_days, quality_window_days, created_at) "
+                             "VALUES (1, 't', 'T', 'x', 50, 24, 7, 15, CURRENT_TIMESTAMP)")
+        conn.exec_driver_sql("INSERT INTO users (id, tenant_id, email, name, role, password_hash, created_at) "
+                             "VALUES (7, 1, 'c@t', 'C', 'customer', 'x', CURRENT_TIMESTAMP)")
+        conn.exec_driver_sql("INSERT INTO refunds (tenant_id, order_id, customer_id, amount, reason, status, "
+                             "idempotency_key, error, attempts, created_at) VALUES (1, 'SO-REMOTE', 7, 5, '', "
+                             "'processing', 'k-1', '', 1, CURRENT_TIMESTAMP)")
+    with pytest.raises(RuntimeError, match="outside the orders table"):
+        command.downgrade(config, "0020")

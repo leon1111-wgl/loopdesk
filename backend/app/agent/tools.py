@@ -20,12 +20,21 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..config import Settings
+from ..integrations import OrderGateway, RefundGateway
+from ..integrations.local import LocalOrderGateway, LocalRefundGateway
 from ..llm.base import Embedder, ToolSpec
 from ..models import Tenant, User
 
 
 class ToolError(Exception):
     """Expected business failure; its message is shown to the model as the tool result."""
+
+
+class ToolUnavailable(ToolError):
+    """A system the tool needs did not answer, before the tool did anything. To a customer it is an
+    ordinary tool error; carrying out a reviewer's approval, it is a failure of the resume, which
+    puts the approval back to pending (AgentRuntime.resume) instead of spending the decision on a
+    refund that was never filed."""
 
 
 @dataclass
@@ -52,6 +61,16 @@ class ToolContext:
     dry_run: bool = False
     evidence: list[Evidence] = field(default_factory=list)
     approval_id: int | None = None  # set when executing a call a human approved
+    # The order and payment systems (app/integrations); the demo tables when not given.
+    orders: OrderGateway | None = None
+    refunds: RefundGateway | None = None
+    deadline: float | None = None  # the run's, time.monotonic(): gateway calls make no attempts past it
+
+    def __post_init__(self) -> None:
+        if self.orders is None:
+            self.orders = LocalOrderGateway(self.db, self.tenant.id)
+        if self.refunds is None:
+            self.refunds = LocalRefundGateway(self.db, self.tenant.id)
 
     @property
     def is_staff(self) -> bool:

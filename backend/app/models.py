@@ -211,16 +211,44 @@ class Order(Base):
     shipment: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+# A refund that holds its order: filed (keyed) and not refused. Rows from before the ledger have no
+# key; their orders were already held by the order's own status.
+LIVE_REFUND = "idempotency_key IS NOT NULL AND status <> 'failed'"
+
+
 class Refund(Base):
+    """LoopDesk's ledger of the refunds its agent filed, wherever the order lives (the demo tables or
+    the merchant's own systems, app/integrations). The velocity limit counts it, approvals look their
+    refund up in it, and it claims the order: at most one live refund per order, enforced by the
+    database. A row is written (pending) before the payment system is asked, under the idempotency
+    key every later attempt reuses.
+
+    status: claiming (only inside the transaction that writes it) | pending (filed, no answer yet:
+    it may have been made) | processing | succeeded | failed (refused: nothing was paid)."""
+
     __tablename__ = "refunds"
+    __table_args__ = (
+        Index("uq_refunds_live_order", "tenant_id", "order_id", unique=True,
+              sqlite_where=text(LIVE_REFUND), postgresql_where=text(LIVE_REFUND)),
+        Index("uq_refunds_idempotency_key", "idempotency_key", unique=True),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
-    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    order_id: Mapped[str] = mapped_column(String(64), index=True)  # the order system's number; not a local row
+    customer_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     amount: Mapped[float] = mapped_column(Float)
     reason: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(16), default="processing")
     approval_id: Mapped[int | None] = mapped_column(ForeignKey("approvals.id"), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)  # the payment system's refund id
+    error: Mapped[str] = mapped_column(String(255), default="", server_default="")  # last refusal code or failure
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # times sent to the payment system
+    # A refund nobody could settle for an hour, or one that failed after it was accepted: a person follows up.
+    ticket_id: Mapped[int | None] = mapped_column(ForeignKey("tickets.id"), nullable=True)
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)  # where it was asked
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 LIVE_HANDOFF = "kind = 'handoff' AND status IN ('open', 'in_progress')"

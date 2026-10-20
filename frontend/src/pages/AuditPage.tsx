@@ -62,7 +62,8 @@ const VALUE: Record<string, string> = {
 
 const CATEGORIES: [string, string][] = [
   ["", "全部类别"], ["tenant", "租户配置"], ["kb", "知识库"], ["flywheel", "知识补丁"], ["eval", "评测用例"],
-  ["user", "账号与个人数据"], ["approval", "审批"], ["export", "数据导出"], ["handoff", "人工接待"], ["ticket", "工单"],
+  ["user", "账号与个人数据"], ["approval", "审批"], ["refund", "退款确认"], ["export", "数据导出"], ["handoff", "人工接待"],
+  ["ticket", "工单"],
 ];
 
 function show(value: unknown): string {

@@ -93,7 +93,8 @@ def _numbers_match(value: float, pool: list[float]) -> bool:
 
 
 def _failed_refund(evidence: list[Evidence]) -> str | None:
-    """The message of the last refund call if it was rejected or failed, else None."""
+    """The message of the last refund call if it was rejected or failed, or the payment system has
+    not confirmed it (pending: it may never be paid), else None."""
     for item in reversed(evidence):
         if item.kind != "tool" or item.title != "request_refund":
             continue
@@ -101,7 +102,8 @@ def _failed_refund(evidence: list[Evidence]) -> str | None:
             output = json.loads(item.text)
         except ValueError:
             return None
-        if isinstance(output, dict) and (output.get("error") or output.get("status") == "rejected"):
+        if isinstance(output, dict) and (output.get("error") or output.get("status") == "rejected"
+                                         or output.get("refund_status") in ("pending", "failed")):
             return str(output.get("message") or output.get("error") or "")
         return None
     return None

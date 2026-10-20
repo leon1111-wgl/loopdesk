@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 # Base URLs of OpenAI-compatible chat endpoints. Model IDs change often, so they are
 # never hard-coded here: copy them from each vendor's console into LOOPDESK_LLM_MODEL_*.
@@ -35,6 +36,42 @@ class FeishuApp:
     app_id: str
     app_secret: str
     verification_token: str
+
+
+@dataclass(frozen=True)
+class CommerceApi:
+    """One tenant's own order and payment systems, reached over HTTP (app/integrations/http.py; the
+    contract is in docs/DEPLOYMENT.md). A tenant without one uses the demo tables."""
+
+    base_url: str
+    token: str = field(repr=False)  # sent as "Authorization: Bearer <token>"
+    timeout: float = 5.0  # seconds per phase of an attempt (connecting: at most 3)
+    max_attempts: int = 3  # for idempotent calls only: reads, and refunds carrying their idempotency key
+    signing_secret: str | None = field(default=None, repr=False)  # when set, requests carry an HMAC-SHA256 signature
+
+    def __post_init__(self) -> None:
+        url = urlsplit(self.base_url)
+        local = url.hostname in ("localhost", "127.0.0.1", "::1")
+        if url.scheme != "https" and not (url.scheme == "http" and local):
+            # The token and the customers' order data would cross the network in clear text.
+            raise ValueError(f"base_url must use https (plain http only to localhost): {self.base_url!r}")
+        if not self.token:
+            raise ValueError("token is required")
+        if not 0 < self.timeout <= 60:
+            raise ValueError("timeout must be between 0 and 60 seconds")
+        if not 1 <= self.max_attempts <= 5:
+            raise ValueError("max_attempts must be between 1 and 5")
+        if self.timeout * self.max_attempts > 20:
+            # A customer waits for these calls inside a run of 45 s, a refund turn makes two of them,
+            # and the stale-run sweep has to allow for them (call_seconds).
+            raise ValueError("timeout × max_attempts must be at most 20 seconds")
+
+    @property
+    def call_seconds(self) -> float:
+        """The longest one call can take: each attempt connecting (3 s at most), sending and waiting
+        for the reply (each phase up to the timeout), and a pause of at most 2 s (Retry-After) between
+        attempts."""
+        return self.max_attempts * (min(self.timeout, 3.0) + 2 * self.timeout) + 2.0 * (self.max_attempts - 1)
 
 
 DEFAULT_PRICES: dict[str, tuple[float, float]] = {
@@ -166,6 +203,9 @@ class Settings:
     feishu_apps: dict[str, FeishuApp] = field(default_factory=dict)  # tenant slug -> app
     wecom_webhook_key: str | None = None
 
+    # Order and payment systems: tenant slug -> its own systems over HTTP; the rest use the demo tables
+    commerce_apis: dict[str, CommerceApi] = field(default_factory=dict)
+
     prices: dict[str, tuple[float, float]] = field(default_factory=lambda: dict(DEFAULT_PRICES))
 
     @classmethod
@@ -247,6 +287,7 @@ class Settings:
 
         s.feishu_apps = _feishu_apps()
         s.wecom_webhook_key = _env("WECOM_WEBHOOK_KEY")
+        s.commerce_apis = _commerce_apis()
 
         extra_prices = _env("PRICES")
         if extra_prices:
@@ -292,6 +333,25 @@ def set_settings(settings: Settings) -> None:
     """Swap the process-wide settings (used by the app factory and tests)."""
     global _settings
     _settings = settings
+
+
+def _commerce_apis() -> dict[str, CommerceApi]:
+    """LOOPDESK_COMMERCE_APIS='{"<tenant slug>": {"base_url", "token", "timeout", "max_attempts",
+    "signing_secret"}}': per tenant, like the Feishu apps, since each merchant has its own systems."""
+    raw = _env("COMMERCE_APIS")
+    if not raw:
+        return {}
+    known = {f.name for f in fields(CommerceApi)}
+    apis: dict[str, CommerceApi] = {}
+    for slug, conf in json.loads(raw).items():
+        unknown = sorted(set(conf) - known)
+        if unknown:
+            raise ValueError(f"LOOPDESK_COMMERCE_APIS[{slug!r}] has unknown fields: {', '.join(unknown)}")
+        try:
+            apis[slug] = CommerceApi(**conf)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"LOOPDESK_COMMERCE_APIS[{slug!r}]: {exc}") from None
+    return apis
 
 
 def _feishu_apps() -> dict[str, FeishuApp]:

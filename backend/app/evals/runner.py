@@ -22,6 +22,7 @@ from sqlalchemy.pool import StaticPool
 from ..agent.outcome import is_refusal  # one definition for evals and the dashboard
 from ..agent.runtime import RunOptions, collect
 from ..db import Base
+from ..integrations import Commerce
 from ..models import Chunk, Conversation, Document, EvalCase, EvalResult, EvalRun, Run, Span, Tenant, User
 from ..seed import fixture_orders, fixture_refunds
 
@@ -70,7 +71,7 @@ def build_sandbox(db: Session, tenant: Tenant) -> Session:
     sandbox.flush()
     sandbox.add_all(fixture_orders(tenant.slug, {u.email: sandbox.get(User, u.id) for u in users}))
     sandbox.flush()
-    sandbox.add_all(fixture_refunds(tenant.slug, tenant.id))
+    sandbox.add_all(fixture_refunds(tenant.slug, {u.email: sandbox.get(User, u.id) for u in users}))
     sandbox.commit()
     return sandbox
 
@@ -158,6 +159,8 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
     db.commit()
     sandbox = build_sandbox(db, tenant)
     sandbox_tenant = sandbox.get(Tenant, tenant.id)
+    # The fixtures' orders, never the merchant's systems: an eval must not depend on (or touch) live orders.
+    fixtures = Commerce.local()
 
     latencies: list[int] = []
     tokens = 0
@@ -177,9 +180,9 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
             sandbox.add(conversation)
             sandbox.commit()
             for earlier in case.history:
-                collect(services.runtime(sandbox).start(tenant=sandbox_tenant, user=user, text=earlier,
+                collect(services.runtime(sandbox, fixtures).start(tenant=sandbox_tenant, user=user, text=earlier,
                                                         conversation=conversation, options=options))
-        summary = collect(services.runtime(sandbox).start(tenant=sandbox_tenant, user=user, text=case.question,
+        summary = collect(services.runtime(sandbox, fixtures).start(tenant=sandbox_tenant, user=user, text=case.question,
                                                           conversation=conversation, options=options))
         latency = int((time.perf_counter() - started) * 1000)
         passed, checks, answer, tools = score_case(case, summary)
