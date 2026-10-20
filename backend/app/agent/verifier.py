@@ -24,12 +24,29 @@ from dataclasses import asdict, dataclass, field
 from ..config import Settings
 from ..llm.base import LLMMessage, LLMProvider
 from ..textutil import ORDER_ID_RE, extract_numbers, overlap_recall, split_sentences, strip_citations
+from .outcome import REFUSAL_RE
 from .prompts import JUDGE_PROMPT
 from .tools import Evidence
 
 # Wording that tells the customer money is on its way.
 _PAYOUT = re.compile(r"到账|已退款|退款成功|已受理|原支付方式退回|原路退回")
-_NON_FACTUAL = re.compile(r"^(抱歉|很抱歉|您好|你好|请|如需|如有|如果您|建议|还有什么|欢迎|感谢|为避免|麻烦|稍等)")
+_NON_FACTUAL = re.compile(r"^(请|如需|如有|如果您|建议|还有什么|欢迎|感谢|为避免|麻烦|稍等)")
+# Courtesy opening a sentence. What follows it is checked like any sentence: "您好，本店支持
+# 终身保修" used to pass unchecked, because the whole sentence counted as a greeting.
+_COURTESY = re.compile(r"^(您好|你好|抱歉|很抱歉|非常抱歉|不好意思|感谢您?的?(耐心|关注|咨询|反馈|支持)|另外|此外|同时)[，,！!、]?\s*")
+# A list number opening a sentence ("1. ", "2、", "（3）") is not an amount.
+_LIST_NUMBER = re.compile(r"^(\d{1,2}[.、．)）]|[（(]\d{1,2}[)）])\s*")
+# Clauses that claim nothing (found on the first real-model run): a condition or purpose, a
+# request to the customer, an offer of something the agent can still do (not something it says
+# it did: "帮您创建了工单" is a claim), a closing, the agent declining.
+_CLAIMLESS_CLAUSE = re.compile(
+    r"^(如|若|如果|假如|要是|为了|为便于|为方便|以便)"
+    r"|^(请|麻烦|烦请|方便|劳烦|还请|可提供|可以提供|建议您)"
+    r"|^(我们?|这边)?(可以|能|来|会|很乐意|乐意)?(帮|给)您(?!.*[了已])|^(我们?|这边)(可以|能|来|会|很乐意|乐意)?为您(?!.*[了已])"
+    r"|^(有其他问题|如有其他|还有什么|欢迎|期待|祝您)"
+    r"|^(我们?|这类要求我?|该要求我?)(暂时)?(不能|无法|不会|不可以)"
+)
+_CLAUSE_SPLIT = re.compile(r"[，,；;：:—]+")
 
 
 @dataclass
@@ -57,6 +74,18 @@ class Verification:
         data = asdict(self)
         data["coverage"] = round(self.coverage, 3)
         return data
+
+
+def _claim(text: str) -> str:
+    """The sentence without an opening courtesy or list number."""
+    return _LIST_NUMBER.sub("", _COURTESY.sub("", text), count=1)
+
+
+def _claims_nothing(text: str) -> bool:
+    if _NON_FACTUAL.match(text) or REFUSAL_RE.search(text):  # saying there is no basis claims nothing
+        return True
+    clauses = [c.strip() for c in _CLAUSE_SPLIT.split(text) if c.strip()]
+    return bool(clauses) and all(_CLAIMLESS_CLAUSE.match(c) for c in clauses)
 
 
 def _numbers_match(value: float, pool: list[float]) -> bool:
@@ -113,11 +142,12 @@ def verify_answer(
         if not text:
             continue
         invalid.update(r for r in cited if r not in by_ref)
-        numbers = extract_numbers(text)
+        claim = _claim(text)
+        numbers = extract_numbers(claim)
         factual = not (
-            len(text) < 6
-            or text.endswith(("？", "?"))
-            or (_NON_FACTUAL.match(text) and not numbers)
+            len(claim) < 6
+            or claim.endswith(("？", "?"))
+            or (not numbers and _claims_nothing(claim))
         )
         # A payout claim counts even when phrased politely ("请放心，钱会到账").
         contradicts = "request_refund" if failed_refund is not None and _claims_payout(text, failed_refund) else None
@@ -125,11 +155,11 @@ def verify_answer(
                               cited=cited, contradicts=contradicts)
         if check.factual:
             check.unverified_numbers = [n for n in numbers if not _numbers_match(n, number_pool)]
-            check.unknown_ids = [i.upper() for i in ORDER_ID_RE.findall(text) if i.upper() not in known_ids]
+            check.unknown_ids = [i.upper() for i in ORDER_ID_RE.findall(claim) if i.upper() not in known_ids]
             candidates = [by_ref[r] for r in cited if r in by_ref] or evidence
             best_score, best_ref = 0.0, None
             for item in candidates:
-                score = overlap_recall(text, item.text + " " + str(item.meta.get("heading", "")))
+                score = overlap_recall(claim, item.text + " " + str(item.meta.get("heading", "")))
                 if score > best_score:
                     best_score, best_ref = score, item.ref
             check.score, check.best_ref = round(best_score, 3), best_ref
