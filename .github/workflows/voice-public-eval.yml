@@ -1,0 +1,133 @@
+name: Voice eval, real speech (public corpora)
+
+# Real human speech next to the synthetic set: AISHELL-1's official test speakers (Apache-2.0) and
+# FLEURS cmn_hans_cn test (CC BY 4.0). Recognition of real voices, accents and microphones, numbers
+# read by real people, and real pauses against the endpointer. Not customer-service questions: no
+# order numbers or task outcomes here, and nothing is tuned on these results.
+
+on:
+  workflow_dispatch:
+    inputs:
+      aishell:
+        description: "AISHELL-1 test utterances to sample (0 = all 7176)"
+        default: "600"
+        required: false
+      fleurs:
+        description: "FLEURS cmn test utterances to sample (0 = all)"
+        default: "300"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TORCH_CPU: https://download.pytorch.org/whl/cpu
+
+jobs:
+  prepare-aishell:
+    name: AISHELL-1 test speakers
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults: {run: {shell: bash}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r backend/requirements.txt
+      - name: Stream the test speakers out of the corpus tarball (about 15 GB; only they are kept)
+        run: |
+          mkdir -p /tmp/aishell
+          for url in https://us.openslr.org/resources/33/data_aishell.tgz https://www.openslr.org/resources/33/data_aishell.tgz; do
+            if curl -sSfL --retry 3 "$url" | tar -xz -C /tmp/aishell --wildcards \
+                'data_aishell/transcript/*' 'data_aishell/wav/S076*' 'data_aishell/wav/S077*' 'data_aishell/wav/S09*'; then
+              break
+            fi
+            rm -rf /tmp/aishell && mkdir -p /tmp/aishell
+          done
+          ls /tmp/aishell/data_aishell/wav
+      - working-directory: backend
+        run: python -m app.evals.voice.public_set --corpus aishell1 --src /tmp/aishell --n ${{ inputs.aishell }} --out ../out/synth-aishell1
+      - uses: actions/upload-artifact@v4
+        with: {name: synth-aishell1, path: out/synth-aishell1, retention-days: 7}
+
+  prepare-fleurs:
+    name: FLEURS cmn_hans_cn test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r backend/requirements.txt huggingface_hub
+      - run: |
+          python -c "from huggingface_hub import hf_hub_download as get; [get('google/fleurs', f, repo_type='dataset', local_dir='/tmp/fleurs') for f in ('data/cmn_hans_cn/test.tsv', 'data/cmn_hans_cn/audio/test.tar.gz')]"
+      - working-directory: backend
+        run: python -m app.evals.voice.public_set --corpus fleurs --src /tmp/fleurs/data/cmn_hans_cn --n ${{ inputs.fleurs }} --out ../out/synth-fleurs
+      - uses: actions/upload-artifact@v4
+        with: {name: synth-fleurs, path: out/synth-fleurs, retention-days: 7}
+
+  asr:
+    name: ASR ${{ matrix.engine }} ${{ matrix.shard }}/8
+    needs: [prepare-aishell, prepare-fleurs]
+    if: ${{ !cancelled() && (needs.prepare-aishell.result == 'success' || needs.prepare-fleurs.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [paraformer, sensevoice, whisper]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install torch torchaudio --index-url $TORCH_CPU && pip install -r requirements-voice.txt
+      - uses: actions/download-artifact@v4
+        with: {pattern: "synth-*", path: out}
+      - uses: actions/cache@v4
+        with: {path: "~/.cache/modelscope\n~/.cache/huggingface", key: "asr-${{ matrix.engine }}-v1"}
+      - run: python -m app.evals.voice.asr_run --engine ${{ matrix.engine }} --synth ../out/synth-* --shard ${{ matrix.shard }}/8 --out ../out/asr/asr-${{ matrix.engine }}-${{ matrix.shard }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with: {name: "asr-${{ matrix.engine }}-${{ matrix.shard }}", path: out/asr}
+
+  vad:
+    name: Endpointing on real pauses (energy, Silero)
+    needs: [prepare-aishell, prepare-fleurs]
+    if: ${{ !cancelled() && (needs.prepare-aishell.result == 'success' || needs.prepare-fleurs.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install torch --index-url $TORCH_CPU && pip install -r requirements.txt silero-vad onnxruntime
+      - uses: actions/download-artifact@v4
+        with: {pattern: "synth-*", path: out}
+      - run: python -m app.evals.voice.vad_run --synth ../out/synth-* --conditions clean --out ../out/vad/vad.jsonl
+      - uses: actions/upload-artifact@v4
+        with: {name: vad, path: out/vad}
+
+  report:
+    name: Report
+    needs: [asr, vad]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with: {pattern: "asr-*", path: out}
+      - uses: actions/download-artifact@v4
+        with: {name: vad, path: out/vad}
+      - run: |
+          python -m app.evals.voice.public_report --asr '../out/asr-*/*.jsonl' --vad '../out/vad/*.jsonl' --out ../out/report
+          mkdir -p ../out/report/data && cp ../out/asr-*/*.jsonl ../out/vad/*.jsonl ../out/report/data/
+          cat ../out/report/report.md >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with: {name: voice-public-report, path: out/report}
