@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import { isStaff, useAuth } from "../auth";
+import { REPO_URL, isDemo } from "../demo/replay";
 import type { Approval, Handoff } from "../types";
 import { Logo, ROLE_TEXT, useMediaQuery, useTheme } from "./ui";
 
@@ -41,6 +42,15 @@ interface NavItem {
   label: string;
   icon: ReactNode;
   count?: number;
+}
+
+function DemoNotice() {
+  return (
+    <div className="demo-notice" role="note">
+      静态演示：页面数据录制自真实后端（离线模型、虚构数据），可以切换角色浏览、回放对话页里的示例问题；提交类操作不会生效。
+      <a href={REPO_URL} target="_blank" rel="noreferrer">在本地运行完整版本 ↗</a>
+    </div>
+  );
 }
 
 export default function Layout() {
@@ -194,12 +204,13 @@ export default function Layout() {
             <b className="ellipsis">{TITLES[section] ?? "LoopDesk"}</b>
           </div>
           <div className="row">
-            <span className="badge">演示环境<span className="hide-compact"> · 数据均为虚构</span></span>
+            <span className="badge">{isDemo ? "静态演示" : "演示环境"}<span className="hide-compact"> · 数据均为虚构</span></span>
             <button className="icon-btn" title={`主题：${themeLabel}（点击切换）`} aria-label={`切换主题，当前：${themeLabel}`} onClick={() => setTheme(nextTheme)}>
               {theme === "light" ? <Sun size={16} /> : theme === "dark" ? <Moon size={16} /> : <Monitor size={16} />}
             </button>
           </div>
         </header>
+        {isDemo && <DemoNotice />}
         <Outlet />
       </div>
     </div>

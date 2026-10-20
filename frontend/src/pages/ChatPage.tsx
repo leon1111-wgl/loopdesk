@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { demoQuestions, isDemo } from "../demo/replay";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { FlaskConical, History, PencilLine, Plus, Send, ShieldAlert, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { api, streamChat } from "../api";
@@ -349,6 +350,10 @@ export default function ChatPage() {
   const liveText = live ? live.steps[Math.max(0, ...Object.keys(live.steps).map(Number))] ?? "" : "";
   const tenant = user?.tenant.slug ?? "leon";
   const suggestions = [...(SUGGESTIONS[tenant] ?? []), ...(staff && tenant === "leon" ? STAFF_EXTRA : [])];
+  if (isDemo) {  // questions recorded only for the static demo (a ticket, a handoff, an approval an agent may decide)
+    const shown = new Set(suggestions.map(([text]) => text));
+    for (const text of demoQuestions(user?.email)) if (!shown.has(text)) suggestions.push([text, "演示"]);
+  }
 
   return (
     <div className={`chat ${staff ? "" : "customer"} ${listOpen ? "history-open" : ""}`} style={{ flex: 1, minHeight: 0 }}>

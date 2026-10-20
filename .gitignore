@@ -22,3 +22,5 @@ _local/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+# recorded for the static demo at deploy time (python -m app.ops.record_demo)
+frontend/public/demo/
