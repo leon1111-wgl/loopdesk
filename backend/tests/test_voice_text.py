@@ -135,3 +135,59 @@ def test_readback_states_order_and_amount():
     assert "SO20261015102" in text and "198" in text and "确认" in text
     spoken = speakable(text).text
     assert "二零二六" in spoken and "198元" in spoken
+
+
+# ---------------------------------------------------------------- review round 1 (second model)
+@pytest.mark.parametrize("reply", [
+    # P0: short requests that start like a yes must not move money
+    "可以退另一个订单吗", "好的帮我查下物流", "行再退一个", "好那换成另一个订单吧", "确认一下营业时间", "对了我还想问运费",
+    "是不是退到原来的卡上", "嗯我想想", "好像不对吧啊",
+])
+def test_a_request_that_starts_like_yes_is_not_a_confirmation(reply):
+    assert classify_reply(reply) != "yes"
+
+
+@pytest.mark.parametrize("reply", ["不确认", "不要退了", "别退了"])
+def test_declines(reply):
+    assert classify_reply(reply) == "no"
+
+
+@pytest.mark.parametrize("sentence,leak", [
+    ("您的手机号是138 1234 5678。", "12345678"),
+    ("您的手机号是138-1234-5678。", "12345678"),
+    ("您的手机号是1 3 8 1 2 3 4 5 6 7 8。", "1 2 3 4"),
+    ("您的手机号是138 **** 5678。", "138"),
+    ("动态码 482913，请勿告诉他人。", "482913"),
+    ("校验码是482913。", "482913"),
+    ("验证码为 48 29 13。", "48 29 13"),
+    ("取件码 6620。", "6620"),
+    ("身份证 110101 19900307 1234 已核验。", "19900307"),
+])
+def test_speakable_catches_spaced_and_dashed_numbers(sentence, leak):
+    speech = speakable(sentence)
+    assert speech.redacted and leak not in speech.text
+    assert sum(c.isdigit() for c in speech.text) == 0
+
+
+@pytest.mark.parametrize("sentence", ["退款预计1-3个工作日到账。", "订单于2026-10-18签收。", "运费 10 元，满 99 元包邮。"])
+def test_speakable_leaves_ordinary_numbers(sentence):
+    assert speakable(sentence).redacted == []
+
+
+def test_passes_are_compared_by_entity_not_substring():
+    final = itn("SO二零二六一零一九一零一 退款一百九十八块").text
+    entities = assess(extract_entities(final), other_passes=["SO二零二六一零一九一零一 退款一千九百八十块"])
+    amount = next(e for e in entities if e.kind == "amount")
+    assert amount.value == "198" and amount.confidence < 0.6  # "198" is a substring of "1980块"
+
+
+def test_partial_transcripts_hide_long_digit_runs():
+    from app.voice.session import mask_partial
+
+    assert "12345" not in mask_partial("我的手机号是一三八一二三四五")
+    assert mask_partial("SO二零二六一零一九一零一 物流") == "SO20261019101物流"  # an order number is not personal data
+
+
+def test_the_second_of_two_order_numbers_keeps_its_prefix():
+    assert itn("查一下 S O 二零二六一零零八零零二 和 二零二六一零一二零零三 两个单子").text == \
+        "查一下SO20261008002和SO20261012003两个单子"

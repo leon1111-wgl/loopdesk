@@ -171,11 +171,14 @@ class _ParaformerStream:
 
     def finish(self) -> ASRResult:
         started = time.perf_counter()
-        self._chunk(self.pending, final=True)
+        audio = np.concatenate(self.audio) if self.audio else np.zeros(0, dtype=np.int16)
+        if len(audio) < SAMPLE_RATE // 10:  # a push-to-talk tap: nothing to decode
+            return ASRResult("", {"streaming": "", "final": ""}, final_ms=0.0, chunk_ms=self.chunk_ms)
+        # The last call flushes the decoder; it gets a few ms of silence when the audio ended on a chunk edge.
+        self._chunk(self.pending if len(self.pending) else np.zeros(160, dtype=np.int16), final=True)
         passes = {"streaming": self.text}
         text = self.text
         if self.engine.two_pass:
-            audio = np.concatenate(self.audio) if self.audio else np.zeros(0, dtype=np.int16)
             text = passes["final"] = self.engine.decode_final(audio, self.hotwords)
         return ASRResult(text, passes, final_ms=(time.perf_counter() - started) * 1000, chunk_ms=self.chunk_ms)
 
@@ -367,7 +370,10 @@ class VoiceEngines:
 
 _engines: VoiceEngines | None = None
 _problem: str | None = None
+_failed_at = 0.0
 _lock = threading.Lock()
+_clock = time.monotonic
+RETRY_SECONDS = 60.0  # a sidecar that was down at the first connection is tried again after this
 
 
 def build_engines(settings: Settings) -> tuple[VoiceEngines | None, str | None]:
@@ -408,11 +414,13 @@ def build_engines(settings: Settings) -> tuple[VoiceEngines | None, str | None]:
 
 
 def get_engines(settings: Settings) -> tuple[VoiceEngines | None, str | None]:
-    """Built once per process, on first use (loading models takes seconds)."""
-    global _engines, _problem
+    """Built once per process, on first use (loading models takes seconds); after a failure, again at
+    most once a minute, so a sidecar that comes up later is picked up without a restart."""
+    global _engines, _problem, _failed_at
     with _lock:
-        if _engines is None and _problem is None:
+        if _engines is None and (_problem is None or _clock() - _failed_at >= RETRY_SECONDS):
             _engines, _problem = build_engines(settings)
+            _failed_at = _clock()
         return _engines, _problem
 
 

@@ -7,13 +7,15 @@ to use them, measured separately in the voice evaluation:
 - model biasing: SeACo-Paraformer takes a hotword list; Whisper takes them in its prompt;
 - text correction after any engine: a span whose pinyin equals a hotword's becomes the hotword
   ("好华会员" -> "豪华会员"), plus explicit aliases for words with Latin letters, which pinyin
-  cannot cover ("一口币" -> "Echo币"). Aliases are tuned on the synthetic set only and checked
-  on held-out speech, never the other way round.
+  cannot cover. Aliases may only come from synthetic speech whose engine read the Latin word
+  itself (not from Kokoro, whose script respells it), and are to be checked on held-out real
+  speech once there is some, never tuned on it.
 """
 
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 
@@ -106,6 +108,17 @@ class Lexicon:
         return text, fixes
 
 
+_CACHE: dict[tuple[int, int], tuple[float, Lexicon]] = {}
+CACHE_SECONDS = 600.0  # product names change with orders; the knowledge base bumps kb_version
+
+
 def lexicon_for(db: Session, tenant: Tenant) -> Lexicon:
+    """Cached per tenant and knowledge version: building it reads the tenant's chunks and recent orders."""
+    key = (tenant.id, tenant.kb_version)
+    cached = _CACHE.get(key)
+    if cached and time.monotonic() - cached[0] < CACHE_SECONDS:
+        return cached[1]
     terms = tenant_terms(db, tenant)
-    return Lexicon(terms, {t: ALIASES[t] for t in terms if t in ALIASES})
+    lexicon = Lexicon(terms, {t: ALIASES[t] for t in terms if t in ALIASES})
+    _CACHE[key] = (time.monotonic(), lexicon)
+    return lexicon

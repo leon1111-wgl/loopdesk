@@ -35,7 +35,8 @@ _DIGIT_RUN = re.compile(rf"[{_DIGIT_CHARS}0-9](?:[ ,，、\-]?[{_DIGIT_CHARS}0-9
 # An order number: up to six Latin letters (the ASR's attempt at "SO": "SO", "s o", "s wall")
 # or the words 订单/单号 just before, then the digits. Applied after _DIGIT_RUN.
 _ORDER = re.compile(r"(?<![A-Za-z0-9])(?P<prefix>[A-Za-z](?:\s?[A-Za-z]){0,5})?\s*[,，:：]?\s*(?P<digits>\d{8,14})(?!\d)")
-_ORDER_CONTEXT = re.compile(r"(?:订单号?|单号)(?:是|为)?[,，:：]?\s*$")
+# 订单号 2026…, or the second of two: "SO20261008002 和 20261012003".
+_ORDER_CONTEXT = re.compile(r"(?:订单号?|单号|SO\d{11}\s*(?:和|跟|与|还有|、|，|,))(?:是|为)?[,，:：]?\s*$")
 # Money: a numeral (spoken or written) and 块/元, optionally a trailing 毛/角 digit ("九块九", "三块五毛").
 _MONEY = re.compile(rf"(?P<num>[{_NUMERAL_CHARS}点0-9.]+)(?P<unit>块钱|块|元)(?P<tail>[{_DIGIT_CHARS}](?:毛|角)?)?")
 _PERCENT = re.compile(rf"百分之(?P<num>[{_NUMERAL_CHARS}点]+)")
@@ -183,7 +184,8 @@ def assess(entities: list[Entity], *, inferred_prefix: set[str] = frozenset(),
     cheap: the order number's format (SO + date + 3 digits), a prefix that was inferred rather than
     heard, a second decoding pass that disagrees (the streaming pass versus the final pass), and the
     engine's own token probabilities when it reports them (Whisper does, Paraformer does not)."""
-    others = [itn(p).text.upper() for p in other_passes if p]
+    # Compared entity by entity: "198" is a substring of "1980块", and that pass disagrees.
+    others = [{(o.kind, o.value.upper()) for o in extract_entities(itn(p).text)} for p in other_passes if p]
     for e in entities:
         if e.kind == "term":
             continue
@@ -195,8 +197,7 @@ def assess(entities: list[Entity], *, inferred_prefix: set[str] = frozenset(),
             if e.value in inferred_prefix:
                 score = min(score, 0.5)
                 e.notes.append("prefix_inferred")
-        key = e.value.upper() if e.kind == "order_id" else e.value
-        if others and any(key not in o for o in others):
+        if others and any((e.kind, e.value.upper()) not in o for o in others):
             score = min(score, 0.4)
             e.notes.append("passes_disagree")
         if char_probs:

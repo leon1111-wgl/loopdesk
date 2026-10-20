@@ -265,6 +265,7 @@ export default function ChatPage() {
   const [partial, setPartial] = useState("");
   const voiceRef = useRef<VoiceClient | null>(null);
   const voiceRun = useRef<LiveRun | null>(null);
+  const pressed = useRef(false);
   const voiceConversation = useRef<number | null>(null);
 
   const loadConversations = useCallback(() => {
@@ -285,6 +286,36 @@ export default function ChatPage() {
     api.get<VoiceConfig>("/api/voice/config").then(setVoiceConfig).catch(() => setVoiceConfig(null));
   }, []);
   useEffect(() => () => voiceRef.current?.close(), []);
+  // Push-to-talk with the space bar anywhere on the page (not while typing), released when the window
+  // loses focus or the tab is hidden: alt-tab while holding would otherwise record until the time limit.
+  useEffect(() => {
+    if (voice !== "on" || voiceMode !== "ptt") return;
+    const typing = (t: EventTarget | null) =>
+      t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) ||
+        (t.tagName === "BUTTON" && !t.classList.contains("ptt")));
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat || typing(e.target)) return;
+      e.preventDefault();
+      pressPtt();
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || typing(e.target)) return;
+      e.preventDefault();
+      releasePtt();
+    };
+    const away = () => releasePtt();
+    const hidden = () => { if (document.hidden) releasePtt(); };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", away);
+    document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", away);
+      document.removeEventListener("visibilitychange", hidden);
+    };
+  }, [voice, voiceMode]);
   useEffect(() => {
     if (voiceConversation.current !== null && voiceConversation.current !== conversationId) stopVoice();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -411,6 +442,12 @@ export default function ChatPage() {
       case "barge_in":
         setTalking(false);
         break;
+      case "no_speech": // nothing recognised: no turn, nothing pending
+        voiceRun.current = null;
+        setPartial("");
+        setPendingUser(null);
+        setLive(null);
+        break;
       case "turn_saved":
         setTalking(false);
         if (voiceRun.current) setLive({ ...voiceRun.current, done: true });
@@ -420,10 +457,15 @@ export default function ChatPage() {
         break;
       case "error":
         setError(event.message);
+        if (voiceRun.current) setLive({ ...voiceRun.current, done: true });
+        voiceRun.current = null;
+        setPendingUser(null);
         break;
       case "closed":
         if (event.code === 4503) setError("语音通道未启用：服务器没有安装语音模型。");
+        else if (event.code === 1013) setError("语音处理跟不上，连接已断开，请稍后再试。");
         else if (event.code >= 4400) setError(`语音连接被拒绝（${event.code}）`);
+        else if (event.code !== 1000 && event.code !== 1005 && voiceRef.current) setError("语音连接已断开。");
         stopVoice();
         break;
     }
@@ -450,13 +492,31 @@ export default function ChatPage() {
   }
 
   function stopVoice() {
+    const id = voiceConversation.current;
     voiceRef.current?.close();
     voiceRef.current = null;
     voiceConversation.current = null;
+    voiceRun.current = null;
+    pressed.current = false;
+    setLive(null);
+    setPendingUser(null);
+    if (id) void loadMessages(id).catch(() => undefined); // a run cut off mid-way still finishes on the server
     setVoice("off");
     setHearing(false);
     setTalking(false);
     setPartial("");
+  }
+
+  function pressPtt() {
+    if (pressed.current) return;
+    pressed.current = true;
+    voiceRef.current?.press();
+  }
+
+  function releasePtt() {
+    if (!pressed.current) return;
+    pressed.current = false;
+    voiceRef.current?.release();
   }
 
   function changeMode(mode: VoiceMode) {
@@ -630,11 +690,10 @@ export default function ChatPage() {
           {voice !== "off" && (
             <div className="voice-bar" role="group" aria-label="语音对话">
               {voiceMode === "ptt" ? (
-                <button className={`btn ptt ${hearing ? "active" : ""}`} disabled={voice !== "on"}
-                  onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); voiceRef.current?.press(); }}
-                  onPointerUp={() => voiceRef.current?.release()} onPointerCancel={() => voiceRef.current?.release()}
-                  onKeyDown={(e) => { if (e.key === " " && !e.repeat) { e.preventDefault(); voiceRef.current?.press(); } }}
-                  onKeyUp={(e) => { if (e.key === " ") voiceRef.current?.release(); }}>
+                <button className={`btn ptt ${hearing ? "active" : ""}`} disabled={voice !== "on"} aria-pressed={hearing}
+                  title="按住说话，松开结束；也可以按住空格键"
+                  onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); pressPtt(); }}
+                  onPointerUp={releasePtt} onPointerCancel={releasePtt}>
                   <Mic size={16} /> {hearing ? "松开结束" : "按住说话"}
                 </button>
               ) : (

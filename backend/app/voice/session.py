@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import struct
 import threading
 import time
@@ -33,13 +34,15 @@ from typing import Any
 
 import numpy as np
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import audit
 from ..agent.runtime import AgentRuntime
 from ..config import Settings
 from ..guardrails.pii import mask_pii
 from ..models import Conversation, Message, Tenant, User
-from ..security import rate_limiter
+from ..security import Principal, rate_limiter
 from .confirm import (VOICE_CONFIRM_ERROR, Confirmations, classify_reply, gate_registry, readback_entities,
                       readback_refund)
 from .endpoint import Endpointer, Event, endpoint_wait_ms
@@ -69,6 +72,7 @@ class Transcript:
 class Sentence:
     id: int
     written: str
+    sample_rate: int = 16_000
     spoken: str = ""
     redacted: list[str] = field(default_factory=list)
     samples: int = 0
@@ -93,7 +97,7 @@ class Turn:
     sent: threading.Event = field(default_factory=threading.Event)  # every sentence synthesised
 
     def add(self, written: str) -> Sentence:
-        sentence = Sentence(len(self.sentences), written)
+        sentence = Sentence(len(self.sentences), written, self.sample_rate)
         self.sentences.append(sentence)
         return sentence
 
@@ -131,6 +135,16 @@ def understand(result: ASRResult, lexicon: Lexicon, *, use_itn: bool = True, cor
                       other_passes=others, char_probs=result.char_probs)
     pii = mask_pii(text)  # before anything is shown, stored or sent to a model
     return Transcript(pii.masked.strip(), entities, pii.found, fixes)
+
+
+_LONG_DIGITS = re.compile(r"(?<![A-Za-z\d])\d{5,}(?!\d)")
+
+
+def mask_partial(text: str) -> str:
+    """A partial transcript as shown while the customer talks: a phone number half spoken is not yet
+    eleven digits, so PII masking cannot recognise it; any long digit run outside an order number is hidden."""
+    masked = mask_pii(itn(text).text).masked
+    return _LONG_DIGITS.sub(lambda m: "*" * len(m.group(0)), masked)
 
 
 def audio_frame(turn: int, sentence: int, pcm: np.ndarray) -> bytes:
@@ -211,7 +225,7 @@ class VoiceSession:
             return
         partial = self.stream.accept(pcm)
         if partial:
-            self.emit({"type": "partial", "text": mask_pii(itn(partial).text).masked})
+            self.emit({"type": "partial", "text": mask_partial(partial)})
 
     # ================================================================ understanding
     def understand(self, result: ASRResult) -> Transcript:
@@ -242,19 +256,29 @@ class VoiceSession:
 
     def _decide(self, transcript: Transcript, latency: dict, ended: float) -> None:
         reply = classify_reply(transcript.text)
-        if self.confirmations.pending is not None:
+        self.confirmations.new_turn()  # a confirmation the last run did not use does not carry over
+        pending = self.confirmations.pending
+        if pending is not None:
             if reply == "yes":
+                if not self._heard(pending.readback):
+                    # Cut off, or never played: the customer has not heard the amount they are agreeing to.
+                    return self._prompt(readback_refund(pending.order_id, pending.amount), transcript, "readback_again",
+                                        latency, ended, pending=pending)
                 pending = self.confirmations.accept()
-                return self.run_agent(f"确认：{pending.utterance}", latency, ended)
+                confirmation = self._record_confirmation(pending, transcript)
+                return self.run_agent(f"确认：{pending.utterance}", latency, ended, confirmation=confirmation)
             self.confirmations.decline()
             if reply == "no":
                 return self._prompt(CANCELLED_TEXT, transcript, "cancelled", latency, ended)
         elif self.readback is not None:
             readback, self.readback = self.readback, None
-            if reply == "yes":
-                for key in readback["allow"]:
-                    self.confirmations.allow(*key)
+            if reply == "yes" and self._heard(readback["sentence"]):
+                # The order number or amount was right. A refund still gets its own spoken confirmation:
+                # this question never mentioned one (review, P1).
                 return self.run_agent(readback["text"], latency, ended)
+            if reply == "yes":
+                self.readback = readback
+                return self._prompt(readback["question"], transcript, "readback_again", latency, ended, entity=readback)
             if reply == "no":
                 return self._prompt(REPEAT_TEXT, transcript, "repeat", latency, ended)
         unsure = [e for e in transcript.entities
@@ -262,10 +286,30 @@ class VoiceSession:
         if unsure:
             order = next((e.value for e in transcript.entities if e.kind == "order_id"), None)
             amount = next((e.value for e in transcript.entities if e.kind == "amount"), None)
-            allow = [("request_refund", order, float(amount))] if (order and amount and "退" in transcript.text) else []
-            self.readback = {"text": transcript.text, "allow": allow}
-            return self._prompt(readback_entities(order, amount), transcript, "readback", latency, ended)
+            self.readback = {"text": transcript.text, "question": readback_entities(order, amount), "sentence": None}
+            return self._prompt(self.readback["question"], transcript, "readback", latency, ended, entity=self.readback)
         self.run_agent(transcript.text, latency, ended)
+
+    @staticmethod
+    def _heard(sentence: "Sentence | None") -> bool:
+        """Played to the end, as the client reported (or assumed, in the evaluation)."""
+        if sentence is None:
+            return False
+        duration = sentence.samples / max(1, sentence.sample_rate) * 1000
+        return sentence.played or (sentence.samples > 0 and sentence.played_ms >= 0.95 * duration)
+
+    def _record_confirmation(self, pending, transcript: Transcript) -> dict:
+        """Consent to move money, kept like a reviewer's decision: who, what was read back, whether it
+        was heard in full, what they said. Committed before the run, whatever the run then does."""
+        sentence = pending.readback
+        detail = {"tool": pending.tool, "order_id": pending.order_id, "amount": pending.amount,
+                  "readback": sentence.written if sentence else "", "readback_heard": True,
+                  "readback_played_ms": round(sentence.played_ms, 1) if sentence else 0.0, "reply": transcript.text}
+        with self.db_factory() as db:
+            user, tenant = db.get(User, self.user_id), db.get(Tenant, self.tenant_id)
+            audit.record(db, Principal(user, tenant), "voice.confirm", f"conversation:{self.conversation_id}", **detail)
+            db.commit()
+        return detail
 
     def _new_turn(self, latency: dict, ended: float) -> Turn:
         self.turn_seq += 1
@@ -274,7 +318,8 @@ class VoiceSession:
         self.turn = turn
         return turn
 
-    def _prompt(self, text: str, transcript: Transcript, kind: str, latency: dict, ended: float) -> None:
+    def _prompt(self, text: str, transcript: Transcript, kind: str, latency: dict, ended: float, *,
+                pending=None, entity: dict | None = None) -> None:
         """A turn the voice channel answers itself (a read-back, a cancellation): no model, no run.
         Kept in the conversation as a system line, outside the model's history."""
         turn = self._new_turn(latency, ended)
@@ -286,11 +331,15 @@ class VoiceSession:
             turn.message_id = message.id
         turn.generated = text
         self.emit({"type": "prompt", "kind": kind, "text": text, "message_id": turn.message_id})
-        self._say(turn, text)
+        sentence = self._say(turn, text)
+        if pending is not None:
+            pending.readback = sentence  # the yes is checked against this playback
+        if entity is not None:
+            entity["sentence"] = sentence
         turn.run_done = True
         self._turn_sent(turn)
 
-    def run_agent(self, text: str, latency: dict, ended: float) -> Turn:
+    def run_agent(self, text: str, latency: dict, ended: float, confirmation: dict | None = None) -> Turn:
         turn = self._new_turn(latency, ended)
         try:
             rate_limiter.check(f"chat:{self.user_id}", self.settings.rate_limit_per_minute)
@@ -326,9 +375,11 @@ class VoiceSession:
             db.close()
         if final:
             turn.message_id, turn.generated = final.get("message_id"), final.get("text") or ""
+        if confirmation is not None:
+            self._mark_confirmed(turn.message_id, confirmation)
         pending = self.confirmations.pending
         if blocked and pending is not None and pending is not pending_before:
-            self._say(turn, readback_refund(pending.order_id, pending.amount))
+            pending.readback = self._say(turn, readback_refund(pending.order_id, pending.amount))
         elif replaced is not None:  # what was spoken before the gate stopped stands; then the replacement
             self._say_all(turn, replaced)
         elif not streamed and final:
@@ -337,16 +388,29 @@ class VoiceSession:
         self._turn_sent(turn)
         return turn
 
+    def _mark_confirmed(self, answer_id: int | None, confirmation: dict) -> None:
+        """The user message this run stored says "确认：<request>"; what the customer actually said is kept with it."""
+        with self.db_factory() as db:
+            query = select(Message).where(Message.conversation_id == self.conversation_id, Message.role == "user")
+            if answer_id is not None:
+                query = query.where(Message.id < answer_id)
+            message = db.execute(query.order_by(Message.id.desc()).limit(1)).scalar_one_or_none()
+            if message is not None:
+                message.meta = {**(message.meta or {}), "voice": {"reply": confirmation["reply"],
+                                                                  "confirmed": confirmation}}
+                db.commit()
+
     def _say_all(self, turn: Turn, text: str) -> None:
         for sentence in split_sentences(text):
             self._say(turn, sentence)
 
-    def _say(self, turn: Turn, written: str) -> None:
+    def _say(self, turn: Turn, written: str) -> "Sentence | None":
         if not written.strip():
-            return
+            return None
         sentence = turn.add(written.strip())
         turn.marks.setdefault("first_sentence", time.perf_counter())
         self.tts_queue.put((turn, sentence))
+        return sentence
 
     def _turn_sent(self, turn: Turn) -> None:
         self.tts_queue.put((turn, None))  # after its last sentence: report the turn's latency
@@ -440,16 +504,19 @@ class VoiceSession:
                 return
             turn.finalized = True
         heard, cut = turn.heard()
-        interrupted = cut or turn.interrupted
-        voice = {"channel": "voice", "spoken": heard, "interrupted": interrupted, "latency": turn.latency,
-                 "redacted": sorted({k for s in turn.sentences for k in s.redacted})}
+        # Only a barge-in (talking over it, the stop button) is an interruption. A page closed or a network
+        # dropped mid-answer says nothing about what was heard: the answer is kept whole and marked unknown.
+        interrupted = turn.interrupted
+        delivery = "interrupted" if interrupted else ("unknown" if cut else "complete")
+        voice = {"channel": "voice", "spoken": heard, "interrupted": interrupted, "delivery": delivery,
+                 "latency": turn.latency, "redacted": sorted({k for s in turn.sentences for k in s.redacted})}
         if turn.message_id is not None:
             with self.db_factory() as db:
                 message = db.get(Message, turn.message_id)
                 if message is not None:
                     meta = dict(message.meta or {})
                     previous = dict(meta.get("voice") or {})
-                    if heard != message.content:
+                    if delivery != "unknown" and heard != message.content:
                         voice["generated"] = message.content
                         message.content = (heard + INTERRUPTED_NOTE) if (interrupted and heard) else (heard or NOTHING_HEARD)
                     meta["voice"] = {**previous, **voice}

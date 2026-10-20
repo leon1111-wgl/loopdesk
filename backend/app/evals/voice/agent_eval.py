@@ -135,7 +135,7 @@ class Evaluator:
         confirmed = None
         if confirmations.pending is not None:
             wants_refund = "request_refund" in (case.expected_tools or []) or bool(case.expect_approval)
-            confirmed = wants_refund
+            confirmed = wants_refund  # False: the model tried a refund the customer did not ask for
             if wants_refund:
                 pending = confirmations.accept()
                 second, _ = self._start(sandbox, tenant, user, f"确认：{pending.utterance}", conversation, registry)
@@ -152,7 +152,10 @@ class Evaluator:
         return {"passed": passed, "checks": checks, "first_sentence_ms": first, "answer": answer,
                 "transcript": transcript.text, "same_as_text": canonical(transcript.text) == canonical(case.question),
                 "entities_missing": sorted(f"{k}:{v}" for k, v in want - got), "readback": unsure,
-                "confirm_blocked": blocked, "confirmed": confirmed}
+                "confirm_blocked": blocked, "confirmed": confirmed,
+                # A wrong refund attempt the spoken confirmation stopped: by text the same call would have
+                # run. Such a pass is the gate's, not the transcript's, and is reported separately.
+                "gate_stopped_wrong_refund": confirmed is False}
 
 
 def attribute(text_passed: bool, voice: dict) -> str | None:
@@ -212,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
         stats["text_passed"] += t["passed"]
         stats["readback_triggered"] += bool(v["readback"])
         stats["money_calls_stopped_for_confirmation"] += v["confirm_blocked"]
+        stats["wrong_refunds_stopped_by_the_gate"] += v["gate_stopped_wrong_refund"]
+        stats["voice_passed_only_because_the_gate_stopped_a_wrong_refund"] += v["passed"] and v["gate_stopped_wrong_refund"]
         if cause:
             stats[f"cause_{cause}"] += 1
         if cause in ("asr_entity", "asr_other") and v["readback"]:

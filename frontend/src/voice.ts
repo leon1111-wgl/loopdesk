@@ -60,6 +60,7 @@ export class VoiceClient {
 
   async open(conversationId: number, mode: VoiceMode) {
     this.ctx = new AudioContext();
+    await this.ctx.resume(); // iOS Safari starts it suspended even inside the click
     await this.ctx.audioWorklet.addModule(WORKLET_URL);
     this.stream = await navigator.mediaDevices.getUserMedia({
       // Echo cancellation keeps the agent's own voice from reading as the customer talking over it.
@@ -78,6 +79,7 @@ export class VoiceClient {
     this.ws = ws;
     ws.onopen = () => ws.send(JSON.stringify({ type: "auth", token: getToken(), conversation_id: conversationId, mode }));
     ws.onmessage = (m) => (typeof m.data === "string" ? this.message(JSON.parse(m.data) as VoiceEvent) : this.audio(m.data));
+    ws.onerror = () => this.onEvent({ type: "error", message: "语音连接出错" });
     ws.onclose = (e) => this.onEvent({ type: "closed", code: e.code });
     this.timer = window.setInterval(() => this.report(), 250);
   }

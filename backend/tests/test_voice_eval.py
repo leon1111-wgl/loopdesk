@@ -122,3 +122,18 @@ def test_tts_bench_times_answer_like_sentences(tmp_path, monkeypatch):
     tts_bench.main(["--engine", "kokoro", "--n", "3", "--out", str(out)])
     rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 3 and all(r["first_chunk_ms"] >= 0 and r["audio_seconds"] > 0 for r in rows)
+
+
+def test_respelled_latin_words_are_neither_scored_nor_mined_for_aliases():
+    hotwords = {"echo": ["Echo币", "豪华会员"]}
+    base = {"tenant": "echo", "key": "kb_coin_rate", "question": "1块钱能充多少Echo币？", "condition": "clean",
+            "engine": "paraformer", "seconds": 2.0, "streaming": "一块钱能充多少爱扣币", "final_hw": "一块钱能充多少爱扣币",
+            "final_nohw": "一块钱能充多少爱扣币"}
+    kokoro = {**base, "id": "echo/kb_coin_rate", "variant": "kokoro-zf_001-1"}
+    cosy = {**base, "id": "echo/kb_coin_rate", "variant": "cosyvoice-default-1"}
+    tables = report.asr_tables([kokoro], hotwords)
+    assert tables["alias_suggestions"] == {}
+    row = next(r for r in tables["asr"] if r["variant"] == "kokoro-zf_001-1" and r["text"] == "itn+lexicon")
+    assert "term" not in row["entities"]  # the speaker said 艾扣币: not a hotword test
+    tables = report.asr_tables([cosy], hotwords)
+    assert tables["alias_suggestions"] == {"Echo币": {"爱扣币": 1}}  # mined from the final pass with hotwords

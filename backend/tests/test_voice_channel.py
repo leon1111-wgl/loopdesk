@@ -289,3 +289,147 @@ def test_latency_breakdown_is_reported(voice):
     assert set(latency) >= {"endpoint_wait_ms", "asr_final_ms", "llm_first_sentence_ms", "tts_first_packet_ms",
                             "first_audio_after_endpoint_ms"}
     assert 600 <= latency["endpoint_wait_ms"] < 700
+
+
+# ---------------------------------------------------------------- review round 1 (second model)
+def test_confirmation_only_counts_once_the_read_back_was_heard(voice):
+    # P0: the customer cut the read-back off before the amount was said; "确认" must not move money.
+    voice.asr.transcripts += ["SO二零二六一零一九一零一 帮我退款", "嗯", "确认"]
+    with voice.connect() as ws:
+        say(ws)
+        readback = until(ws, "say", play=False)[-1]
+        until(ws, "turn_end", play=False)
+        say(ws, speech=0.8, pause=0.0)  # talks over the read-back
+        until(ws, "barge_in", play=False)
+        ws.send_json({"type": "played", "turn": readback["turn"], "id": readback["id"], "ms": 200})
+        ws.send_bytes(silence(0.9).tobytes())
+        events = until(ws, "turn_saved", stop_at="error")  # the interrupted turn is saved
+        events += until(ws, "turn_saved")  # the answer to "嗯": the read-back again
+        spoken = "".join(e["text"] for e in events if e["type"] == "say")
+        assert "18元" in spoken and refunds() == []
+        say(ws)
+        until(ws, "turn_saved")
+    filed = refunds()
+    assert len(filed) == 1 and filed[0].amount == 18.0  # heard in full this time, then confirmed
+
+
+def test_entity_read_back_does_not_authorise_a_refund(voice):
+    # P1: "订单号是X，金额是Y元，对吗？" never mentioned a refund; the money gate still asks.
+    voice.asr.transcripts += [{"final": "SO二零二六一零一九一零一 退款十八块", "streaming": "SO二零二六一零一九一零七 退款十八块"},
+                              "对的"]
+    with voice.connect() as ws:
+        say(ws)
+        until(ws, "turn_saved")
+        say(ws)
+        events = until(ws, "turn_saved")
+    spoken = "".join(e["text"] for e in events if e["type"] == "say")
+    assert "资金安全" in spoken and refunds() == []
+
+
+def test_unused_confirmations_expire_with_the_turn(voice):
+    from app.voice.confirm import Confirmations
+
+    c = Confirmations()
+    c.request("request_refund", {"order_id": "SO20261019101", "amount": 18.0}, "x")
+    c.accept()
+    c.new_turn()  # the next utterance: whatever was confirmed and not used is gone
+    assert not c.take("request_refund", {"order_id": "SO20261019101", "amount": 18.0})
+
+
+def test_a_disconnect_is_not_an_interruption(voice):
+    # P1: the page closed (or the network dropped) mid-answer; nobody talked over it.
+    voice.asr.transcripts += ["怎么取消自动续费"]
+    with voice.connect() as ws:
+        say(ws)
+        until(ws, "turn_end", play=False)
+    with new_session() as db:
+        answer = db.execute(select(Message).where(Message.conversation_id == voice.conversation,
+                                                  Message.role == "assistant")).scalar_one()
+    assert answer.meta["voice"]["interrupted"] is False and answer.meta["voice"]["delivery"] == "unknown"
+    assert "管理自动续费" in answer.content and "打断" not in answer.content
+
+
+def test_spoken_confirmation_is_audited(voice):
+    from app.models import AuditLog
+
+    voice.asr.transcripts += ["SO二零二六一零一九一零一 帮我退款", "确认"]
+    with voice.connect() as ws:
+        say(ws)
+        until(ws, "turn_saved")
+        say(ws)
+        until(ws, "turn_saved")
+    with new_session() as db:
+        entry = db.execute(select(AuditLog).where(AuditLog.action == "voice.confirm")).scalar_one()
+        user = db.execute(select(Message).where(Message.conversation_id == voice.conversation, Message.role == "user")
+                          .order_by(Message.id.desc())).scalars().first()
+    assert entry.detail["order_id"] == "SO20261019101" and entry.detail["amount"] == 18.0
+    assert entry.detail["readback_heard"] is True and entry.detail["reply"] == "确认"
+    assert user.meta["voice"]["reply"] == "确认"
+
+
+def test_a_client_that_sends_faster_than_asr_decodes_is_cut_off(voice, monkeypatch):
+    import time as _time
+
+    from app.api import voice as voice_api
+
+    class SlowASR(ScriptedASR):
+        def stream(self, hotwords):
+            stream = super().stream(hotwords)
+            accept = stream.accept
+            stream.accept = lambda pcm: (_time.sleep(0.05), accept(pcm))[1]
+            return stream
+
+    set_engines(VoiceEngines(SlowASR(["x"]), ToneTTS()))
+    monkeypatch.setattr(voice_api, "MAX_BACKLOG", 5)
+    with voice.connect() as ws:
+        for _ in range(60):
+            ws.send_bytes(tone(0.1).tobytes())
+        closed = None
+        while closed is None:
+            message = ws.receive()
+            if message["type"] == "websocket.close":
+                closed = message["code"]
+    assert closed == 1013
+
+
+def test_engines_are_retried_after_a_failure(monkeypatch):
+    from app.config import Settings
+    from app.voice import engines
+
+    calls = []
+    monkeypatch.setattr(engines, "build_engines", lambda s: (calls.append(1), (None, "sidecar down"))[1])
+    clock = [1000.0]
+    monkeypatch.setattr(engines, "_clock", lambda: clock[0])
+    engines.set_engines(None, None)
+    s = Settings()
+    assert engines.get_engines(s) == (None, "sidecar down")
+    engines.get_engines(s)
+    assert len(calls) == 1  # not on every connection
+    clock[0] += engines.RETRY_SECONDS + 1
+    engines.get_engines(s)
+    assert len(calls) == 2
+    engines.set_engines(None, None)
+
+
+def test_a_confirmation_left_over_from_an_earlier_turn_does_not_authorise_a_refund(voice):
+    import time as _time
+
+    from app.config import get_settings
+    from app.models import Conversation
+    from app.services import get_services
+    from app.voice.session import Transcript, VoiceSession
+
+    with new_session() as db:
+        conversation = db.get(Conversation, voice.conversation)
+        tenant_id, user_id = conversation.tenant_id, conversation.user_id
+    events = []
+    session = VoiceSession(engines=VoiceEngines(ScriptedASR(), ToneTTS()), services=get_services(), settings=get_settings(),
+                           tenant_id=tenant_id, user_id=user_id, conversation_id=voice.conversation, emit=events.append,
+                           db_factory=new_session, assume_played=True)
+    # A refund confirmed earlier that the run never used (the model asked a question back, the conversation
+    # went to a person, ...): it must not be spent on a later request.
+    session.confirmations.allow("request_refund", "SO20261019101", 18.0)
+    session._decide(Transcript("SO20261019101 帮我退款"), {}, _time.perf_counter())
+    session.close()
+    assert refunds() == []
+    assert any(e.get("type") == "say" and "资金安全" in e.get("text", "") for e in events if isinstance(e, dict))

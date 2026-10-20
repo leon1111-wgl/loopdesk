@@ -67,6 +67,16 @@ def agent_text(hyp: str, mode: str, lexicon: Lexicon) -> str:
     return understand(result, lexicon, correct=mode == "itn+lexicon").text
 
 
+def respelled(record: dict) -> bool:
+    """Kokoro's script spells Latin words in Chinese characters (Echo -> 艾扣): what it says is not the
+    word, so no engine can be expected to write the word back, and its errors must not become aliases."""
+    return record["variant"].startswith("kokoro")
+
+
+def _latin(term: str) -> bool:
+    return any(c.isascii() and c.isalpha() for c in term)
+
+
 def entity_hits(reference: str, hypothesis: str, terms: list[str]) -> dict[str, tuple[int, int]]:
     want = {(e.kind, e.value) for e in extract_entities(reference, terms)}
     got = {(e.kind, e.value) for e in extract_entities(hypothesis, terms)}
@@ -86,6 +96,8 @@ def asr_tables(records: list[dict], hotwords: dict[str, list[str]]) -> dict:
     aliases: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for r in records:
         terms = hotwords.get(r["tenant"], [])
+        if respelled(r):
+            terms = [t for t in terms if not _latin(t)]
         for config, (engine, field) in CONFIGS.items():
             if r["engine"] != engine or r.get(field) is None:
                 continue
@@ -114,9 +126,9 @@ def asr_tables(records: list[dict], hotwords: dict[str, list[str]]) -> dict:
                     stats = readback[r["condition"]]
                     stats["right" if right else "wrong"] += 1
                     stats["right_flagged" if right else "wrong_flagged"] += flagged
-            if config in ("paraformer-2pass+hotwords", "sensevoice", "whisper+prompt"):
+            if config in ("paraformer-2pass+hotwords", "sensevoice", "whisper+prompt") and not respelled(r):
                 for term in terms:
-                    if term in r["question"] and term not in hyp and any(c.isascii() and c.isalpha() for c in term):
+                    if term in r["question"] and term not in hyp and _latin(term):
                         aliases[term][_aligned(r["question"], hyp, term)] += 1
     table = []
     for (config, cond, variant, mode), g in sorted(groups.items()):
@@ -230,6 +242,9 @@ def main(argv: list[str] | None = None) -> int:
         return [r for p in patterns for f in sorted(glob.glob(p)) for r in read_jsonl(Path(f))]
 
     records = rows(args.asr)
+    if not records:
+        print("no ASR records: did the ASR jobs fail?")
+        return 1
     synth = rows([str(Path(d) / "manifest.jsonl") for d in args.synth])
     hotwords = tenant_hotwords()
     report = {"hotwords": hotwords, **asr_tables(records, hotwords),

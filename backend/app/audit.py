@@ -57,6 +57,8 @@ ACTIONS = {
     "handoff.close": "结束人工服务",
     "ticket.claim": "接手工单",
     "ticket.close": "处理完成工单",
+    # A customer's spoken consent to a money action (voice channel): what was read back, whether it was heard.
+    "voice.confirm": "顾客口头确认资金操作",
 }
 MAX_DIFF_CHARS = 4000
 anchor_logger = logging.getLogger("loopdesk.audit")

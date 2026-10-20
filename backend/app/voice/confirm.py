@@ -9,19 +9,34 @@ from dataclasses import dataclass, replace
 
 from ..agent.tools import ToolContext, ToolDef, ToolError, ToolRegistry
 
-_PUNCT = re.compile(r"[\s，,。.！!？?~～、]+")
-_NO = re.compile(r"不对|不是|错了|取消|不要|算了|不用|别退|搞错|no\b")
-_YES = ("确认", "确定", "对", "是", "嗯", "好", "行", "可以", "没错", "没问题", "ok", "yes")
+_PUNCT = re.compile(r"[\s，,。.！!？?~～、…]+")
+_NO = re.compile(r"不对|不是|错了|取消|不要|算了|不用|别退|搞错|不确认|不行|no\b")
+# A confirmation is a closed set of whole answers, clause by clause ("对的，退吧"). Anything else that
+# merely starts like one ("好的帮我查下物流", "可以退另一个订单吗") is a new request, not a yes: a false
+# yes moves money, a false "not an answer" only costs a repeated question (review, P0).
+_YES = {"确认", "确定", "对", "对的", "是", "是的", "没错", "好", "好的", "可以", "行", "嗯", "没问题", "ok", "okay",
+        "yes", "确认退款", "确定退款", "退吧", "就退吧", "可以退", "确认无误", "没错就是这个", "是这个", "就这个"}
+_NOT_AN_ANSWER = re.compile(r"[吗呢]|另|换|查|问|其他|还|再|想|一下|多少|什么|怎么|哪")
+_PARTICLES = re.compile(r"[吧啊呀了哦嘛]+$")
+
+
+def _clause_is_yes(clause: str) -> bool:
+    clause = re.sub(r"(.)\1+$", r"\1", clause)  # 嗯嗯 / 对对对
+    return clause in _YES or _PARTICLES.sub("", clause) in _YES
 
 
 def classify_reply(text: str) -> str | None:
-    """"yes", "no", or None when the reply is a new request rather than an answer."""
-    t = _PUNCT.sub("", text or "").lower()
-    if not t or len(t) > 10:
+    """"yes", "no", or None when the reply is not an answer to the read-back."""
+    raw = (text or "").strip().lower()
+    t = _PUNCT.sub("", raw)
+    if not t or len(t) > 12:
         return None
     if _NO.search(t):
         return "no"
-    return "yes" if t.startswith(_YES) else None
+    if _NOT_AN_ANSWER.search(t):
+        return None
+    clauses = [c for c in _PUNCT.split(raw) if c]
+    return "yes" if clauses and all(_clause_is_yes(c) for c in clauses) else None
 
 
 def readback_refund(order_id: str, amount: float) -> str:
@@ -46,6 +61,7 @@ class Pending:
     order_id: str
     amount: float
     utterance: str  # what the customer asked, re-submitted once they confirm
+    readback: object = None  # the spoken read-back (session.Sentence): a yes counts only once it was heard
 
 
 def _key(tool: str, order_id: object, amount: object) -> tuple[str, str, float]:
@@ -73,6 +89,11 @@ class Confirmations:
     def allow(self, tool: str, order_id: str, amount: float) -> None:
         with self.lock:
             self.allowed.append(_key(tool, order_id, amount))
+
+    def new_turn(self) -> None:
+        """Each utterance starts clean: a confirmation the run did not use does not carry over."""
+        with self.lock:
+            self.allowed.clear()
 
     def take(self, tool: str, args: dict) -> bool:
         key = _key(tool, args.get("order_id"), args.get("amount"))

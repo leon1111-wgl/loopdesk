@@ -34,6 +34,10 @@ from ..voice.session import VoiceSession
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 logger = logging.getLogger(__name__)
 MAX_FRAME_BYTES = 64 * 1024  # 2 s of 16 kHz audio; clients send 100 ms frames
+MAX_TEXT_BYTES = 4096
+# Messages waiting for the worker (100 ms of audio each): a client sending faster than ASR decodes
+# is cut off instead of growing memory without bound.
+MAX_BACKLOG = 200
 
 
 @router.get("/config")
@@ -64,7 +68,9 @@ async def voice_ws(ws: WebSocket) -> None:
     try:
         first = await asyncio.wait_for(ws.receive_json(), timeout=10)
         principal, conversation = await asyncio.to_thread(_authorize, first if isinstance(first, dict) else {})
-    except (asyncio.TimeoutError, ValueError, TypeError, HTTPException, WebSocketDisconnect, KeyError):
+    except WebSocketDisconnect:
+        return
+    except (asyncio.TimeoutError, ValueError, TypeError, HTTPException, KeyError):
         await ws.close(code=4401, reason="unauthorized")
         return
     except LookupError:
@@ -80,12 +86,22 @@ async def voice_ws(ws: WebSocket) -> None:
         await ws.close(code=4503, reason="voice unavailable")
         return
 
-    outbox: queue.Queue = queue.Queue()
-    inbox: queue.Queue = queue.Queue()
+    # Server -> client: an asyncio queue filled from the session's threads, so no thread is parked per
+    # session waiting on it (the default executor is shared with every sync endpoint).
+    loop = asyncio.get_running_loop()
+    outbox: asyncio.Queue = asyncio.Queue()
+
+    def emit(item) -> None:
+        try:
+            loop.call_soon_threadsafe(outbox.put_nowait, item)
+        except RuntimeError:  # the event loop is gone: nobody to send to
+            pass
+
+    inbox: queue.Queue = queue.Queue(maxsize=MAX_BACKLOG)
     mode = first.get("mode") if first.get("mode") in ("ptt", "continuous") else "continuous"
     session = await asyncio.to_thread(lambda: VoiceSession(
         engines=engines, services=get_services(), settings=settings, tenant_id=principal.tenant.id,
-        user_id=principal.user.id, conversation_id=conversation.id, emit=outbox.put, db_factory=new_session,
+        user_id=principal.user.id, conversation_id=conversation.id, emit=emit, db_factory=new_session,
         mode=mode))
 
     def work() -> None:  # VAD, ASR and control messages, strictly in arrival order
@@ -95,15 +111,23 @@ async def voice_ws(ws: WebSocket) -> None:
                 session.handle_audio(payload) if kind == "audio" else session.handle_control(payload)
             except Exception:
                 logger.exception("voice input failed")
-                outbox.put({"type": "error", "message": "语音处理失败"})
+                emit({"type": "error", "message": "语音处理失败"})
         session.close()
-        outbox.put(None)
+        emit(None)
+
+    def stop() -> None:
+        while True:  # make room for the end marker even when the backlog is full
+            try:
+                inbox.get_nowait()
+            except queue.Empty:
+                break
+        inbox.put(None)
 
     worker = threading.Thread(target=work, name="loopdesk-voice-in", daemon=True)
     worker.start()
 
     async def send() -> None:
-        while (item := await asyncio.to_thread(outbox.get)) is not None:
+        while (item := await outbox.get()) is not None:
             if ws.application_state != WebSocketState.CONNECTED:
                 continue
             try:
@@ -115,25 +139,32 @@ async def voice_ws(ws: WebSocket) -> None:
                 pass
 
     sender = asyncio.create_task(send())
-    outbox.put({"type": "ready", "mode": mode, **engines.describe(), "input_sample_rate": 16000})
+    emit({"type": "ready", "mode": mode, **engines.describe(), "input_sample_rate": 16000})
     try:
         while True:
             message = await ws.receive()
             if message.get("type") == "websocket.disconnect":
                 break
             if message.get("bytes") is not None:
-                data = message["bytes"]
-                if len(data) <= MAX_FRAME_BYTES:
-                    inbox.put(("audio", data))
-            elif message.get("text") is not None:
+                item = ("audio", message["bytes"]) if len(message["bytes"]) <= MAX_FRAME_BYTES else None
+            elif message.get("text") is not None and len(message["text"]) <= MAX_TEXT_BYTES:
                 try:
                     payload = json.loads(message["text"])
                 except ValueError:
                     continue
-                if isinstance(payload, dict):
-                    inbox.put(("control", payload))
+                item = ("control", payload) if isinstance(payload, dict) else None
+            else:
+                item = None
+            if item is None:
+                continue
+            try:
+                inbox.put_nowait(item)
+            except queue.Full:
+                logger.warning("voice session %s fell behind; closing", conversation.id)
+                await ws.close(code=1013, reason="audio backlog")
+                break
     except WebSocketDisconnect:
         pass
     finally:
-        inbox.put(None)  # the worker closes the session (waits for a running turn) and ends the sender
+        stop()  # the worker closes the session (waits for a running turn) and ends the sender
         await sender
