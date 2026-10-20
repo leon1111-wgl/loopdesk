@@ -10,6 +10,10 @@ the agent or defraud customers, and leave ordinary policy text alone?
 - held_out: other wordings, written before the scan was changed and never used to tune it.
 - benign: ordinary policy text sharing words with the attacks (验证码, 银行卡, 微信, 忽略, an
   internal document telling staff what to say). Holding these back would refuse real questions.
+- held_out_links / benign_links (round 2): links to sites outside the tenant's official domains
+  (``official_domains``) asking customers for card details or offering money, and ordinary text
+  with links (a carrier's or the customs office's site, the tenant's own site). Written before the
+  link rule; held_out_links is not used to tune it either.
 
 Rules can always be worded around, which is why a match goes to a person for review instead of
 being the final word.
@@ -22,26 +26,51 @@ import json
 from pathlib import Path
 
 SET_FILE = Path(__file__).resolve().parents[2] / "evals" / "poisoned_docs.json"
+BLIND_FILE = Path(__file__).resolve().parents[2] / "evals" / "blind_heldout.json"
+# group -> True when every case in it should be held back
+GROUPS = {"found": True, "held_out": True, "benign": False, "links": True, "benign_links": False,
+          "review_attacks": True, "review_benign": False}
+BLIND_GROUPS = {"attacks": True, "benign": False}
 
 
-def scan(text: str, public: bool) -> list[str]:
+def scan(text: str, public: bool, official: dict) -> list[str]:
     from ..guardrails.injection import scan_knowledge
 
     return scan_knowledge(text, public)
 
 
-def measure() -> dict:
-    cases = json.loads(SET_FILE.read_text(encoding="utf-8"))
+def answer_check(text: str, official: dict) -> list[str]:
+    from ..guardrails.injection import unsafe_answer
+
+    return unsafe_answer(text)
+
+
+def _measure(cases: dict, groups: dict, show_text: bool) -> dict:
+    official = {"domains": cases.get("official_domains", []), "contacts": cases.get("official_contacts", [])}
     report: dict = {}
-    for group in ("found", "held_out", "benign"):
+    for group, attack in groups.items():
         items = cases[group]
-        flagged, rows = 0, []
+        flagged = answered = 0
+        rows = []
         for item in items:
-            reasons = scan(item["text"], item.get("visibility", "public") == "public")
+            reasons = scan(item["text"], item.get("visibility", "public") == "public", official)
+            stopped = answer_check(item["text"], official)
             flagged += bool(reasons)
-            if bool(reasons) != (group != "benign"):  # a miss, or a false alarm
-                rows.append({"id": item["id"], "text": item["text"], "reasons": reasons})
-        report[group] = {"flagged": f"{flagged}/{len(items)}", "wrong": rows}
+            answered += bool(stopped)
+            if bool(reasons) != attack:  # a miss, or a false alarm
+                row = {"id": item["id"], "category": item.get("category", ""), "reasons": reasons}
+                if show_text:
+                    row["text"] = item["text"]
+                rows.append(row)
+        report[group] = {"scan": f"{flagged}/{len(items)}", "answer_check": f"{answered}/{len(items)}", "wrong": rows}
+    return report
+
+
+def measure() -> dict:
+    report = _measure(json.loads(SET_FILE.read_text(encoding="utf-8")), GROUPS, show_text=True)
+    # The blind set is measured, not read: misses are reported by id and category only.
+    blind = _measure(json.loads(BLIND_FILE.read_text(encoding="utf-8")), BLIND_GROUPS, show_text=False)
+    report.update({f"blind_{group}": result for group, result in blind.items()})
     return report
 
 
