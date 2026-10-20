@@ -253,6 +253,57 @@ python -m app.ops.llm_check
 
 模型 ID 经常更新，所以代码里没有写死，请从控制台复制最新值。快模型和强模型可以用同一家厂商的不同规格，也可以只配置一个（`MODEL_FAST` 默认等于 `MODEL_STRONG`）。
 
+## 语音通道
+
+默认关闭：没有语音引擎时 `/api/voice/config` 返回 `enabled: false` 和原因，对话页不显示语音按钮。开启需要语音模型（CPU 可以跑，GPU 更快）：
+
+```bash
+cd backend
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu   # 没有 CUDA 的机器
+pip install -r requirements-voice.txt                                            # FunASR、faster-whisper、Silero、Kokoro
+```
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `LOOPDESK_VOICE_ASR` | `off` | `paraformer`（流式 + SeACo 带热词整句重解码，推荐）、`sensevoice`（非流式，最快，不支持热词）、`whisper`（large-v3-turbo，热词放进提示） |
+| `LOOPDESK_VOICE_TTS` | `off` | `cosyvoice`（经 sidecar，流式）、`kokoro`（小模型，句级）、`say`（macOS 自带，基线） |
+| `LOOPDESK_VOICE_VAD` | `energy` | `energy`（无模型）或 `silero` |
+| `LOOPDESK_VOICE_DEVICE` | `cpu` | FunASR 用的设备：`cpu` / `cuda` |
+| `LOOPDESK_VOICE_END_SILENCE_MS` | `600` | 连续对话时，尾部静音多久算一句说完（取值见 EVALUATION 的端点检测扫描） |
+| `LOOPDESK_VOICE_BARGE_IN_MS` | `240` | 播报中顾客说话持续多久才算打断 |
+| `LOOPDESK_VOICE_READBACK_THRESHOLD` | `0.6` | 订单号、金额的置信度低于它先复述 |
+| `LOOPDESK_VOICE_HOTWORDS` | `1` | 用租户知识库里的领域词和商品名做热词 |
+| `LOOPDESK_VOICE_COSYVOICE_URL` | `http://127.0.0.1:50000` | CosyVoice sidecar 地址 |
+| `LOOPDESK_VOICE_TTS_VOICE` | — | 音色：Kokoro 的音色名（如 `zf_001`）、`say` 的声音名 |
+
+模型在第一次建立语音连接时加载（几秒到几十秒），之后全进程共享。
+
+**CosyVoice 2 单独运行**：它固定了 torch 2.3、numpy 1.26、transformers 4.51，和后端放不进同一个环境。按 `.github/workflows/voice-eval.yml` 里 `synth-cosyvoice` 的步骤建一个独立环境，下载 `FunAudioLLM/CosyVoice2-0.5B`，然后：
+
+```bash
+python backend/sidecars/cosyvoice_server.py --cosyvoice /opt/CosyVoice --model /models/CosyVoice2-0.5B --port 50000
+```
+
+它一次只合成一句；并发要靠多开实例或 GPU（CosyVoice 自带 vLLM / TensorRT 路径）。
+
+**反向代理**：语音走 WebSocket（`/api/voice/ws`），Nginx 要转发升级头，并把读超时放长（一次语音会话可能持续几分钟）：
+
+```nginx
+location /api/voice/ws {
+    proxy_pass http://loopdesk;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 600s;
+}
+```
+
+浏览器只在 HTTPS（或 localhost）下给麦克风权限。应用的安全头已允许本站使用麦克风（`Permissions-Policy: microphone=(self)`），摄像头和定位仍关闭。
+
+**隐私**：转写在显示、存储和送模型之前先脱敏，原始转写和音频都不落库；如果要保存录音做数据迭代，先拿到顾客同意，并单独设定保留期限。
+
+**测试引擎**：`LOOPDESK_VOICE_ASR=scripted`（按 `LOOPDESK_VOICE_SCRIPTED_TEXT` 用 `|` 分隔的文字依次返回）和 `LOOPDESK_VOICE_TTS=tone`（播提示音）只在演示模式下可用，端到端测试用它们走完整条语音链路。
+
 ## 飞书机器人
 
 1. 在飞书开放平台创建企业自建应用，开启机器人能力，并申请 `im:message` 相关权限。

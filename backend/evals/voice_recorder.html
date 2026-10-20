@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LoopDesk 语音评测录音</title>
+<style>
+  :root { --text: #1f2329; --muted: #646a73; --line: #dee0e3; --brand: #245bdb; --bg: #fff; --soft: #f5f6f7; }
+  @media (prefers-color-scheme: dark) { :root { --text: #e8e9eb; --muted: #9aa0a6; --line: #34373c; --bg: #17181a; --soft: #202226; } }
+  body { margin: 0; font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--text); background: var(--bg); }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.note { color: var(--muted); margin: 0 0 16px; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+  button { font: inherit; padding: 6px 14px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .card { border: 1px solid var(--line); border-radius: 6px; padding: 20px; }
+  .say { font-size: 22px; margin: 8px 0 4px; }
+  .written { color: var(--muted); }
+  .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
+  ol { padding-left: 20px; color: var(--muted); max-height: 260px; overflow: auto; border-top: 1px solid var(--line); margin-top: 16px; padding-top: 8px; }
+  li.done { color: var(--text); }
+  li.current { font-weight: 600; color: var(--brand); }
+</style>
+</head>
+<body>
+<main>
+  <h1>语音评测录音（真人留出集）</h1>
+  <p class="note">
+    每条按“请说”一栏念：订单号逐位念、金额按口语说，像真实打电话一样，不必刻意字正腔圆。
+    录音只写入你选择的本地文件夹（16 kHz 单声道 WAV + manifest.jsonl），本页面不上传任何内容。
+    你的声音属于个人生物特征数据，默认只保存在本机。
+  </p>
+  <div class="bar">
+    <input id="speaker" placeholder="说话人代号，如 s1" value="s1" style="padding:6px 8px;border:1px solid var(--line);border-radius:5px;background:var(--bg);color:var(--text)">
+    <button id="folder">选择保存文件夹</button>
+    <span class="meta" id="where">尚未选择（不支持时逐条下载）</span>
+  </div>
+  <div class="card">
+    <div class="meta" id="pos"></div>
+    <div class="say" id="say"></div>
+    <div class="written" id="written"></div>
+    <div class="bar" style="margin:16px 0 0">
+      <button class="primary" id="rec">按住录音</button>
+      <button id="play" disabled>回放</button>
+      <button id="prev">上一条</button>
+      <button id="next">下一条</button>
+      <span class="meta" id="status"></span>
+    </div>
+  </div>
+  <ol id="list"></ol>
+</main>
+<script>
+const prompts = [];
+let index = 0, dir = null, ctx = null, stream = null, node = null, chunks = [], recording = false, lastUrl = null;
+const done = new Set();
+const $ = (id) => document.getElementById(id);
+
+async function loadPrompts() {
+  const text = await (await fetch("voice_heldout_prompts.jsonl")).text();
+  for (const line of text.split("\n")) if (line.trim()) prompts.push(JSON.parse(line));
+  render();
+}
+
+function render() {
+  const p = prompts[index];
+  $("pos").textContent = `${index + 1} / ${prompts.length} · ${p.id}`;
+  $("say").textContent = `请说：${p.say}`;
+  $("written").textContent = `（书面：${p.question}）`;
+  $("list").innerHTML = prompts.map((q, i) =>
+    `<li class="${i === index ? "current" : done.has(q.id) ? "done" : ""}">${done.has(q.id) ? "✓ " : ""}${q.say}</li>`).join("");
+}
+
+async function start() {
+  if (!ctx) {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: true } });
+    ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(stream);
+    node = ctx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = (e) => { if (recording) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    src.connect(node); node.connect(ctx.destination);
+  }
+  chunks = []; recording = true;
+  $("status").textContent = "录音中…";
+}
+
+function toWav(samples, rate) {
+  const ratio = rate / 16000, n = Math.floor(samples.length / ratio), pcm = new Int16Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor(i * ratio), b = Math.min(samples.length, Math.floor((i + 1) * ratio));
+    let s = 0; for (let k = a; k < b; k++) s += samples[k];
+    pcm[i] = Math.max(-1, Math.min(1, s / Math.max(1, b - a))) * 32767;
+  }
+  const buf = new ArrayBuffer(44 + pcm.length * 2), v = new DataView(buf);
+  const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, "RIFF"); v.setUint32(4, 36 + pcm.length * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 16000, true);
+  v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, pcm.length * 2, true);
+  new Int16Array(buf, 44).set(pcm);
+  return { blob: new Blob([buf], { type: "audio/wav" }), seconds: pcm.length / 16000 };
+}
+
+async function save(name, blob) {
+  if (dir) {
+    const file = await dir.getFileHandle(name, { create: true });
+    const out = await file.createWritable(); await out.write(blob); await out.close();
+  } else {
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  }
+}
+
+async function stop() {
+  if (!recording) return;
+  recording = false;
+  const total = chunks.reduce((n, c) => n + c.length, 0), all = new Float32Array(total);
+  let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
+  const { blob, seconds } = toWav(all, ctx.sampleRate);
+  if (seconds < 0.5) { $("status").textContent = "太短，请重录"; return; }
+  const p = prompts[index], speaker = $("speaker").value.trim() || "s1";
+  const path = `real-${speaker}/${p.tenant}__${p.key}.wav`;
+  await save(path.replace("/", "__"), blob);
+  done.add(p.id);
+  const row = { id: p.id, tenant: p.tenant, key: p.key, question: p.question, engine: "real", voice: speaker, speed: 1,
+                variant: `real-${speaker}`, path: path.replace("/", "__"), seconds: Math.round(seconds * 1000) / 1000 };
+  manifest[p.id] = row;
+  await save("manifest.jsonl", new Blob([Object.values(manifest).map((r) => JSON.stringify(r)).join("\n") + "\n"], { type: "application/json" }));
+  if (lastUrl) URL.revokeObjectURL(lastUrl);
+  lastUrl = URL.createObjectURL(blob); $("play").disabled = false;
+  $("status").textContent = `已保存 ${seconds.toFixed(1)}s`;
+  if (index < prompts.length - 1) { index++; render(); } else render();
+}
+const manifest = {};
+
+$("rec").addEventListener("pointerdown", (e) => { e.target.setPointerCapture(e.pointerId); start(); });
+$("rec").addEventListener("pointerup", stop);
+document.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat && document.activeElement.tagName !== "INPUT") { e.preventDefault(); start(); } });
+document.addEventListener("keyup", (e) => { if (e.code === "Space" && document.activeElement.tagName !== "INPUT") stop(); });
+$("play").onclick = () => new Audio(lastUrl).play();
+$("prev").onclick = () => { index = Math.max(0, index - 1); render(); };
+$("next").onclick = () => { index = Math.min(prompts.length - 1, index + 1); render(); };
+$("folder").onclick = async () => {
+  if (!window.showDirectoryPicker) { $("where").textContent = "此浏览器不支持选择文件夹，将逐条下载（推荐 Chrome）"; return; }
+  dir = await window.showDirectoryPicker({ mode: "readwrite" });
+  $("where").textContent = `保存到：${dir.name}`;
+};
+loadPrompts();
+</script>
+</body>
+</html>

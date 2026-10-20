@@ -1,0 +1,68 @@
+name: Voice eval, held-out real speech
+
+# Real recordings (backend/evals/voice_recorder.html) are a person's voice: they live in a
+# private repository, never in this one. This job fetches them with a token that can read that
+# repository, decodes them on the runner, and publishes metrics and transcripts only; the audio
+# is not uploaded anywhere. Nothing here is tuned on these recordings.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Private repository with manifest.jsonl and the WAVs at its root"
+        default: "leon1111-wgl/loopdesk-voice-heldout"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TORCH_CPU: https://download.pytorch.org/whl/cpu
+
+jobs:
+  asr:
+    name: ASR ${{ matrix.engine }} on held-out speech
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [paraformer, sensevoice, whisper]
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          token: ${{ secrets.HELDOUT_TOKEN }}
+          path: heldout
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install torch torchaudio --index-url $TORCH_CPU && pip install -r requirements-voice.txt
+      - uses: actions/cache@v4
+        with: {path: "~/.cache/modelscope\n~/.cache/huggingface", key: "asr-${{ matrix.engine }}-v1"}
+      - run: |
+          mkdir -p ../out/asr
+          python -m app.evals.voice.asr_run --engine ${{ matrix.engine }} --synth ../heldout --out ../out/asr/heldout-${{ matrix.engine }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with: {name: "heldout-${{ matrix.engine }}", path: out/asr}
+
+  report:
+    needs: asr
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with: {pattern: "heldout-*", path: out}
+      - run: |
+          python -m app.evals.voice.report --asr '../out/heldout-*/*.jsonl' --out ../out/report
+          cp ../out/heldout-*/*.jsonl ../out/report/
+          cat ../out/report/report.md >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with: {name: voice-heldout-report, path: out/report}

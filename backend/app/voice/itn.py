@@ -38,7 +38,8 @@ _ORDER = re.compile(r"(?<![A-Za-z0-9])(?P<prefix>[A-Za-z](?:\s?[A-Za-z]){0,5})?\
 # 订单号 2026…, or the second of two: "SO20261008002 和 20261012003".
 # "S O" said the Chinese way and written as characters: 艾斯欧 / 爱思欧 / I斯欧 / I欧 / 爱四欧 (seen in the
 # synthetic dev set's errors; the digits that follow were right, the prefix was lost).
-_SO_SPOKEN = re.compile(r"(?:[爱艾埃Ii][斯思四死丝司Cc4]?[欧偶哦鸥Oo]|[爱艾埃][斯思四死丝司])(?=\s*20\d{9}(?!\d))")
+# "S O" said like the English word "so" comes back as 搜 / 骚 / 嗖 (CosyVoice, a later run).
+_SO_SPOKEN = re.compile(r"(?:[爱艾埃Ii][斯思四死丝司Cc4]?[欧偶哦鸥Oo]|[爱艾埃][斯思四死丝司]|[搜骚嗖])(?=\s*20\d{9}(?!\d))")
 _ORDER_CONTEXT = re.compile(r"(?:订单号?|单号|SO\d{11}\s*(?:和|跟|与|还有|、|，|,))(?:是|为)?[,，:：]?\s*$")
 # Money: a numeral (spoken or written) and 块/元, optionally a trailing 毛/角 digit ("九块九", "三块五毛").
 _MONEY = re.compile(rf"(?P<num>[{_NUMERAL_CHARS}点0-9.]+|\d+(?:\.\d+)?万)(?P<unit>块钱|块|元)(?P<tail>[{_DIGIT_CHARS}](?:毛|角)?)?")

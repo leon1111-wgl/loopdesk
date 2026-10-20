@@ -292,3 +292,13 @@ def test_a_word_that_merely_starts_like_so_is_left_alone():
 def test_wan_in_written_amounts():
     assert itn("额度改成1万元").text == "额度改成10000元"
     assert itn("一万五千块").text == "15000块"
+
+
+@pytest.mark.parametrize("raw", ["搜二零二六零九一八零一一我要退货退款", "骚 二 零 二 六 零 九 一 八 零 一 一", "嗖20260918011"])
+def test_so_said_as_the_english_word(raw):
+    # CosyVoice says "S O" like the word "so" (voice-eval run 39484338163): not used to tune the first rule.
+    assert "SO20260918011" in itn(raw).text
+
+
+def test_sou_elsewhere_is_left_alone():
+    assert itn("搜一下会员价格").text == "搜一下会员价格"
