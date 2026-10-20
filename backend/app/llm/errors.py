@@ -14,6 +14,7 @@ HINTS = {
     "timeout": "超时：模型响应太慢或网络不通，检查 LLM_BASE_URL 和网络",
     "breaker": "熔断中：这个模型最近连续失败，暂时不调用",
     "disconnected": "顾客在运行结束前断开了连接",
+    "interrupted": "进程在运行途中退出（被杀掉、OOM、发布时没等请求结束），收尾任务把运行记为失败",
     "other": "其他错误：看链路里的错误信息",
 }
 
@@ -26,6 +27,8 @@ def error_kind(error: str | None) -> str:
         return "breaker"
     if text.startswith("client disconnected"):
         return "disconnected"
+    if text.startswith("interrupted"):  # app.ops.stale_runs: the process running it is gone
+        return "interrupted"
     status = _HTTP_STATUS.search(text)
     if status:
         code = int(status.group(1))

@@ -24,6 +24,7 @@ from .config import Settings, get_settings, set_settings
 from .db import head_revision, init_engine, new_session, prepare_database
 from .observability import configure_logging
 from .observability import install as install_observability
+from .ops.stale_runs import fail_stale_runs
 from .seed import seed_demo, seed_demo_traffic
 from .services import Services, set_services
 from . import telemetry
@@ -64,6 +65,17 @@ def check_audit_key(settings: Settings) -> None:
                            "请设置一个独立的、至少 32 字节的随机字符串，并和数据库分开保管")
 
 
+def sweep_abandoned_runs(settings: Settings) -> None:
+    """Once per start, end the runs a dead process left "running" long enough ago: after an
+    outage, or on a single instance nobody scheduled the minutely job for. The runs of the
+    crash that caused this restart are too recent here; ``python -m app.ops.stale_runs``
+    ends them. Never keeps the instance from starting."""
+    try:
+        fail_stale_runs(settings)
+    except Exception:
+        logger.exception("ending abandoned agent runs at startup failed")
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     check_jwt_secret(settings)
@@ -95,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     configure_logging(settings.log_format, settings.log_level)
     install_observability(app)
+    sweep_abandoned_runs(settings)
     prewarm.start(settings.prewarm_index)  # after seeding, so the demo's documents are included
     for module in (auth, chat, kb, approvals, handoffs, tickets, traces, flywheel, evals, metrics, exports, channels,
                    audit):
