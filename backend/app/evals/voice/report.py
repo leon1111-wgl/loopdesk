@@ -235,19 +235,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--vad", nargs="*", default=[])
     parser.add_argument("--tts", nargs="*", default=[])
     parser.add_argument("--synth", nargs="*", default=[])
+    parser.add_argument("--exclude", default="", help="case ids left out (a test item known to be wrong), comma-separated")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
+    excluded = {x for x in args.exclude.split(",") if x}
 
     def rows(patterns: list[str]) -> list[dict]:
         return [r for p in patterns for f in sorted(glob.glob(p)) for r in read_jsonl(Path(f))]
 
-    records = rows(args.asr)
+    records = [r for r in rows(args.asr) if r["id"] not in excluded]
     if not records:
         print("no ASR records: did the ASR jobs fail?")
         return 1
     synth = rows([str(Path(d) / "manifest.jsonl") for d in args.synth])
     hotwords = tenant_hotwords()
-    report = {"hotwords": hotwords, **asr_tables(records, hotwords),
+    report = {"hotwords": hotwords, "excluded": sorted(excluded), **asr_tables(records, hotwords),
               **latency_tables(records, rows(args.vad), rows(args.tts), synth)}
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

@@ -21,6 +21,8 @@ DOMAIN_WORDS = (
     # the music-streaming tenant (Echo音乐)
     "自动续费", "连续包月", "豪华会员", "普通会员", "数字专辑", "Echo币", "无损音质", "杜比全景声", "变灰",
     "监护人", "未成年人", "青少年模式", "兑换券", "扣费",
+    # the SaaS tenant (Iris云文档): plan names, also the voice channel's hotwords there
+    "免费版", "专业版", "企业版",
 )
 
 try:

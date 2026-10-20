@@ -22,7 +22,9 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import re
 import statistics
+import unicodedata
 import tempfile
 import threading
 import time
@@ -151,6 +153,8 @@ class Evaluator:
                   and e.confidence < self.services.settings.voice_readback_threshold]
         return {"passed": passed, "checks": checks, "first_sentence_ms": first, "answer": answer,
                 "transcript": transcript.text, "same_as_text": canonical(transcript.text) == canonical(case.question),
+                "identical": re.sub(r"\s", "", unicodedata.normalize("NFKC", transcript.text))
+                == re.sub(r"\s", "", unicodedata.normalize("NFKC", case.question)),
                 "entities_missing": sorted(f"{k}:{v}" for k, v in want - got), "readback": unsure,
                 "confirm_blocked": blocked, "confirmed": confirmed,
                 # A wrong refund attempt the spoken confirmation stopped: by text the same call would have
@@ -165,7 +169,11 @@ def attribute(text_passed: bool, voice: dict) -> str | None:
         return "agent_also_fails_by_text"
     if voice["entities_missing"]:
         return "asr_entity"
-    return "agent" if voice["same_as_text"] else "asr_other"
+    if voice["same_as_text"]:
+        # Same words. If only punctuation differs, the ASR's missing commas changed the outcome (the
+        # offline agent splits "退款，另外发票怎么开" on the comma); otherwise the agent itself varied.
+        return "agent" if voice["identical"] else "asr_punctuation"
+    return "asr_other"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -175,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--variants", default="")
     parser.add_argument("--conditions", default="clean")
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--exclude", default="", help="case ids left out (a test item known to be wrong), comma-separated")
     parser.add_argument("--report", required=True)
     args = parser.parse_args(argv)
 
@@ -192,9 +201,10 @@ def main(argv: list[str] | None = None) -> int:
     set_services(services)
     variants = {v for v in args.variants.split(",") if v}
     conditions = set(args.conditions.split(","))
+    excluded = {x for x in args.exclude.split(",") if x}
     records = [r for p in args.asr for f in sorted(glob.glob(p)) for r in read_jsonl(Path(f))
                if r.get(args.field) is not None and r["condition"] in conditions
-               and (not variants or r["variant"] in variants)]
+               and (not variants or r["variant"] in variants) and r["id"] not in excluded]
     with new_session() as db:
         seed_demo(db, services.embedder)
         evaluator = Evaluator(db, services)
@@ -230,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = {
         "model": f"{settings.llm_provider}:{settings.llm_model_strong}", "field": args.field,
-        "variants": sorted(variants), "cases": len(keys),
+        "variants": sorted(variants), "cases": len(keys), "excluded": sorted(excluded),
         "text_pass_rate": round(sum(t["passed"] for t in text.values()) / len(text), 4) if text else None,
         "by_condition": {c: {**s, "voice_pass_rate": round(s["voice_passed"] / s["n"], 4),
                              "text_pass_rate_same_cases": round(s["text_passed"] / s["n"], 4)}

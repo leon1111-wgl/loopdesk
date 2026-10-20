@@ -15,7 +15,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from ...textutil import ORDER_ID_RE
+from ...textutil import ORDER_ID_RE, normalize_width
 
 EVAL_DIR = Path(__file__).resolve().parents[3] / "evals"
 TENANTS = ("leon", "iris", "echo")
@@ -70,8 +70,11 @@ def _number(m: re.Match[str]) -> str:
 
 
 def spoken_script(question: str) -> str:
+    # Typed full-width characters ("ＳＯ２０２６…") are said like any others; unnormalised, the TTS read
+    # them as one large number (found in voice-eval run 39475750196).
+    text = normalize_width(question)
     text = ORDER_ID_RE.sub(lambda m: "S O，" + "，".join(digits(m.group(0)[2:][i:i + 4])
-                                                        for i in range(0, len(m.group(0)) - 2, 4)), question)
+                                                        for i in range(0, len(m.group(0)) - 2, 4)), text)
     text = re.sub(r"(\d+(?:\.\d+)?)\s*(" + _UNIT + ")", _number, text)
     text = re.sub(r"\d(?:[ -]?\d){3,}", lambda m: digits(re.sub(r"[ -]", "", m.group(0))), text)  # card numbers
     text = re.sub(r"(?<=[A-Za-z])-?(\d)", lambda m: " " + digits(m.group(1)), text)  # P1, MP3, AP-0001

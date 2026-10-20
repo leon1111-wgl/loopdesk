@@ -36,9 +36,12 @@ _DIGIT_RUN = re.compile(rf"[{_DIGIT_CHARS}0-9](?:[ ,，、\-]?[{_DIGIT_CHARS}0-9
 # or the words 订单/单号 just before, then the digits. Applied after _DIGIT_RUN.
 _ORDER = re.compile(r"(?<![A-Za-z0-9])(?P<prefix>[A-Za-z](?:\s?[A-Za-z]){0,5})?\s*[,，:：]?\s*(?P<digits>\d{8,14})(?!\d)")
 # 订单号 2026…, or the second of two: "SO20261008002 和 20261012003".
+# "S O" said the Chinese way and written as characters: 艾斯欧 / 爱思欧 / I斯欧 / I欧 / 爱四欧 (seen in the
+# synthetic dev set's errors; the digits that follow were right, the prefix was lost).
+_SO_SPOKEN = re.compile(r"(?:[爱艾埃Ii][斯思四死丝司Cc4]?[欧偶哦鸥Oo]|[爱艾埃][斯思四死丝司])(?=\s*20\d{9}(?!\d))")
 _ORDER_CONTEXT = re.compile(r"(?:订单号?|单号|SO\d{11}\s*(?:和|跟|与|还有|、|，|,))(?:是|为)?[,，:：]?\s*$")
 # Money: a numeral (spoken or written) and 块/元, optionally a trailing 毛/角 digit ("九块九", "三块五毛").
-_MONEY = re.compile(rf"(?P<num>[{_NUMERAL_CHARS}点0-9.]+)(?P<unit>块钱|块|元)(?P<tail>[{_DIGIT_CHARS}](?:毛|角)?)?")
+_MONEY = re.compile(rf"(?P<num>[{_NUMERAL_CHARS}点0-9.]+|\d+(?:\.\d+)?万)(?P<unit>块钱|块|元)(?P<tail>[{_DIGIT_CHARS}](?:毛|角)?)?")
 _PERCENT = re.compile(rf"百分之(?P<num>[{_NUMERAL_CHARS}点]+)")
 # One or two letters and a single digit: "p一" -> P1, "mp三" -> MP3. Not before words that make
 # the digit part of a word ("app一直", "vip一个月").
@@ -114,6 +117,7 @@ def itn(raw: str) -> ITNResult:
     text = _spaces(unicodedata.normalize("NFKC", raw))
     text = _DIGIT_RUN.sub(lambda m: "".join(_DIGIT.get(c, c) for c in m.group(0) if c in _DIGIT or c.isdigit()), text)
     inferred: set[str] = set()
+    text = _SO_SPOKEN.sub("SO", text)
 
     def order(m: re.Match[str], before: str) -> str:
         prefix, digits = (m.group("prefix") or ""), m.group("digits")
@@ -135,7 +139,9 @@ def itn(raw: str) -> ITNResult:
 
     def money(m: re.Match[str]) -> str:
         num = m.group("num")
-        value = float(num) if re.fullmatch(r"\d+(?:\.\d+)?", num) else cn_number(num)
+        written_wan = re.fullmatch(r"(\d+(?:\.\d+)?)万", num)  # SenseVoice writes "1万元"
+        value = (float(num) if re.fullmatch(r"\d+(?:\.\d+)?", num)
+                 else float(written_wan.group(1)) * 10_000 if written_wan else cn_number(num))
         if value is None:
             return m.group(0)
         tail = m.group("tail")

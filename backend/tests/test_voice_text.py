@@ -276,3 +276,19 @@ def test_a_question_with_shi_bu_shi_does_not_cancel():
                                       "客户编号是 0012345678。"])
 def test_speakable_round3_false_positives(sentence):
     assert speakable(sentence).redacted == []
+
+
+# ---------------------------------------------------------------- tuned on the synthetic dev set (voice-eval run 39475750196)
+@pytest.mark.parametrize("raw", ["订单爱思欧二零二六一零零八零一零的马克杯", "爱 斯 欧 二 零 二 六 一 零 零 八 零 一 零",
+                                 "I斯欧二零二六一零零八零一零", "I欧二零二六一零零八零一零", "艾斯欧20261008010", "爱四欧二零二六一零零八零一零"])
+def test_so_said_the_chinese_way(raw):
+    assert "SO20261008010" in itn(raw).text
+
+
+def test_a_word_that_merely_starts_like_so_is_left_alone():
+    assert itn("我爱你一二三").text == "我爱你一二三"
+
+
+def test_wan_in_written_amounts():
+    assert itn("额度改成1万元").text == "额度改成10000元"
+    assert itn("一万五千块").text == "15000块"
