@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.guardrails.injection import detect_injection
 from app.ops import record_demo
 
 CHAT_PAGE = Path(__file__).resolve().parents[2] / "frontend" / "src" / "pages" / "ChatPage.tsx"
@@ -33,6 +34,15 @@ def test_the_recorder_and_the_chat_page_offer_the_same_questions():
     page = _page_suggestions()
     assert page["leon"] == record_demo.SUGGESTED["leon"] and page["iris"] == record_demo.SUGGESTED["iris"]
     assert page["staff_extra"] == record_demo.STAFF_EXTRA
+
+
+def test_customers_are_not_offered_attack_samples():
+    """The customer's chat is the shop's support page: prompt-injection samples are a staff test case (N-046)."""
+    page = _page_suggestions()
+    customer = [q for tenant in ("leon", "iris") for q in page[tenant]]
+    customer += [q for questions in record_demo.DEMO_ONLY.values() for q in questions]
+    assert not [q for q in customer if detect_injection(q).suspicious]
+    assert any(detect_injection(q).suspicious for q in page["staff_extra"]), "the staff test bench keeps one"
 
 
 def test_every_suggestion_replays_for_every_account_that_is_shown_it(recording):

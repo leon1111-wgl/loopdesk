@@ -40,11 +40,20 @@ test("customer gets a cited answer; staff can open its trace", async ({ browser 
   await expect(emma).toHaveURL(/\/chat/);
   await ask(emma, "七天无理由退货有什么条件？");
   const answer = emma.locator(".msg.assistant").last();
-  await expect(answer.getByTitle("逐句证据校验结果")).toHaveText(/证据充分/);
-  // Customers do not see staff-only controls.
+  await expect(answer.locator(".cite").first()).toBeVisible();
+  // Customers see the citations, not the test bench: no verifier badge, tool names, trace link
+  // or scenario tags on the suggestions (N-046).
+  await expect(answer.getByTitle("逐句证据校验结果")).toHaveCount(0);
+  await expect(answer.locator(".bubble-meta .badge")).toHaveCount(0);
   await expect(emma.getByRole("link", { name: "链路" })).toHaveCount(0);
+  await emma.getByRole("button", { name: "新建对话" }).first().click();
+  await expect(emma.locator(".suggestion").first()).toBeVisible();
+  await expect(emma.locator(".suggestion .tag")).toHaveCount(0);
 
   const leon = await signIn(browser, "admin@leon.demo");
+  await leon.goto("/chat");
+  await ask(leon, "七天无理由退货有什么条件？");
+  await expect(leon.locator(".msg.assistant").last().getByTitle("逐句证据校验结果")).toHaveText(/证据充分/);
   await leon.goto("/traces");
   await expect(leon.getByText("七天无理由退货有什么条件？").first()).toBeVisible();
 });
