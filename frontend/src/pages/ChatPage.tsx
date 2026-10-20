@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { FlaskConical, History, PencilLine, Plus, Send, ShieldAlert, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
-import { CHANNEL_TEXT, Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
+import { CHANNEL_TEXT, CUSTOMER_GREETING, Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
 import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, HandoffState, Verification } from "../types";
 
 // Each suggestion carries a tag naming the scenario it exercises. Customers see the questions
@@ -419,7 +419,7 @@ export default function ChatPage() {
               <p className="muted" style={{ marginTop: 6 }}>
                 {staff
                   ? "以员工身份测试 Agent。右侧会实时显示工具调用、审批和证据校验过程。"
-                  : "您好，可以咨询售后政策、查询订单和物流，或者申请退款。"}
+                  : CUSTOMER_GREETING[user?.tenant.industry ?? ""] ?? "您好，请问有什么可以帮您？"}
               </p>
               <div className="suggestion-list">
                 {suggestions.map(([text, tag]) => (

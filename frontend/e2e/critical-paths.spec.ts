@@ -83,6 +83,8 @@ test("refund over the auto limit waits for an admin, then the customer sees the 
 test("Echo音乐: an annual-card refund waits for an agent; the member sees it go through", async ({ browser }) => {
   // The main demo (a fictional music service): memberships are virtual orders, refunds count from the charge.
   const lily = await signIn(browser, "customer@echo.demo");
+  await expect(lily.getByText("音乐流媒体 · 演示租户")).toBeVisible();
+  await expect(lily.getByText(/会员与自动续费/)).toBeVisible(); // not the shop's "查询订单和物流"
   await ask(lily, "SO20261015102 年卡我要退款");
   await expect(lily.getByText("已提交人工审核，结果出来后会自动显示在这里")).toBeVisible();
   const answers = lily.locator(".msg.assistant");

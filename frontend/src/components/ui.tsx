@@ -121,6 +121,14 @@ export function ErrorBanner({ error }: { error: string | null }) {
   return error ? <div className="error-banner">{error}</div> : null;
 }
 
+// How the console names a tenant's industry and greets its customers.
+export const INDUSTRY_TEXT: Record<string, string> = { ecommerce: "电商零售", saas: "SaaS 服务", music: "音乐流媒体" };
+export const CUSTOMER_GREETING: Record<string, string> = {
+  ecommerce: "您好，可以咨询售后政策、查询订单和物流，或者申请退款。",
+  saas: "您好，可以咨询产品功能、服务等级和工单处理。",
+  music: "您好，可以咨询会员与自动续费、数字专辑、歌曲版权和账号问题，或者申请会员退款。",
+};
+
 export const pct = (v: number | null | undefined, digits = 0) => (v == null ? "—" : `${(v * 100).toFixed(digits)}%`);
 export const ms = (v: number | null | undefined) => (v == null ? "—" : v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`);
 export const yuan = (v: unknown) => `¥${Number(v ?? 0).toFixed(2)}`;

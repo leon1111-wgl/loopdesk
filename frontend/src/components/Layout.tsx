@@ -22,7 +22,7 @@ import { api } from "../api";
 import { isStaff, useAuth } from "../auth";
 import { REPO_URL, isDemo } from "../demo/replay";
 import type { Approval, Handoff } from "../types";
-import { Logo, ROLE_TEXT, useMediaQuery, useTheme } from "./ui";
+import { INDUSTRY_TEXT, Logo, ROLE_TEXT, useMediaQuery, useTheme } from "./ui";
 
 const TITLES: Record<string, string> = {
   dashboard: "运营看板",
@@ -152,7 +152,7 @@ export default function Layout() {
         </div>
         <div className="tenant-card">
           <div className="name">{user?.tenant.name}</div>
-          <div className="meta">{user?.tenant.industry === "saas" ? "SaaS 服务" : "电商零售"} · 演示租户</div>
+          <div className="meta">{INDUSTRY_TEXT[user?.tenant.industry ?? ""] ?? "企业"} · 演示租户</div>
         </div>
         <nav className="nav" aria-label="主导航">
           {groups.map(([group, items]) => (
