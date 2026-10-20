@@ -172,6 +172,8 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 .row { display: flex; align-items: center; gap: 8px; }
 .row-wrap { flex-wrap: wrap; }
 .stack { display: flex; flex-direction: column; gap: 8px; }
+/* A page scrolls; its sections keep their height instead of being squeezed to fit the window. */
+.page.stack > * { flex-shrink: 0; }
 .spacer { flex: 1; }
 .muted { color: var(--text-2); }
 .faint { color: var(--text-3); font-size: 12px; }

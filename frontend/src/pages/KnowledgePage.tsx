@@ -249,11 +249,10 @@ function OfficialChannelsCard({ admin, onChange }: { admin: boolean; onChange: (
   const outside = (domains.data ?? []).filter((d) => !d.official);
 
   return (
-    <div className="card stack">
-      <div className="row">
-        <h3>官方渠道</h3>
-        <span className="faint small">回答里只允许出现这些网站的链接和这些客服账号；其他链接、账号所在的回答会被拦下转人工，知识库里带着“填写、领取、核验”等要求的会被扣下复核。</span>
-      </div>
+    <div className="card">
+      <div className="card-head"><h3>官方渠道</h3></div>
+      <div className="card-pad stack">
+      <p className="faint small" style={{ margin: 0 }}>回答里只允许出现这些网站的链接和这些客服账号；其他链接、账号所在的回答会被拦下转人工，知识库里带着“填写、领取、核验”等要求的站外链接会被扣下复核。</p>
       <ErrorBanner error={error} />
       {message && <div className="notice" role="status">{message}</div>}
       {draft ? (
@@ -299,6 +298,7 @@ function OfficialChannelsCard({ admin, onChange }: { admin: boolean; onChange: (
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -406,7 +406,7 @@ export default function KnowledgePage() {
           </tbody>
         </table>
       </div>
-      <OfficialChannelsCard key={`channels-${revision}`} admin={admin} onChange={changed} />
+      <OfficialChannelsCard admin={admin} onChange={changed} />
       <ConflictsCard key={revision} admin={admin} onChange={reload} />
       <RetrievalDebugger />
       {adding && <AddDocModal onClose={() => setAdding(false)} onDone={() => { setAdding(false); changed(); }} />}
