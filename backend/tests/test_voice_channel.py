@@ -3,6 +3,7 @@ endpointing, transcript handling, the spoken confirmation in front of money tool
 and barge-in keeping only what the customer heard."""
 
 import json
+import threading
 import time
 from contextlib import contextmanager
 
@@ -132,6 +133,11 @@ def voice(client, login):
                 ready = json.loads(ws.receive()["text"])
                 assert ready["type"] == "ready", ready
                 yield ws
+            # The test client cancels the handler once the socket closes; the session then closes in its
+            # own thread (saving what was heard). A server lets the handler finish, so wait for it here.
+            for worker in threading.enumerate():
+                if worker.name == "loopdesk-voice-in":
+                    worker.join(timeout=30)
 
     yield Voice()
     set_engines(None, None)
@@ -591,7 +597,14 @@ def test_a_newer_utterance_interrupts_the_answer_before_it(voice, monkeypatch):
         say(ws)
         events = []
         while sum(e["type"] == "turn_saved" for e in events) < 3:
-            events += until(ws, "turn_saved")
+            # The client never reports the second answer as played: it is still playing when the third
+            # question is taken up (acknowledging it could let it finish first, then nothing supersedes it).
+            read = until(ws, "say_end", play=False, stop_at="turn_saved")
+            events += read
+            event = read[-1]
+            if event["type"] == "say_end" and event["turn"] != 2:
+                ws.send_json({"type": "played", "turn": event["turn"], "id": event["id"], "done": True,
+                              "ms": event["samples"] / 16})
     with new_session() as db:
         answers = db.execute(select(Message).where(Message.conversation_id == voice.conversation,
                                                    Message.role == "assistant").order_by(Message.id)).scalars().all()
