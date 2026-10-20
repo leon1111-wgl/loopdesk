@@ -116,10 +116,11 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 | `ANTHROPIC_EFFORT` | `low` | Claude 的 effort 档位 |
 | `PRICES` | 示例价格 | `{"model": [输入, 输出]}`，单位：元 / 百万 token |
 | `EMBEDDING_PROVIDER` | `hashing` | `hashing`（离线）/ `openai_compat` |
-| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | — / `512` | 向量模型 |
+| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | — / `512` | 向量模型；远程模型返回的维度必须等于 `EMBEDDING_DIM`，否则建索引时报错 |
 | `EVIDENCE_MODE` | `annotate` | `annotate`：流式输出并标注；`strict`：缓冲输出，校验不通过就拦截 |
 | `VERIFIER` | `lexical` | `lexical` / `llm` |
-| `MIN_RELEVANCE` | `0.3` | 检索相关度阈值 |
+| `MIN_RELEVANCE` | `0.3` | 检索相关度阈值（IDF 加权词覆盖率） |
+| `MIN_COSINE` | 未设置 | 向量这一路的门槛。接入语义向量模型后用 `python -m app.evals.gate_probe --calibrate` 标定再设；未设置时，语义模型的余弦不能单独放行（只看覆盖率），离线哈希向量沿用 `MIN_RELEVANCE` |
 | `MAX_AGENT_STEPS` | `6` | 单次运行最多调用模型的次数 |
 | `RATE_LIMIT_PER_MINUTE` | `30` | 每个用户每分钟最多发起的对话请求数 |
 | `LOGIN_ATTEMPTS_PER_EMAIL` / `LOGIN_ATTEMPTS_PER_IP` | `10` / `30` | 登录限流：同一账号（邮箱忽略大小写和首尾空格）、同一客户端 IP 每分钟最多尝试次数，两者同时生效 |

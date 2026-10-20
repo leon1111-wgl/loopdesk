@@ -120,6 +120,11 @@ class Settings:
     history_turns: int = 6
     retrieval_top_k: int = 4
     min_relevance: float = 0.3
+    # The vector path's own gate (N-030). A semantic embedding model gives unrelated sentences a
+    # cosine around 0.6, so its cosine opens the gate only once calibrated for that model
+    # (python -m app.evals.gate_probe --calibrate). Unset: the offline hashing embedder, whose
+    # cosine is lexical, shares min_relevance; any other embedder's cosine never passes alone.
+    min_cosine: float | None = None
     evidence_mode: str = "annotate"  # annotate | strict
     evidence_pass_coverage: float = 0.8
     sentence_support_threshold: float = 0.5
@@ -198,6 +203,8 @@ class Settings:
         s.history_turns = _env_int("HISTORY_TURNS", s.history_turns)
         s.retrieval_top_k = _env_int("RETRIEVAL_TOP_K", s.retrieval_top_k)
         s.min_relevance = _env_float("MIN_RELEVANCE", s.min_relevance)
+        s.min_cosine = _env_float("MIN_COSINE", -1.0)
+        s.min_cosine = None if s.min_cosine < 0 else s.min_cosine
         s.evidence_mode = _env("EVIDENCE_MODE", s.evidence_mode)
         s.evidence_pass_coverage = _env_float("EVIDENCE_PASS_COVERAGE", s.evidence_pass_coverage)
         s.sentence_support_threshold = _env_float("SENTENCE_SUPPORT_THRESHOLD", s.sentence_support_threshold)

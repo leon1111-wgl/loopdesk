@@ -11,7 +11,7 @@ from ..models import Chunk, Document, KnowledgeConflict
 from ..rag.chunking import UnsupportedFile, parse_upload
 from ..rag.conflicts import open_conflict_counts
 from ..rag.ingest import StaleDocument, delete_document, edit_document, ingest_document
-from ..rag.retrieval import hybrid_search
+from ..rag.retrieval import cosine_gate, hybrid_search, passes_gate
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
 from .common import get_owned, iso
@@ -158,8 +158,10 @@ def search(body: SearchIn, principal: Principal = Depends(require_staff), db: Se
         "query_tokens": debug.query_tokens,
         "coverage_tokens": debug.coverage_tokens,
         "min_relevance": services.settings.min_relevance,
+        "min_cosine": cosine_gate(services.settings),
         "hits": [{**h.as_dict(), "flagged_injection": h.chunk_id in flagged,
-                  "passes_threshold": h.relevance >= services.settings.min_relevance} for h in hits],
+                  "passes_threshold": passes_gate(h.coverage, h.cosine, services.settings.min_relevance,
+                                                  cosine_gate(services.settings))} for h in hits],
         "bm25": debug.bm25,
         "vector": debug.vector,
     }

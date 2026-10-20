@@ -8,6 +8,7 @@ per index and parses JSON only when the stream ends.
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -215,5 +216,11 @@ class OpenAICompatEmbedder(Embedder):
             if response.status_code >= 400:
                 raise LLMError(f"embedding HTTP {response.status_code}: {response.text[:300]}")
             data = sorted(response.json()["data"], key=lambda d: d["index"])
-            vectors.extend(d["embedding"] for d in data)
+            for item in data:
+                vector = item["embedding"]
+                if len(vector) != self.dim:  # the index and the query must agree, and the config says which
+                    raise LLMError(f"embedding model {self.model} returned {len(vector)} dimensions, "
+                                   f"LOOPDESK_EMBEDDING_DIM is {self.dim}")
+                norm = math.sqrt(sum(v * v for v in vector)) or 1.0  # the index takes dot products as cosines
+                vectors.append([v / norm for v in vector])
         return vectors

@@ -282,6 +282,19 @@ class Prewarm:
 prewarm = Prewarm()
 
 
+def cosine_gate(settings) -> float | None:
+    """The cosine a chunk needs to pass on vector similarity alone; None: it never does (N-030).
+    The offline hashing embedder's cosine is lexical, so it shares the coverage threshold. A
+    semantic model's cosine is high even for unrelated text until a threshold is calibrated."""
+    if settings.min_cosine is not None:
+        return settings.min_cosine
+    return settings.min_relevance if settings.embedding_provider == "hashing" else None
+
+
+def passes_gate(coverage: float, cosine: float, min_relevance: float, min_cosine: float | None) -> bool:
+    return coverage >= min_relevance or (min_cosine is not None and cosine >= min_cosine)
+
+
 def hybrid_search(
     db: Session,
     tenant_id: int,
@@ -292,7 +305,10 @@ def hybrid_search(
     candidate_k: int = 12,
     min_relevance: float = 0.0,
     include_flagged: bool = False,
+    min_cosine: float | None = None,
 ) -> tuple[list[Hit], SearchDebug]:
+    """``min_relevance`` gates the term coverage, ``min_cosine`` the vector similarity (see
+    cosine_gate; None: the cosine alone never lets a chunk through)."""
     index = index_manager.get(db, tenant_id)
     # Recall uses the question plus the knowledge base's wording for any colloquial phrase in
     # it; the relevance gate scores the canonical form only (see canonical_query).
@@ -325,8 +341,9 @@ def hybrid_search(
             continue
         cov = index.coverage(gate_tokens or q_tokens, c)
         cos = cosine.get(i, 0.0)
-        relevance = max(cov, cos)
-        if relevance < min_relevance:
+        # The cosine counts towards relevance only where it can pass the gate on its own.
+        relevance = max(cov, cos) if min_cosine is not None else cov
+        if not passes_gate(cov, cos, min_relevance, min_cosine):
             debug.filtered_low_relevance += 1
             continue
         hits.append(

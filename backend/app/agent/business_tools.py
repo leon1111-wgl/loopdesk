@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from ..localtime import local_date, zone_of
 from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket
 from ..rag.conflicts import disputed
-from ..rag.retrieval import hybrid_search
+from ..rag.retrieval import cosine_gate, hybrid_search
 from ..textutil import normalize_width
 from . import handoff
 from .tools import ApprovalNeed, ToolContext, ToolDef, ToolError, ToolRegistry
@@ -74,7 +74,7 @@ def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     scope = {"public", "internal"} if ctx.is_staff else {"public"}
     hits, debug = hybrid_search(
         ctx.db, ctx.tenant.id, query, ctx.embedder, scope,
-        top_k=top_k, min_relevance=ctx.settings.min_relevance,
+        top_k=top_k, min_relevance=ctx.settings.min_relevance, min_cosine=cosine_gate(ctx.settings),
     )
     # Relative cut-off: when one chunk clearly answers the question, weaker neighbours
     # only add noise (and tokens) to the prompt and to the reviewer's evidence package.
