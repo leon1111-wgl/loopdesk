@@ -137,6 +137,36 @@ class TenantIndex:
         ranked = sorted(((int(i), float(scores[i])) for i in top), key=lambda x: (-x[1], x[0]))
         return [s for s in ranked[:k] if s[1] > MIN_SIMILARITY]
 
+    def known_parts(self, tokens: list[str]) -> list[str]:
+        """A query word the knowledge base never uses, read as the KB words inside it (longest
+        first) when what is left over is single characters: jieba glues a character onto a known
+        word in short questions ("怎么升金卡" -> 升金卡, "金卡有什么好处" -> 金卡有) while the KB says
+        金卡 (N-029). A leftover of two or more characters ("货到付款" -> 货到) is a concept the KB
+        does not cover, so the word stays as it is and keeps its weight in the coverage."""
+        out: list[str] = []
+        for t in tokens:
+            if len(t) < 3 or self.df.get(t, 0) > 0:
+                out.append(t)
+                continue
+            parts: list[str] = []
+            leftovers: list[str] = []
+            run, i = "", 0
+            while i < len(t):
+                for j in range(len(t), i + 1, -1):
+                    if self.df.get(t[i:j], 0) > 0:
+                        parts.append(t[i:j])
+                        if run:
+                            leftovers.append(run)
+                        run, i = "", j
+                        break
+                else:
+                    run += t[i]
+                    i += 1
+            if run:
+                leftovers.append(run)
+            out.extend(parts if parts and all(len(x) == 1 for x in leftovers) else [t])
+        return out
+
     def coverage(self, q_tokens: list[str], c: IndexedChunk) -> float:
         unique = set(q_tokens)
         total = sum(self.idf(t) for t in unique)
@@ -312,9 +342,9 @@ def hybrid_search(
     index = index_manager.get(db, tenant_id)
     # Recall uses the question plus the knowledge base's wording for any colloquial phrase in
     # it; the relevance gate scores the canonical form only (see canonical_query).
-    gate_tokens = tokenize(canonical_query(query))
+    gate_tokens = index.known_parts(tokenize(canonical_query(query)))
     query = expand_query(query)
-    q_tokens = tokenize(query)
+    q_tokens = index.known_parts(tokenize(query))
     debug = SearchDebug(query_tokens=q_tokens, coverage_tokens=gate_tokens)
     if index.n == 0:
         return [], debug

@@ -255,3 +255,21 @@ def test_a_query_vector_of_another_width_falls_back_to_bm25(client):
         hits, debug = hybrid_search(db, tenant.id, "退款多久能到账", HashingEmbedder(1024), {"public"}, top_k=4)
     assert hits and debug.vector == [] and debug.bm25
     assert any("工作日" in h.text for h in hits)
+
+
+def test_a_single_character_glued_onto_a_known_word_still_matches(client, login):
+    # Review round 4, N-029 (held-out paraphrase set): jieba cuts the short questions "怎么升金卡"
+    # and "金卡有什么好处" into 升金卡 and 金卡有, words the knowledge base never uses (it says 金卡,
+    # 会员), so their coverage was 0 and the agent refused. A word the KB lacks is now read as the
+    # KB words inside it when what is left over is single characters.
+    admin = login("admin@leon.demo")
+
+    def gate_passes(question: str) -> list[str]:
+        r = client.post("/api/kb/search", json={"query": question, "scope": "customer", "top_k": 4}, headers=admin)
+        return [h["heading"] for h in r.json()["hits"] if h["passes_threshold"]]
+
+    for question in ("怎么升金卡", "金卡有什么好处"):
+        assert any("会员等级" in h for h in gate_passes(question)), question
+    # A leftover of two characters is a concept the KB does not cover, not a segmentation slip:
+    # "货到付款" must not shrink to 付款 and get answered with the shipping time after payment.
+    assert gate_passes("能货到付款吗") == []
