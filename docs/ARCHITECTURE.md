@@ -200,7 +200,7 @@ Agent 调用 create_ticket ─► 工单（open），due_at = 建单时间 + 承
 
 每次运行都是一条 trace（`Run`），每一步是一个 span（`Span`）：类型、名称、输入、输出、状态、开始时间、耗时、token。SQLite 上 span 完成即提交，运行还在流式输出时链路页面就能看到已经完成的步骤；PostgreSQL 上在运行的提交点批量写入（见 `LOOPDESK_TRACE_WRITES`），开始时间取 span 真正开始的时刻，而不是写库的时刻。
 
-**OpenTelemetry**（`app/telemetry.py`）：配置 `LOOPDESK_OTLP_ENDPOINT` 后，每次运行结束时导出为一条 OTel trace：根 span `invoke_agent loopdesk`，模型调用是 `chat <模型>`（带 `gen_ai.usage.input_tokens` / `output_tokens`），工具调用是 `execute_tool <工具>`，按 GenAI 语义约定命名，Jaeger、Grafana Tempo、Langfuse 这类平台不需要适配就能展示。暂停等审批的运行在最终结束时导出一次，暂停前的 span 也在同一条 trace 里。只导出元数据（模型、token、耗时、状态、运行和租户 ID），问题、回答、工具参数留在本地库里，受租户隔离、脱敏和保留期约束。导出走批处理器，不在请求路径上，失败也不影响请求。成本按 `LOOPDESK_PRICES` 中配置的单价计算。`/metrics` 以 Prometheus 格式输出聚合计数。运营团队可以在看板中导出近 N 天的对话、反馈和审批（`api/exports.py`），用于质检和复盘。CSV 带 BOM，并对公式前缀做转义，避免顾客输入的 `=HYPERLINK(...)` 在 Excel 里被执行。
+**OpenTelemetry**（`app/telemetry.py`）：配置 `LOOPDESK_OTLP_ENDPOINT` 后，每次运行结束时导出为一条 OTel trace：根 span `invoke_agent loopdesk`，模型调用是 `chat <模型>`（带 `gen_ai.usage.input_tokens` / `output_tokens`），工具调用是 `execute_tool <工具>`，按 GenAI 语义约定命名，Jaeger、Grafana Tempo、Langfuse 这类平台不需要适配就能展示。暂停等审批的运行在最终结束时导出一次，暂停前的 span 也在同一条 trace 里。只导出元数据（模型、token、耗时、状态、运行和租户 ID），问题、回答、工具参数留在本地库里，受租户隔离、脱敏和保留期约束。导出走批处理器，不在请求路径上，失败也不影响请求。成本按 `LOOPDESK_PRICES` 中配置的单价计算。`/metrics` 以 Prometheus 格式输出聚合计数。运营团队可以在看板中导出近 N 天的会话全文（每条消息和作者）、运行记录、工单（承诺时限和是否按时，`sla` 为 met / missed / open / overdue）、人工接待记录（排队时间、首次回复时间、等待秒数、接待人、结束时间）、反馈和审批（`api/exports.py`），用于质检和复盘。时间按租户时区输出，列名注明时区；每次导出都记审计。首次回复只算这次转人工期间的回复：同一会话先后转人工两次时，没人回复就结束的那次不会借用后一次的回复（看板的平均首次响应同样修正）。CSV 带 BOM，并对公式前缀做转义，避免顾客输入的 `=HYPERLINK(...)` 在 Excel 里被执行。
 
 ## 10. 已知限制与演进方向
 

@@ -15,6 +15,7 @@ from ..security import Principal, require_staff
 from ..localtime import start_of_day, zone_of
 from ..llm.errors import error_kind
 from .common import as_utc
+from .handoffs import first_reply, reply_times
 from .tickets import open_ticket_stats
 
 router = APIRouter(tags=["metrics"])
@@ -53,20 +54,9 @@ def _handoff_stats(db: Session, tenant_id: int, since: datetime) -> dict:
     waiting = [t for t in live if t.status == "open"]
     recent = db.execute(select(Ticket).where(Ticket.tenant_id == tenant_id, Ticket.kind == "handoff",
                                              Ticket.created_at >= since)).scalars().all()
-    conversation_ids = {t.conversation_id for t in recent if t.conversation_id}
-    replies: dict[int, list[datetime]] = {}
-    if conversation_ids:
-        for conversation_id, created in db.execute(
-            select(Message.conversation_id, Message.created_at)
-            .where(Message.conversation_id.in_(conversation_ids), Message.role == "agent")
-        ).all():
-            replies.setdefault(conversation_id, []).append(as_utc(created))
-    first_response = []
-    for t in recent:  # first human reply after this ticket was opened
-        opened = as_utc(t.created_at)
-        later = [r for r in replies.get(t.conversation_id, []) if r >= opened]
-        if later:
-            first_response.append((min(later) - opened).total_seconds())
+    times = reply_times(db, {t.conversation_id for t in recent if t.conversation_id})
+    first_response = [(reply - as_utc(t.created_at)).total_seconds()
+                      for t in recent if (reply := first_reply(t, times)) is not None]
     return {
         "waiting": len(waiting),
         "in_progress": len(live) - len(waiting),

@@ -47,6 +47,27 @@ def handoff_out(db: Session, ticket: Ticket) -> dict:
     }
 
 
+def reply_times(db: Session, conversation_ids: set[int]) -> dict[int, list[datetime]]:
+    """When people (role=agent) wrote in these conversations."""
+    times: dict[int, list[datetime]] = {}
+    if conversation_ids:
+        for conversation_id, created in db.execute(
+            select(Message.conversation_id, Message.created_at)
+            .where(Message.conversation_id.in_(conversation_ids), Message.role == "agent")
+        ).all():
+            times.setdefault(conversation_id, []).append(as_utc(created))
+    return times
+
+
+def first_reply(ticket: Ticket, times: dict[int, list[datetime]]) -> datetime | None:
+    """The first human reply while this handoff was open. A conversation can be handed over
+    more than once: a handoff ended without a reply must not take the next one's reply."""
+    opened = as_utc(ticket.created_at)
+    closed = as_utc(ticket.closed_at) if ticket.closed_at else None
+    return min((t for t in times.get(ticket.conversation_id, []) if t >= opened and (closed is None or t <= closed)),
+               default=None)
+
+
 def _active(db: Session, principal: Principal, ticket_id: int) -> tuple[Ticket, Conversation]:
     ticket = get_owned(db, Ticket, ticket_id, principal.tenant.id)
     if ticket.kind != "handoff" or ticket.conversation_id is None:

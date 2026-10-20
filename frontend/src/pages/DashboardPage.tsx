@@ -82,7 +82,10 @@ function zoneLabel(zone: string) {
 }
 
 const EXPORTS: [string, string][] = [
-  ["runs", "对话记录"],
+  ["conversations", "会话全文"],
+  ["tickets", "工单"],
+  ["handoffs", "人工接待"],
+  ["runs", "运行记录"],
   ["feedback", "反馈"],
   ["approvals", "审批"],
 ];
