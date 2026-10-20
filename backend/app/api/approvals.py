@@ -87,7 +87,8 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
     conversation = db.get(Conversation, approval.conversation_id) if approval.conversation_id else None
     if conversation and conversation.channel == "feishu" and conversation.external_id and final.get("text"):
         try:
-            delivery = FeishuClient(services.settings).send_to_chat(conversation.external_id, final["text"])
+            delivery = FeishuClient(services.settings, principal.tenant.slug).send_to_chat(
+                conversation.external_id, final["text"])
         except Exception:
             logger.exception("feishu delivery of approval %s failed", approval.id)
             delivery = {"sent": False, "error": "飞书通知发送失败，结果已写入对话"}

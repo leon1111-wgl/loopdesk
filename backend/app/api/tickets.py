@@ -116,5 +116,5 @@ def close(ticket_id: int, body: CloseIn, principal: Principal = Depends(require_
     db.commit()
     db.refresh(ticket)
     if conversation is not None:
-        _deliver(conversation, text)
+        _deliver(conversation, principal.tenant.slug, text)
     return ticket_out(db, ticket, principal.tenant, now)

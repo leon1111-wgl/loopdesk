@@ -10,7 +10,8 @@ Inbound: the event subscription posts to /api/channels/feishu/{tenant}/events.
   (run every minute by ``python -m app.ops.channel_retry``) claims it again.
 Outbound: tenant_access_token (cached until expiry) + reply / send-to-chat APIs.
 
-Without LOOPDESK_FEISHU_APP_ID / _APP_SECRET, replies are dry runs (returned, not sent).
+Each tenant has its own app (LOOPDESK_FEISHU_APPS): the event's verification token and app ID
+must be that tenant's. A tenant without an app gets dry-run replies (returned, not sent).
 Failures inside the background task are logged and answered with a fallback reply,
 because FastAPI's BackgroundTasks would otherwise swallow them silently.
 """
@@ -77,29 +78,34 @@ deduper = EventDeduper()
 
 
 class FeishuClient:
-    _token: tuple[str, float] | None = None
+    """Sends as the tenant's own Feishu app. Tokens are cached per app: one shared cache let
+    a second tenant's replies go out with the first tenant's token."""
+
+    _tokens: dict[str, tuple[str, float]] = {}
     _lock = threading.Lock()
 
-    def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None):
-        self.settings = settings
+    def __init__(self, settings: Settings, tenant_slug: str, transport: httpx.BaseTransport | None = None):
+        self.app = settings.feishu_apps.get(tenant_slug)
         self.transport = transport
 
     @property
     def configured(self) -> bool:
-        return bool(self.settings.feishu_app_id and self.settings.feishu_app_secret)
+        return self.app is not None
 
     def _tenant_token(self, client: httpx.Client) -> str:
+        app = self.app
         with FeishuClient._lock:
-            if FeishuClient._token and FeishuClient._token[1] > time.time() + 60:
-                return FeishuClient._token[0]
+            cached = FeishuClient._tokens.get(app.app_id)
+            if cached and cached[1] > time.time() + 60:
+                return cached[0]
             response = client.post(f"{API}/auth/v3/tenant_access_token/internal", json={
-                "app_id": self.settings.feishu_app_id, "app_secret": self.settings.feishu_app_secret,
+                "app_id": app.app_id, "app_secret": app.app_secret,
             })
             data = response.json()
             if data.get("code") != 0:
                 raise RuntimeError(f"feishu token error: {data.get('msg')}")
-            FeishuClient._token = (data["tenant_access_token"], time.time() + int(data.get("expire", 7200)))
-            return FeishuClient._token[0]
+            FeishuClient._tokens[app.app_id] = (data["tenant_access_token"], time.time() + int(data.get("expire", 7200)))
+            return data["tenant_access_token"]
 
     def _post(self, url: str, body: dict, params: dict | None = None) -> dict:
         if not self.configured:
@@ -120,26 +126,34 @@ class FeishuClient:
         }, params={"receive_id_type": "chat_id"})
 
 
+def _obj(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def parse_text_event(body: dict) -> dict | None:
-    """Extract what we need from an im.message.receive_v1 (schema 2.0) event."""
-    if body.get("header", {}).get("event_type") != "im.message.receive_v1":
+    """Extract what we need from an im.message.receive_v1 (schema 2.0) event. Malformed parts
+    make it an ignored event, not a 500 (which Feishu would keep re-sending)."""
+    header = _obj(body.get("header"))
+    if header.get("event_type") != "im.message.receive_v1":
         return None
-    event = body.get("event") or {}
-    message = event.get("message") or {}
+    event = _obj(body.get("event"))
+    message = _obj(event.get("message"))
     if message.get("message_type") != "text":
         return None
     try:
-        text = json.loads(message.get("content") or "{}").get("text", "")
-    except json.JSONDecodeError:
+        text = _obj(json.loads(message.get("content") or "{}")).get("text", "")
+    except (json.JSONDecodeError, TypeError):
         return None
-    event_id = body["header"].get("event_id")
+    if not isinstance(text, str):
+        return None
+    event_id = header.get("event_id")
     if not isinstance(event_id, str) or not 0 < len(event_id) <= 128:
         # Without an ID a re-sent copy cannot be recognised; schema 2.0 events always carry one.
         logger.warning("feishu event without a usable event_id ignored")
         return None
     return {
         "event_id": event_id,
-        "open_id": ((event.get("sender") or {}).get("sender_id") or {}).get("open_id", ""),
+        "open_id": str(_obj(_obj(event.get("sender")).get("sender_id")).get("open_id") or ""),
         "chat_id": message.get("chat_id", ""),
         "message_id": message.get("message_id", ""),
         "text": _MENTION.sub("", text).strip(),
@@ -226,7 +240,7 @@ def retry_stuck(services, now: datetime | None = None) -> dict[str, int]:
             db.commit()
         if payload:
             logger.error("feishu event %s gave up after %d attempts", event_id, attempts)
-            FeishuClient(services.settings).reply(payload["message_id"], MODEL_ERROR_TEXT)
+            FeishuClient(services.settings, payload["tenant"]).reply(payload["message_id"], MODEL_ERROR_TEXT)
             counts["gave_up"] += 1
     return counts
 
@@ -240,7 +254,7 @@ def handle_message(services, tenant_slug: str, parsed: dict) -> dict:
     except Exception:
         logger.exception("feishu message %s for tenant %s failed", parsed.get("message_id"), tenant_slug)
         try:
-            return {**FeishuClient(services.settings).reply(parsed["message_id"], MODEL_ERROR_TEXT), "fallback": True}
+            return {**FeishuClient(services.settings, tenant_slug).reply(parsed["message_id"], MODEL_ERROR_TEXT), "fallback": True}
         except Exception:
             logger.exception("feishu fallback reply to %s failed", parsed.get("message_id"))
             return {"sent": False, "error": "fallback reply failed", "fallback": True}
@@ -277,4 +291,4 @@ def _answer(services, tenant_slug: str, parsed: dict) -> dict:
         summary = collect(services.runtime(db).start(tenant=tenant, user=user, text=parsed["text"],
                                                      conversation=conversation))
         answer = (summary["final"] or {}).get("text") or MODEL_ERROR_TEXT
-        return FeishuClient(services.settings).reply(parsed["message_id"], answer)
+        return FeishuClient(services.settings, tenant_slug).reply(parsed["message_id"], answer)

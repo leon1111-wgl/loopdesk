@@ -19,18 +19,29 @@ def _accept(event_id: str, payload: dict) -> bool:
 
 @router.post("/feishu/{tenant_slug}/events")
 async def feishu_events(tenant_slug: str, request: Request, background: BackgroundTasks) -> dict:
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "请求体必须是 JSON 对象")
     if "encrypt" in body:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "暂不支持加密事件，请在飞书开放平台关闭 Encrypt Key")
     settings = get_services().settings
-    expected = settings.feishu_verification_token
-    if not expected and not settings.seed_demo:
-        # Fail closed: without the token anyone who knows the URL could post fake customer
-        # messages. The demo accepts unsigned events so the channel can be tried locally.
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "飞书渠道未配置 verification token")
-    token = body.get("token") or (body.get("header") or {}).get("token") or ""
-    if expected and not hmac.compare_digest(str(token), expected):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "verification token 不匹配")
+    app = settings.feishu_apps.get(tenant_slug)
+    if app is None and not settings.seed_demo:
+        # Fail closed: without this tenant's token anyone who knows the URL could post fake
+        # customer messages. The demo accepts unsigned events so the channel can be tried locally.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "该租户的飞书渠道未配置")
+    if app is not None:
+        header = body.get("header") if isinstance(body.get("header"), dict) else {}
+        token = body.get("token") or header.get("token") or ""
+        # The token proves the event came from Feishu; it is checked against this tenant's app
+        # only, so an event signed for one tenant is refused at another tenant's URL.
+        if not hmac.compare_digest(str(token), app.verification_token):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "verification token 不匹配")
+        if header.get("app_id") not in (None, app.app_id):  # schema 2.0 names the sending app
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "事件不属于该租户的飞书应用")
     if body.get("type") == "url_verification":
         return {"challenge": body.get("challenge", "")}
 

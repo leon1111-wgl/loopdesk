@@ -153,13 +153,107 @@ def test_wecom_notification_dry_run_and_live_payload():
 
 
 def test_feishu_url_verification_and_token_check(settings, client):
-    settings.feishu_verification_token = "verify-me"
+    from app.config import FeishuApp
+
+    settings.feishu_apps = {"leon": FeishuApp("cli_leon", "secret", "verify-me")}
     ok = client.post("/api/channels/feishu/leon/events",
                      json={"type": "url_verification", "challenge": "abc", "token": "verify-me"})
     assert ok.json() == {"challenge": "abc"}
     bad = client.post("/api/channels/feishu/leon/events",
                       json={"type": "url_verification", "challenge": "abc", "token": "wrong"})
     assert bad.status_code == 403
+
+
+def test_feishu_event_signed_for_one_tenant_is_refused_at_another(settings, client, monkeypatch):
+    # Review round 4, N-033: one global verification token let Leon's token post into Iris's
+    # URL (200, and a user and conversation created under Iris). Each tenant now has its own
+    # app; the token and, in schema 2.0, the sending app ID must be that tenant's.
+    from sqlalchemy import func, select
+
+    from app.config import FeishuApp
+    from app.db import new_session
+    from app.models import Conversation
+
+    settings.feishu_apps = {"leon": FeishuApp("cli_leon", "s1", "leon-token"),
+                            "iris": FeishuApp("cli_iris", "s2", "iris-token")}
+    monkeypatch.setattr(FeishuClient, "reply", lambda self, mid, text: {"sent": False})
+
+    def event(event_id: str, token: str, app_id: str) -> dict:
+        body = _feishu_event(event_id)
+        body["header"].update(token=token, app_id=app_id)
+        return body
+
+    assert client.post("/api/channels/feishu/iris/events", json=event("e1", "leon-token", "cli_leon")).status_code == 403
+    # Right token, but the event names another tenant's app.
+    assert client.post("/api/channels/feishu/iris/events", json=event("e2", "iris-token", "cli_leon")).status_code == 403
+    with new_session() as db:
+        assert db.execute(select(func.count(Conversation.id)).where(Conversation.channel == "feishu")).scalar_one() == 0
+    assert client.post("/api/channels/feishu/iris/events", json=event("e3", "iris-token", "cli_iris")).json() == {"code": 0}
+    assert client.post("/api/channels/feishu/leon/events", json=event("e4", "leon-token", "cli_leon")).json() == {"code": 0}
+
+
+def test_feishu_replies_go_out_as_the_tenant_own_app(settings):
+    # The token cache used to be a single slot: Iris's reply went out with Leon's token.
+    from app.config import FeishuApp
+
+    settings.feishu_apps = {"leon": FeishuApp("cli_leon", "s1", "t1"), "iris": FeishuApp("cli_iris", "s2", "t2")}
+    FeishuClient._tokens.clear()
+    token_requests, sent_with = [], []
+
+    def handler(request):
+        if request.url.path.endswith("/tenant_access_token/internal"):
+            app_id = json.loads(request.content)["app_id"]
+            token_requests.append(app_id)
+            return httpx.Response(200, json={"code": 0, "tenant_access_token": f"tok-{app_id}", "expire": 7200})
+        sent_with.append(request.headers["Authorization"])
+        return httpx.Response(200, json={"code": 0})
+
+    transport = httpx.MockTransport(handler)
+    for slug in ("leon", "iris", "leon", "iris"):
+        assert FeishuClient(settings, slug, transport=transport).reply("om_1", "hi")["sent"]
+    assert token_requests == ["cli_leon", "cli_iris"]  # one token per app, then cached
+    assert sent_with == ["Bearer tok-cli_leon", "Bearer tok-cli_iris"] * 2
+    # A tenant without an app replies as a dry run instead of borrowing someone else's.
+    assert FeishuClient(settings, "nobody", transport=transport).reply("om_1", "hi")["mode"] == "dry_run"
+    FeishuClient._tokens.clear()
+
+
+def test_feishu_config_binds_each_app_to_one_tenant(monkeypatch):
+    from app.config import FeishuApp
+
+    for name in ("FEISHU_APPS", "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_VERIFICATION_TOKEN", "FEISHU_TENANT"):
+        monkeypatch.delenv(f"LOOPDESK_{name}", raising=False)
+    monkeypatch.setenv("LOOPDESK_FEISHU_APPS", json.dumps({
+        "leon": {"app_id": "cli_leon", "app_secret": "s1", "verification_token": "t1"},
+        "iris": {"app_id": "cli_iris", "app_secret": "s2", "verification_token": "t2"}}))
+    assert Settings.from_env().feishu_apps["iris"] == FeishuApp("cli_iris", "s2", "t2")
+    # The single-app variables of earlier versions used to authenticate every tenant's URL.
+    monkeypatch.delenv("LOOPDESK_FEISHU_APPS")
+    for name, value in (("APP_ID", "cli_x"), ("APP_SECRET", "s"), ("VERIFICATION_TOKEN", "t")):
+        monkeypatch.setenv(f"LOOPDESK_FEISHU_{name}", value)
+    with pytest.raises(ValueError, match="LOOPDESK_FEISHU_TENANT"):
+        Settings.from_env()
+    monkeypatch.setenv("LOOPDESK_FEISHU_TENANT", "leon")
+    assert list(Settings.from_env().feishu_apps) == ["leon"]
+    monkeypatch.setenv("LOOPDESK_FEISHU_APPS", json.dumps({
+        "iris": {"app_id": "cli_x", "app_secret": "s2", "verification_token": "t2"}}))
+    with pytest.raises(ValueError, match="its own Feishu app"):
+        Settings.from_env()
+
+
+def test_malformed_feishu_bodies_are_refused_not_500(client):
+    url = "/api/channels/feishu/leon/events"
+    assert client.post(url, content=b"not json", headers={"content-type": "application/json"}).status_code == 400
+    assert client.post(url, json=["a", "list"]).status_code == 400
+    odd = _feishu_event("evt-odd")
+    odd["event"] = "not an object"
+    assert client.post(url, json=odd).json()["msg"] == "ignored"
+    odd = _feishu_event("evt-odd2")
+    odd["header"] = "not an object"
+    assert client.post(url, json=odd).json()["msg"] == "ignored"
+    odd = _feishu_event("evt-odd3")
+    odd["event"]["message"]["content"] = json.dumps(["not", "an", "object"])
+    assert client.post(url, json=odd).status_code == 200  # empty text: accepted, nothing to answer
 
 
 def test_feishu_message_event_runs_agent_once(client, monkeypatch):

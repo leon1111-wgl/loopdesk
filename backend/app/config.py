@@ -24,6 +24,17 @@ PROVIDER_PRESETS: dict[str, str] = {
 
 # Example prices in CNY per 1M tokens (input, output). They only drive the cost column
 # of traces; override with LOOPDESK_PRICES='{"model": [in, out]}' using your contract.
+@dataclass(frozen=True)
+class FeishuApp:
+    """One tenant's Feishu app. Each tenant gets its own: with one shared verification token,
+    an event signed for one tenant was accepted at another tenant's URL, and every reply came
+    from the same bot."""
+
+    app_id: str
+    app_secret: str
+    verification_token: str
+
+
 DEFAULT_PRICES: dict[str, tuple[float, float]] = {
     "mock-fast": (0.3, 0.6),
     "mock-strong": (2.0, 8.0),
@@ -129,9 +140,7 @@ class Settings:
     prompt_canary_percent: float = 0.0
 
     # Channels
-    feishu_app_id: str | None = None
-    feishu_app_secret: str | None = None
-    feishu_verification_token: str | None = None
+    feishu_apps: dict[str, FeishuApp] = field(default_factory=dict)  # tenant slug -> app
     wecom_webhook_key: str | None = None
 
     prices: dict[str, tuple[float, float]] = field(default_factory=lambda: dict(DEFAULT_PRICES))
@@ -208,9 +217,7 @@ class Settings:
         s.prompt_canary_version = _env("PROMPT_CANARY_VERSION", s.prompt_canary_version)
         s.prompt_canary_percent = _env_float("PROMPT_CANARY_PERCENT", s.prompt_canary_percent)
 
-        s.feishu_app_id = _env("FEISHU_APP_ID")
-        s.feishu_app_secret = _env("FEISHU_APP_SECRET")
-        s.feishu_verification_token = _env("FEISHU_VERIFICATION_TOKEN")
+        s.feishu_apps = _feishu_apps()
         s.wecom_webhook_key = _env("WECOM_WEBHOOK_KEY")
 
         extra_prices = _env("PRICES")
@@ -257,3 +264,32 @@ def set_settings(settings: Settings) -> None:
     """Swap the process-wide settings (used by the app factory and tests)."""
     global _settings
     _settings = settings
+
+
+def _feishu_apps() -> dict[str, FeishuApp]:
+    """LOOPDESK_FEISHU_APPS='{"<tenant slug>": {"app_id", "app_secret", "verification_token"}}'.
+    The single-app variables of earlier versions still work, but only with LOOPDESK_FEISHU_TENANT
+    saying which tenant they belong to: unbound, they used to authenticate every tenant's URL."""
+    apps: dict[str, FeishuApp] = {}
+    raw = _env("FEISHU_APPS")
+    if raw:
+        for slug, conf in json.loads(raw).items():
+            missing = [k for k in ("app_id", "app_secret", "verification_token") if not conf.get(k)]
+            if missing:
+                raise ValueError(f"LOOPDESK_FEISHU_APPS[{slug!r}] is missing {', '.join(missing)}")
+            apps[slug] = FeishuApp(conf["app_id"], conf["app_secret"], conf["verification_token"])
+    legacy = [_env(n) for n in ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_VERIFICATION_TOKEN")]
+    if any(legacy):
+        tenant = _env("FEISHU_TENANT")
+        if not tenant or not all(legacy):
+            raise ValueError("LOOPDESK_FEISHU_APP_ID / _APP_SECRET / _VERIFICATION_TOKEN need all three values and "
+                             "LOOPDESK_FEISHU_TENANT (the tenant slug they belong to); for several tenants use "
+                             "LOOPDESK_FEISHU_APPS")
+        if tenant in apps:
+            raise ValueError(f"tenant {tenant!r} is configured in both LOOPDESK_FEISHU_APPS and LOOPDESK_FEISHU_*")
+        apps[tenant] = FeishuApp(*legacy)
+    app_ids = [app.app_id for app in apps.values()]
+    if len(set(app_ids)) != len(app_ids):
+        # Events carry the app ID, and that is what ties an event to one tenant.
+        raise ValueError("each tenant needs its own Feishu app: an app_id appears under two tenants")
+    return apps

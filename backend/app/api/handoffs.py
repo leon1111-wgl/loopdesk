@@ -77,12 +77,12 @@ def _active(db: Session, principal: Principal, ticket_id: int) -> tuple[Ticket, 
     return ticket, db.get(Conversation, ticket.conversation_id)
 
 
-def _deliver(conversation: Conversation, text: str) -> None:
+def _deliver(conversation: Conversation, tenant_slug: str, text: str) -> None:
     """Feishu customers are not looking at our web page: send the reply into their chat."""
     if conversation.channel != "feishu" or not conversation.external_id:
         return
     try:
-        FeishuClient(get_services().settings).send_to_chat(conversation.external_id, text)
+        FeishuClient(get_services().settings, tenant_slug).send_to_chat(conversation.external_id, text)
     except Exception:  # the message is stored either way; staff can retry from the channel
         logger.exception("feishu delivery for conversation %s failed", conversation.id)
 
@@ -124,7 +124,7 @@ def reply(ticket_id: int, body: ReplyIn, principal: Principal = Depends(require_
     record(db, principal, "handoff.reply", f"handoff:{ticket.id}", conversation_id=conversation.id,
            message_id=message.id)
     db.commit()
-    _deliver(conversation, f"人工客服 {principal.user.name}：{message.content}")
+    _deliver(conversation, principal.tenant.slug, f"人工客服 {principal.user.name}：{message.content}")
     return {"message": message_out(message), "handoff": handoff_out(db, ticket)}
 
 
@@ -138,5 +138,5 @@ def close(ticket_id: int, principal: Principal = Depends(require_staff), db: Ses
     db.add(Message(tenant_id=ticket.tenant_id, conversation_id=conversation.id, role="system", content=HANDBACK_TEXT))
     record(db, principal, "handoff.close", f"handoff:{ticket.id}", conversation_id=conversation.id)
     db.commit()
-    _deliver(conversation, HANDBACK_TEXT)
+    _deliver(conversation, principal.tenant.slug, HANDBACK_TEXT)
     return {"ticket_id": ticket.id, "status": ticket.status, "conversation_id": conversation.id}

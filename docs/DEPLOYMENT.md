@@ -133,7 +133,8 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 | `OTLP_ENDPOINT` / `OTLP_SERVICE_NAME` | — / `loopdesk` | 设置后，每次运行结束时以 OpenTelemetry trace 导出到这个 OTLP/HTTP 地址（例如 `http://otel-collector:4318/v1/traces`），按 GenAI 语义约定命名；只导出元数据，不含问题、回答和工具参数 |
 | `AUDIT_KEY` | 演示模式下由 `JWT_SECRET` 派生 | 审计记录的 HMAC 签名密钥。生产配置（`SEED_DEMO=0`）下必须单独设置、至少 32 字节、不能和 JWT 密钥相同，否则拒绝启动：从 JWT 密钥派生的话，轮换 JWT 密钥会让所有旧记录校验失败。请和数据库分开保管：能写数据库的人不应同时拿到它。更换密钥后旧记录会校验失败（暂不支持轮换） |
 | `TRACE_WRITES` | `auto` | 链路写入方式：`auto` 在 PostgreSQL 上批量写（运行结束、暂停审批、出错时一次写入，同次实测吞吐 +39%–47%），在 SQLite 上每个 span 完成即提交；也可以显式设为 `per_span` 或 `buffered`。批量模式下，运行中的链路要等运行结束才能看到 |
-| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN` | — | 飞书机器人 |
+| `FEISHU_APPS` | — | 飞书机器人，每个租户一个应用：`{"<租户 slug>": {"app_id", "app_secret", "verification_token"}}` |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN` + `FEISHU_TENANT` | — | 只接一个租户时的旧写法，必须用 `FEISHU_TENANT` 指明属于哪个租户 |
 | `WECOM_WEBHOOK_KEY` | — | 企业微信群机器人（审批提醒） |
 
 ## 接入国产大模型
@@ -159,8 +160,10 @@ python -m app.ops.llm_check
 
 1. 在飞书开放平台创建企业自建应用，开启机器人能力，并申请 `im:message` 相关权限。
 2. 事件订阅的请求地址填写 `https://<你的域名>/api/channels/feishu/<租户 slug>/events`，订阅 `im.message.receive_v1`。
-3. **关闭 Encrypt Key**（当前版本还不支持 AES 解密），把 Verification Token 填到 `LOOPDESK_FEISHU_VERIFICATION_TOKEN`。
-4. 把 App ID 和 App Secret 填到环境变量中。
+3. **关闭 Encrypt Key**（当前版本还不支持 AES 解密）。
+4. 把这个租户的 App ID、App Secret 和 Verification Token 填进 `LOOPDESK_FEISHU_APPS`，例如 `{"leon": {"app_id": "cli_xxx", "app_secret": "...", "verification_token": "..."}}`。
+
+**每个租户一个飞书应用**。事件只按该租户自己的 Verification Token 校验，schema 2.0 事件里的 `app_id` 也必须是该租户的应用，所以用 Leon优选 的 token 往 `/feishu/iris/events` 发事件会返回 403，不会在 Iris云文档 下建出用户和会话；回复和审批结果也用该租户自己的应用发出（access token 按应用缓存）。没有配置应用的租户，回调在非演示环境返回 503。两个租户填同一个 app_id、或者旧的单应用变量没有写 `LOOPDESK_FEISHU_TENANT` 时，服务启动直接报错，而不是悄悄让一个凭证对所有租户生效。请求体不是 JSON 对象时返回 400，字段格式不对的事件按“忽略”处理，不会返回 500 让飞书反复重发。
 
 收到消息后，服务会立即返回 200（飞书要求 3 秒内响应），然后在后台运行 Agent 并回复原消息。同一个 `event_id` 只处理一次。需要审批的退款处理完后，结果会主动推送到原群聊。后台任务里的异常不会再被静默吞掉：会以 ERROR 级别记录到 `app.channels.feishu` 日志（含 message_id 和堆栈），并给用户回复“智能客服暂时繁忙”的兜底话术。
 

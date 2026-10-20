@@ -223,8 +223,15 @@ def test_every_route_is_public_on_purpose_or_requires_the_right_role(client, log
 
 
 def test_feishu_webhook_fails_closed_outside_the_demo(settings, client):
-    settings.seed_demo, settings.feishu_verification_token = False, None
+    from app.config import FeishuApp
+
+    settings.seed_demo = False
     r = client.post("/api/channels/feishu/leon/events", json={"type": "url_verification", "challenge": "x"})
+    assert r.status_code == 503
+    # Review round 4, N-033: a tenant without its own app stays closed even when another has one.
+    settings.feishu_apps = {"leon": FeishuApp("cli_leon", "s", "leon-token")}
+    r = client.post("/api/channels/feishu/iris/events",
+                    json={"type": "url_verification", "challenge": "x", "token": "leon-token"})
     assert r.status_code == 503
 
 
