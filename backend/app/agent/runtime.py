@@ -116,70 +116,76 @@ class AgentRuntime:
         self.db.add(run)
         self.db.commit()
         tracer = Tracer(self.db, run, self.settings)
-        yield {"type": "run_started", "run_id": run.id}
-
-        injection = detect_injection(text)
-        with tracer.span("guardrail", "input_check", {"text": text}) as span:
-            span.set(pii_found=pii.found, injection_matches=injection.matches)
-        if injection.suspicious:
-            # Staff see which rules matched; telling an attacker that would help them rephrase.
-            yield {"type": "guardrail", "name": "prompt_injection",
-                   **({"matches": injection.matches} if user.role in ("admin", "agent") else {})}
-
-        # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
-        question = pii.masked
-        if is_followup(text, previous):
-            with tracer.span("rewrite", "followup_rewrite", {"question": pii.masked, "previous": previous}) as span:
-                span.model = self.settings.llm_model_fast
-                result, span.prompt_tokens, span.completion_tokens = rewrite_followup(
-                    self.provider, self.settings.llm_model_fast, history, pii.masked, frame)
-                span.set(standalone=result.standalone, method=result.method)
-            question = result.standalone
-            if user_message is not None:  # the next follow-up builds on this, not on what was typed
-                after = next_frame(frame, pii.masked, question)
-                user_message.meta = {**(user_message.meta or {}), "standalone": question,
-                                     "frame": {"topic": after.topic, "predicate": after.predicate}}
-            yield {"type": "rewrite", "standalone": question, "method": result.method}
-
-        # Prompt version: forced (offline A/B) > canary split by conversation > default.
-        prompt_version = options.prompt_version or choose_prompt_version(
-            self.settings.prompt_version, self.settings.prompt_canary_version, self.settings.prompt_canary_percent,
-            f"conversation:{conversation.id}" if conversation else f"run:{run.id}",
-        )
-
-        # Answer cache: only for self-contained, PII-free, injection-free first questions.
-        cache_key = None
-        if (self.settings.answer_cache_ttl_hours > 0 and not history and not pii.found
-                and not injection.suspicious and not options.dry_run and not options.inject_hallucination):
-            cache_key = answer_cache.make_key(self.db, self.settings, tenant, user, text, prompt_version)
-            entry = answer_cache.lookup(self.db, cache_key)
-            if entry is not None:
-                yield from self._serve_cached(run, tracer, tenant, user, conversation, pii.masked, entry)
-                return
-
-        decision = self.router.route(text, history_turns=len(history) // 2)
-        run.model, run.route_tier = decision.model, decision.tier
-        with tracer.span("router", "model_router", {"length": len(text), "history_turns": len(history) // 2}) as span:
-            span.set(tier=decision.tier, model=decision.model, reasons=decision.reasons, prompt_version=prompt_version)
-
-        state: dict[str, Any] = {
-            "user_text": pii.masked,
-            "steps": 0,
-            "models": self.router.candidates(decision),
-            "options": {"dry_run": options.dry_run, "inject_hallucination": options.inject_hallucination},
-            "elapsed_ms": 0,
-            "cache_key": cache_key.__dict__ if cache_key else None,
-            "prompt_version": prompt_version,
-            "request_id": request_id_var.get(),
-        }
-        messages = [LLMMessage(role="system", content=build_system_prompt(tenant, user, version=prompt_version)), *history,
-                    LLMMessage(role="user", content=question)]
-        ctx = self._context(tenant, user, run, conversation, options.dry_run, [])
+        # From here on every way out has to end the run, or it stays "running" for good: a bug
+        # or a DB error anywhere below (model errors end the run politely in the loop), or a
+        # reader that stops consuming the events, such as a client that disconnects from a
+        # stream that is not detached (see api/chat.py).
         try:
+            yield {"type": "run_started", "run_id": run.id}
+
+            injection = detect_injection(text)
+            with tracer.span("guardrail", "input_check", {"text": text}) as span:
+                span.set(pii_found=pii.found, injection_matches=injection.matches)
+            if injection.suspicious:
+                # Staff see which rules matched; telling an attacker that would help them rephrase.
+                yield {"type": "guardrail", "name": "prompt_injection",
+                       **({"matches": injection.matches} if user.role in ("admin", "agent") else {})}
+
+            # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
+            question = pii.masked
+            if is_followup(text, previous):
+                with tracer.span("rewrite", "followup_rewrite", {"question": pii.masked, "previous": previous}) as span:
+                    span.model = self.settings.llm_model_fast
+                    result, span.prompt_tokens, span.completion_tokens = rewrite_followup(
+                        self.provider, self.settings.llm_model_fast, history, pii.masked, frame)
+                    span.set(standalone=result.standalone, method=result.method)
+                question = result.standalone
+                if user_message is not None:  # the next follow-up builds on this, not on what was typed
+                    after = next_frame(frame, pii.masked, question)
+                    user_message.meta = {**(user_message.meta or {}), "standalone": question,
+                                         "frame": {"topic": after.topic, "predicate": after.predicate}}
+                yield {"type": "rewrite", "standalone": question, "method": result.method}
+
+            # Prompt version: forced (offline A/B) > canary split by conversation > default.
+            prompt_version = options.prompt_version or choose_prompt_version(
+                self.settings.prompt_version, self.settings.prompt_canary_version, self.settings.prompt_canary_percent,
+                f"conversation:{conversation.id}" if conversation else f"run:{run.id}",
+            )
+
+            # Answer cache: only for self-contained, PII-free, injection-free first questions.
+            cache_key = None
+            if (self.settings.answer_cache_ttl_hours > 0 and not history and not pii.found
+                    and not injection.suspicious and not options.dry_run and not options.inject_hallucination):
+                cache_key = answer_cache.make_key(self.db, self.settings, tenant, user, text, prompt_version)
+                entry = answer_cache.lookup(self.db, cache_key)
+                if entry is not None:
+                    yield from self._serve_cached(run, tracer, tenant, user, conversation, pii.masked, entry)
+                    return
+
+            decision = self.router.route(text, history_turns=len(history) // 2)
+            run.model, run.route_tier = decision.model, decision.tier
+            with tracer.span("router", "model_router",
+                             {"length": len(text), "history_turns": len(history) // 2}) as span:
+                span.set(tier=decision.tier, model=decision.model, reasons=decision.reasons,
+                         prompt_version=prompt_version)
+
+            state: dict[str, Any] = {
+                "user_text": pii.masked,
+                "steps": 0,
+                "models": self.router.candidates(decision),
+                "options": {"dry_run": options.dry_run, "inject_hallucination": options.inject_hallucination},
+                "elapsed_ms": 0,
+                "cache_key": cache_key.__dict__ if cache_key else None,
+                "prompt_version": prompt_version,
+                "request_id": request_id_var.get(),
+            }
+            messages = [LLMMessage(role="system", content=build_system_prompt(tenant, user, version=prompt_version)),
+                        *history, LLMMessage(role="user", content=question)]
+            ctx = self._context(tenant, user, run, conversation, options.dry_run, [])
             yield from self._loop(run, tracer, ctx, state, messages, queue=[], started=time.perf_counter())
-        except Exception as exc:  # a bug or a DB error, not a model error (those end the run politely)
+        except (GeneratorExit, Exception) as exc:
             self._mark_failed(run, exc, tracer)
-            raise
+            raise  # GeneratorExit too: swallowed, a caller's yield from would go on as if the run had ended
 
     def _serve_cached(self, run: Run, tracer: Tracer, tenant: Tenant, user: User,
                       conversation: Conversation | None, user_text: str, entry) -> Iterator[dict[str, Any]]:
@@ -277,14 +283,22 @@ class AgentRuntime:
                                        extra_meta={"status": "completed", "fallback": True}))
             return events
 
-    def _mark_failed(self, run: Run, exc: Exception, tracer: Tracer | None = None) -> None:
-        """Record an unexpected crash on the run so it never stays "running"."""
-        logger.exception("agent run %s failed", run.id)
-        self.db.rollback()
+    def _mark_failed(self, run: Run, exc: BaseException, tracer: Tracer | None = None) -> None:
+        """Record an unexpected crash on the run so it never stays "running". GeneratorExit
+        is not a crash: whoever read the events stopped before the run ended."""
+        self.db.rollback()  # also reloads the run as it was last saved
+        if isinstance(exc, GeneratorExit):
+            if run.status != "running":  # saved as ended or paused already; only "final"/"done" went unread
+                return
+            logger.warning("agent run %s abandoned: the reader stopped before the run ended", run.id)
+            error = "client disconnected before the run ended"
+        else:
+            logger.exception("agent run %s failed", run.id)
+            error = f"{type(exc).__name__}: {exc}"
         if tracer is not None:  # the spans up to the crash are what an operator needs most
             tracer.flush()
         run.status = "failed"
-        run.error = f"{type(exc).__name__}: {exc}"[:2000]
+        run.error = error[:2000]
         run.finished_at = datetime.now(timezone.utc)
         self.db.commit()
         telemetry.export_run(self.db, run, self.settings)

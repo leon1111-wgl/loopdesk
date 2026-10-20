@@ -5,9 +5,16 @@ import threading
 import time
 
 import httpx
+import pytest
+from sqlalchemy import select
 
+from app.agent import answer_cache
 from app.api.chat import detached
+from app.db import new_session
 from app.evals.load_bench import _prepare_database, _start_server
+from app.models import Conversation, Run, Tenant, User
+from app.services import get_services
+from tests.conftest import by_type
 
 
 def test_a_detached_run_finishes_after_the_reader_leaves():
@@ -59,3 +66,53 @@ def test_closing_the_tab_mid_answer_still_saves_the_answer(tmp_path):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def _start_run(db, text="七天无理由退货有什么条件？"):
+    user = db.execute(select(User).where(User.email == "customer@leon.demo")).scalar_one()
+    conversation = Conversation(tenant_id=user.tenant_id, user_id=user.id)
+    db.add(conversation)
+    db.commit()
+    return get_services().runtime(db).start(tenant=db.get(Tenant, user.tenant_id), user=user, text=text,
+                                            conversation=conversation)
+
+
+@pytest.mark.parametrize("stop_at", ["run_started", "token"])
+def test_a_reader_that_stops_early_does_not_leave_the_run_running(client, stop_at):
+    # The stream endpoint drains every run in its own thread (above), but the runtime is a
+    # generator that any channel or script can read; one that stops early must end the run.
+    with new_session() as db:
+        events = _start_run(db)
+        run_id = next(events)["run_id"]
+        if stop_at == "token":
+            while next(events)["type"] != "token":
+                pass
+        with pytest.raises(GeneratorExit):  # what close() sends: it must come back out, not be swallowed
+            events.throw(GeneratorExit)
+    with new_session() as db:
+        run = db.get(Run, run_id)
+        assert run.status == "failed" and "client disconnected" in run.error and run.finished_at is not None
+
+
+def test_a_reader_that_stops_after_the_answer_leaves_the_run_completed(client):
+    with new_session() as db:
+        events = _start_run(db)
+        run_id = next(events)["run_id"]
+        while next(events)["type"] != "final":
+            pass
+        events.close()  # "done" is never read, but the run was saved before "final" was sent
+    with new_session() as db:
+        run = db.get(Run, run_id)
+        assert run.status == "completed" and run.error is None
+
+
+def test_a_crash_before_the_agent_loop_still_ends_the_run(ask, login, monkeypatch):
+    def locked(*args, **kwargs):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(answer_cache, "lookup", locked)  # checked before the loop starts
+    _, events = ask(login("customer@leon.demo"), "七天无理由退货有什么条件？")
+    assert by_type(events, "error")
+    with new_session() as db:
+        run = db.get(Run, events[0]["run_id"])
+        assert run.status == "failed" and "database is locked" in run.error

@@ -148,8 +148,8 @@ def detached(produce: Callable[[], Iterator[dict]]) -> Iterator[dict]:
     """Run a generator to completion in its own thread and relay its items.
 
     A customer who closes the tab mid-answer stops consuming the stream. Without this,
-    the run would stop at its current step and stay "running" forever, with tool side
-    effects (a refund) but no answer saved. Here the run always finishes: the answer is
+    the run would stop at its current step (the runtime records it as failed), with tool
+    side effects (a refund) but no answer saved. Here the run always finishes: the answer is
     in the conversation when the customer comes back, and the trace is complete."""
     items: queue.Queue = queue.Queue()
     done = object()
