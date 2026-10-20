@@ -85,7 +85,11 @@ class Chunk(Base):
     text: Mapped[str] = mapped_column(Text)
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     embedding: Mapped[bytes] = mapped_column(LargeBinary)
-    flagged_injection: Mapped[bool] = mapped_column(Boolean, default=False)
+    flagged_injection: Mapped[bool] = mapped_column(Boolean, default=False)  # held back from retrieval
+    # Why the scan held it back (guardrails.injection rule names), and who released it after review.
+    flag_reasons: Mapped[list] = mapped_column(JSON, default=list)
+    reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 CHANNEL_CHAT = "external_id IS NOT NULL"

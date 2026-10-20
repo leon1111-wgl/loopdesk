@@ -43,6 +43,7 @@ ACTIONS = {
     "kb.document.update": "编辑知识文档",
     "kb.document.delete": "删除知识文档",
     "kb.conflict.resolve": "标记知识冲突已解决",
+    "kb.chunk.release": "复核后放行被拦截的知识片段",
     "flywheel.patch.apply": "发布知识补丁",
     "flywheel.patch.reject": "驳回知识补丁",
     "eval.case.update": "修改评测用例",

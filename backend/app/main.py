@@ -24,6 +24,7 @@ from .config import Settings, get_settings, set_settings
 from .db import head_revision, init_engine, new_session, prepare_database
 from .observability import configure_logging
 from .observability import install as install_observability
+from .ops.rescan_knowledge import rescan_knowledge
 from .ops.stale_runs import fail_stale_runs
 from .seed import seed_demo, seed_demo_traffic
 from .services import Services, set_services
@@ -76,6 +77,18 @@ def sweep_abandoned_runs(settings: Settings) -> None:
         logger.exception("ending abandoned agent runs at startup failed")
 
 
+def rescan_stored_knowledge() -> None:
+    """Once per start, check the stored knowledge with this version's injection and fraud rules
+    (see app/ops/rescan_knowledge.py). Regexes over text: fast, and it needs no model. Never
+    keeps the instance from starting; the answer check still guards what the scan has not seen."""
+    try:
+        stats = rescan_knowledge()
+        if stats["held"] or stats["released"]:
+            logger.warning("knowledge re-scan with the current rules: %s", stats)
+    except Exception:
+        logger.exception("re-scanning the stored knowledge at startup failed")
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     check_jwt_secret(settings)
@@ -86,6 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     services = Services(settings)
     set_services(services)
     telemetry.configure(settings)
+    rescan_stored_knowledge()
     if settings.seed_demo:
         with new_session() as db:
             seeded = seed_demo(db, services.embedder)

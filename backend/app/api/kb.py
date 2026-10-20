@@ -7,11 +7,12 @@ from sqlalchemy.orm import Session
 
 from ..audit import changes, record, text_diff
 from ..db import get_db
+from ..guardrails.injection import REASON_TEXT
 from ..models import Chunk, Document, KnowledgeConflict
 from ..rag.chunking import UnsupportedFile, parse_upload
-from ..rag.conflicts import open_conflict_counts
-from ..rag.ingest import StaleDocument, delete_document, edit_document, ingest_document
-from ..rag.retrieval import cosine_gate, hybrid_search, passes_gate
+from ..rag.conflicts import detect_conflicts, open_conflict_counts
+from ..rag.ingest import StaleDocument, delete_document, edit_document, ingest_document, release_chunk
+from ..rag.retrieval import cosine_gate, hybrid_search, index_manager, passes_gate
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
 from .common import get_owned, iso
@@ -63,8 +64,30 @@ def get_document(document_id: int, principal: Principal = Depends(require_staff)
         **_with_conflicts(db, document),
         "content": document.content,
         "chunks": [{"id": c.id, "ord": c.ord, "heading": c.heading, "text": c.text, "page": c.page,
-                    "flagged_injection": c.flagged_injection} for c in chunks],
+                    "flagged_injection": c.flagged_injection,
+                    "flag_reasons": [{"code": r, "text": REASON_TEXT.get(r, r)} for r in c.flag_reasons or []],
+                    "reviewed_at": iso(c.reviewed_at)} for c in chunks],
     }
+
+
+@router.post("/chunks/{chunk_id}/release")
+def release_held_chunk(chunk_id: int, principal: Principal = Depends(require_admin),
+                       db: Session = Depends(get_db)) -> dict:
+    """An administrator read a chunk the scan held back and judged it harmless (review round 5,
+    N-038): it is indexed again, the decision is audited with the reasons that were reviewed.
+    The output check still stops answers that ask customers for credentials, money or a private
+    contact, unless they quote this reviewed chunk word for word."""
+    chunk = get_owned(db, Chunk, chunk_id, principal.tenant.id)
+    document = db.get(Document, chunk.document_id)
+    reasons = list(chunk.flag_reasons or [])
+    if not release_chunk(db, chunk, principal.user.id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "这个片段没有被拦截，或已经被其他管理员放行")
+    record(db, principal, "kb.chunk.release", f"chunk:{chunk_id}", document_id=document.id, title=document.title,
+           reasons=reasons)
+    db.commit()
+    index_manager.invalidate(principal.tenant.id)
+    detect_conflicts(db, document)  # its sentences count now
+    return get_document(document.id, principal, db)
 
 
 @router.post("/documents/text")

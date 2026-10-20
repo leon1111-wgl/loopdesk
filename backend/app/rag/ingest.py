@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from sqlalchemy import delete, select, update
+from datetime import datetime, timezone
+
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from ..guardrails.injection import detect_injection
+from ..guardrails.injection import scan_knowledge
 from ..llm.base import Embedder
 from ..models import Chunk, Document, KnowledgeConflict, Tenant
 from .chunking import chunk_markdown, chunk_pages
@@ -48,8 +50,8 @@ def ingest_document(
     vectors = embedder.embed([f"{d.heading}\n{d.text}" for d in drafts]) if drafts else []
     flagged = 0
     for ord_, (draft, vector) in enumerate(zip(drafts, vectors)):
-        is_flagged = detect_injection(draft.text).suspicious
-        flagged += int(is_flagged)
+        reasons = scan_chunk(draft.heading, draft.text, visibility)
+        flagged += bool(reasons)
         db.add(
             Chunk(
                 tenant_id=tenant_id,
@@ -59,7 +61,8 @@ def ingest_document(
                 text=draft.text,
                 page=draft.page,
                 embedding=pack(vector),
-                flagged_injection=is_flagged,
+                flagged_injection=bool(reasons),
+                flag_reasons=reasons,
             )
         )
     document.chunk_count = len(drafts)
@@ -69,6 +72,38 @@ def ingest_document(
     index_manager.invalidate(tenant_id)
     detect_conflicts(db, document)
     return document
+
+
+def scan_chunk(heading: str, text: str, visibility: str) -> list[str]:
+    """Why a chunk is held back for review (guardrails.injection rule names); empty to index it.
+    Heading and text are scanned apart, so no match straddles the two."""
+    public = visibility == "public"
+    return list(dict.fromkeys(scan_knowledge(heading, public) + scan_knowledge(text, public)))
+
+
+def release_chunk(db: Session, chunk: Chunk, reviewer_id: int) -> bool:
+    """An administrator read a held-back chunk and judged it harmless: index it (review round 5,
+    N-038; before, a false alarm could only be cleared by rewording the document). The reasons
+    stay on the chunk as what was reviewed. False if it is not held back (already released, or
+    re-ingested meanwhile). The caller audits and commits; then the index must be invalidated."""
+    _bump_kb_version(db, chunk.tenant_id)  # the tenant row first, like every knowledge write
+    released = db.execute(
+        update(Chunk).where(Chunk.id == chunk.id, Chunk.flagged_injection.is_(True))
+        .values(flagged_injection=False, reviewed_by=reviewer_id, reviewed_at=datetime.now(timezone.utc))
+        .execution_options(synchronize_session="fetch")
+    ).rowcount
+    if released != 1:
+        db.rollback()
+        return False
+    recount_flagged(db, [chunk.document_id])
+    return True
+
+
+def recount_flagged(db: Session, document_ids: list[int]) -> None:
+    held = (select(func.count(Chunk.id)).where(Chunk.document_id == Document.id, Chunk.flagged_injection.is_(True))
+            .scalar_subquery())
+    db.execute(update(Document).where(Document.id.in_(document_ids)).values(flagged_chunks=held)
+               .execution_options(synchronize_session="fetch"))
 
 
 def _bump_kb_version(db: Session, tenant_id: int) -> None:

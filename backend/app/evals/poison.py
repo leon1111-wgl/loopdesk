@@ -11,8 +11,8 @@ the agent or defraud customers, and leave ordinary policy text alone?
 - benign: ordinary policy text sharing words with the attacks (验证码, 银行卡, 微信, 忽略, an
   internal document telling staff what to say). Holding these back would refuse real questions.
 
-Ingestion is only the first layer; what a chunk that gets through can make the agent say is the
-output check's job. Read the numbers with that in mind: a miss here is not a phishing answer.
+Rules can always be worded around, which is why a match goes to a person for review instead of
+being the final word.
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ SET_FILE = Path(__file__).resolve().parents[2] / "evals" / "poisoned_docs.json"
 
 
 def scan(text: str, public: bool) -> list[str]:
-    from ..guardrails.injection import detect_injection
+    from ..guardrails.injection import scan_knowledge
 
-    return detect_injection(text).matches
+    return scan_knowledge(text, public)
 
 
 def measure() -> dict:

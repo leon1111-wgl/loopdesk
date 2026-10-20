@@ -5,9 +5,20 @@ import { useAuth } from "../auth";
 import { Drawer, Empty, ErrorBanner, Modal, pressable, time, useLoad } from "../components/ui";
 import type { DocumentRow } from "../types";
 
+interface DocChunk {
+  id: number;
+  ord: number;
+  heading: string;
+  text: string;
+  page: number | null;
+  flagged_injection: boolean;
+  flag_reasons: { code: string; text: string }[];
+  reviewed_at: string | null;
+}
+
 interface DocDetail extends DocumentRow {
   content: string;
-  chunks: { id: number; ord: number; heading: string; text: string; page: number | null; flagged_injection: boolean }[];
+  chunks: DocChunk[];
 }
 
 interface SearchHit {
@@ -71,7 +82,7 @@ function RetrievalDebugger() {
                       <td style={{ maxWidth: 360 }}>
                         <div><b>{h.doc_title}</b> <span className="faint">{h.heading}</span></div>
                         <div className="small muted">{h.text.slice(0, 90)}</div>
-                        {h.flagged_injection && <span className="badge badge-danger"><AlertTriangle size={12} /> 注入样本，已屏蔽</span>}
+                        {h.flagged_injection && <span className="badge badge-danger"><AlertTriangle size={12} /> 待复核，未进入检索</span>}
                         {!h.passes_threshold && <span className="badge">低于阈值，不进入上下文</span>}
                       </td>
                       <td>{h.bm25_rank ?? "—"}</td>
@@ -257,6 +268,12 @@ export default function KnowledgePage() {
   async function open(id: number) {
     setDetail(await api.get<DocDetail>(`/api/kb/documents/${id}`));
   }
+  async function release(chunk: DocChunk) {
+    const reasons = chunk.flag_reasons.map((r) => r.text).join("、");
+    if (!window.confirm(`放行后这个片段会进入检索，顾客的问题可能用到它。确认已经读过全文，“${reasons}”是误判吗？`)) return;
+    setDetail(await api.post<DocDetail>(`/api/kb/chunks/${chunk.id}/release`, {}));
+    changed();
+  }
   async function remove(id: number) {
     if (!window.confirm("删除后该文档的所有片段会从索引中移除，确定吗？")) return;
     await api.del(`/api/kb/documents/${id}`);
@@ -269,21 +286,21 @@ export default function KnowledgePage() {
       <div className="page-head">
         <div>
           <h1>知识库</h1>
-          <p>文档按标题切分并保留章节路径；入库时扫描提示注入，命中的片段永远不会进入模型上下文。</p>
+          <p>文档按标题切分并保留章节路径。入库时扫描提示注入和诈骗话术（索要验证码或银行卡号、私人微信、转账），命中的片段不进入检索，等管理员复核。</p>
         </div>
         {admin && <button className="btn btn-primary" onClick={() => setAdding(true)}><FilePlus2 size={16} /> 新增文档</button>}
       </div>
       <ErrorBanner error={error} />
       <div className="card table-wrap">
         <table className="table">
-          <thead><tr><th>标题</th><th>可见范围</th><th>片段数</th><th>注入检测</th><th>知识冲突</th><th>版本</th><th>更新时间</th></tr></thead>
+          <thead><tr><th>标题</th><th>可见范围</th><th>片段数</th><th>安全扫描</th><th>知识冲突</th><th>版本</th><th>更新时间</th></tr></thead>
           <tbody>
             {data?.map((d) => (
               <tr key={d.id} className="clickable" {...pressable(() => open(d.id))}>
                 <td><b>{d.title}</b> <span className="faint">{d.source}</span></td>
                 <td>{d.visibility === "public" ? <span className="badge badge-primary">公开</span> : <span className="badge badge-info">仅内部</span>}</td>
                 <td>{d.chunk_count}</td>
-                <td>{d.flagged_chunks ? <span className="badge badge-danger"><AlertTriangle size={12} /> {d.flagged_chunks} 个片段已屏蔽</span> : <span className="faint">无</span>}</td>
+                <td>{d.flagged_chunks ? <span className="badge badge-danger"><AlertTriangle size={12} /> {d.flagged_chunks} 个片段待复核</span> : <span className="faint">无</span>}</td>
                 <td>{d.conflicts ? <span className="badge badge-warning">{d.conflicts} 处待核对</span> : <span className="faint">无</span>}</td>
                 <td>v{d.version}</td>
                 <td className="faint">{time(d.updated_at)}</td>
@@ -310,9 +327,21 @@ export default function KnowledgePage() {
             {detail.chunks.map((c) => (
               <div key={c.id} className="json" style={c.flagged_injection ? { outline: "2px solid var(--danger)" } : undefined}>
                 <div className="row faint">#{c.ord} · {c.heading || "（无标题）"}{c.page && ` · 第 ${c.page} 页`}
-                  {c.flagged_injection && <span className="badge badge-danger">疑似提示注入，已屏蔽</span>}
+                  {c.flagged_injection && <span className="badge badge-danger">待复核，未进入检索</span>}
+                  {!c.flagged_injection && c.reviewed_at && <span className="badge" title={time(c.reviewed_at)}>已复核放行</span>}
                 </div>
+                {c.flag_reasons.length > 0 && (
+                  <div className="row small">
+                    <span className="faint">命中：</span>
+                    {c.flag_reasons.map((r) => <span key={r.code} className="badge badge-warning">{r.text}</span>)}
+                  </div>
+                )}
                 <div style={{ whiteSpace: "pre-wrap" }}>{c.text}</div>
+                {admin && c.flagged_injection && (
+                  <button className="btn btn-sm" style={{ width: "fit-content" }} onClick={() => release(c)}>
+                    <Check size={14} /> 复核无害，放行
+                  </button>
+                )}
               </div>
             ))}
           </div>

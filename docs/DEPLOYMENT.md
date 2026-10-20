@@ -91,6 +91,12 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 
 ## 数据库迁移
 
+**知识库安全扫描规则更新后**：每个实例启动时按当前规则重扫一遍已入库的知识（`app/ops/rescan_knowledge.py`，只是正则，不调用模型；失败不影响启动），新命中的片段扣下等管理员复核，按新规则不再命中的放回检索，管理员放行过的片段只要没有新的命中原因就保持放行。也可以手动执行：
+
+```bash
+cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowledge
+```
+
 表结构由 Alembic 管理（`backend/migrations`）。应用启动时会自动执行 `alembic upgrade head`（`LOOPDESK_AUTO_MIGRATE=1`，默认开启）。
 
 - 修改模型后生成迁移：`cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/alembic revision --autogenerate -m "说明"`。生成后先人工检查，再和代码一起提交。CI 中的 `tests/test_migrations.py` 会校验模型与迁移完全一致，漏写迁移会直接失败。
