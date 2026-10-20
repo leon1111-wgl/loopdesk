@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from ..db import Base
-
-
-def as_utc(value: datetime) -> datetime:
-    """SQLite drops tzinfo on read; every timestamp in this app is written in UTC."""
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+from ..localtime import as_utc  # noqa: F401 (re-exported: most API modules import it from here)
 
 
 def iso(value: datetime | None) -> str | None:

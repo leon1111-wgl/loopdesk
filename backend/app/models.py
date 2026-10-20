@@ -37,6 +37,8 @@ class Tenant(Base):
     quality_window_days: Mapped[int] = mapped_column(Integer, default=15, server_default="15")
     # Refunds above this amount are approved by an administrator only (agents may still reject).
     approval_admin_threshold: Mapped[float] = mapped_column(Float, default=500.0, server_default="500")
+    # IANA name; dates shown to people (dashboard days, order dates, exports) are this zone's.
+    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", server_default="Asia/Shanghai")
     # Bumped in the same transaction as every change to the tenant's chunks: the retrieval index
     # and the answer cache compare it instead of counting the chunks on every search.
     kb_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

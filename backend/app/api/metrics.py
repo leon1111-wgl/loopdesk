@@ -12,6 +12,7 @@ from ..db import get_db
 from ..agent.outcome import is_refusal
 from ..models import Approval, EvalRun, Feedback, KnowledgeConflict, Message, Run, Span, Ticket
 from ..security import Principal, require_staff
+from ..localtime import start_of_day, zone_of
 from .common import as_utc
 from .tickets import open_ticket_stats
 
@@ -122,7 +123,12 @@ def _conversation_outcomes(db: Session, runs: list[Run], tenant_id: int, since: 
 
 @router.get("/api/metrics/overview")
 def overview(days: int = 7, principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
-    since = datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 90)))
+    """``days`` local calendar days, today included, in the tenant's time zone (N-024): the days
+    were UTC dates, and a rolling 7 x 24 hours put part of an eighth day at the end of the chart."""
+    window = max(1, min(days, 90))
+    zone = zone_of(principal.tenant)
+    first = datetime.now(zone).date() - timedelta(days=window - 1)
+    since = start_of_day(first, zone)
     tenant_id = principal.tenant.id
     runs = db.execute(
         select(Run).where(Run.tenant_id == tenant_id, Run.is_eval.is_(False), Run.created_at >= since)
@@ -138,15 +144,11 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
     feedback = Counter(db.execute(
         select(Feedback.rating).where(Feedback.tenant_id == tenant_id, Feedback.created_at >= since)
     ).scalars())
-    window = max(1, min(days, 90))
-    today = datetime.now(timezone.utc).date()
     daily: dict[str, dict[str, int]] = {
-        (today - timedelta(days=offset)).strftime("%m-%d"): {"runs": 0, "handoff": 0}
-        for offset in range(window - 1, -1, -1)
+        (first + timedelta(days=offset)).strftime("%m-%d"): {"runs": 0, "handoff": 0} for offset in range(window)
     }
     for r in runs:
-        day = as_utc(r.created_at).strftime("%m-%d")
-        bucket = daily.setdefault(day, {"runs": 0, "handoff": 0})
+        bucket = daily.setdefault(as_utc(r.created_at).astimezone(zone).strftime("%m-%d"), {"runs": 0, "handoff": 0})
         bucket["runs"] += 1
         bucket["handoff"] += int(r.status == "handoff")
     last_eval = db.execute(
@@ -157,7 +159,8 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
     ).scalar_one()
     total = len(runs)
     return {
-        "window_days": days,
+        "window_days": window,
+        "timezone": principal.tenant.timezone,
         "runs": total,
         "status": dict(statuses),
         # Per conversation; see _conversation_outcomes for the definitions.

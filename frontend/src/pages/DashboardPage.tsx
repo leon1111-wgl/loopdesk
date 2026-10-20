@@ -5,6 +5,7 @@ import { Empty, ErrorBanner, Kpi, TOOL_TEXT, ms, pct, useLoad, TIER_TEXT } from 
 
 interface Overview {
   window_days: number;
+  timezone: string;
   runs: number;
   status: Record<string, number>;
   conversations: number;
@@ -68,6 +69,11 @@ function DailyChart({ daily }: { daily: Overview["daily"] }) {
   );
 }
 
+// The dashboard's days are the tenant's calendar days (N-024); say which zone that is.
+function zoneLabel(zone: string) {
+  return zone === "Asia/Shanghai" ? "北京时间" : zone;
+}
+
 const EXPORTS: [string, string][] = [
   ["runs", "对话记录"],
   ["feedback", "反馈"],
@@ -84,7 +90,7 @@ export default function DashboardPage() {
       <div className="page-head">
         <div>
           <h1>运营看板</h1>
-          <p>近 7 天的真实对话，不含评测运行。成本按配置的模型单价估算，离线模型的单价仅作示例。</p>
+          <p>近 7 天（按自然日计，含今天）的真实对话，不含评测运行。成本按配置的模型单价估算，离线模型的单价仅作示例。</p>
         </div>
         <div className="row row-wrap" aria-label="导出近 30 天数据">
           <span className="faint">导出近 30 天（CSV）</span>
@@ -129,7 +135,7 @@ export default function DashboardPage() {
           </div>
           <div className="grid grid-3">
             <div className="card">
-              <div className="card-head"><h3>每日运行量</h3><span className="faint">蓝：全部 · 紫：转人工</span></div>
+              <div className="card-head"><h3>每日运行量</h3><span className="faint">蓝：全部 · 紫：转人工 · 按{zoneLabel(data.timezone)}分天</span></div>
               <div className="card-pad"><DailyChart daily={data.daily} /></div>
             </div>
             <div className="card">

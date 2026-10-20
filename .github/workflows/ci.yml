@@ -125,3 +125,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t loopdesk:ci .
+      - name: The image can resolve tenant time zones
+        run: docker run --rm loopdesk:ci python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('Asia/Shanghai'))"

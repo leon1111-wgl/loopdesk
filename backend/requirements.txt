@@ -9,6 +9,7 @@ python-multipart>=0.0.9
 pypdf>=4.2
 jieba>=0.42
 numpy>=1.26
+tzdata>=2024.1  # zoneinfo data for images without the system database (python:3.12-slim)
 opentelemetry-sdk>=1.25
 opentelemetry-exporter-otlp-proto-http>=1.25
 pytest>=8

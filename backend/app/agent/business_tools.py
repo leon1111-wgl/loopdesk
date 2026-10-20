@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
+from ..localtime import local_date, zone_of
 from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket
 from ..rag.conflicts import disputed
 from ..rag.retrieval import hybrid_search
@@ -131,8 +132,9 @@ def get_order(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         "status_text": status_text,
         "amount": round(order.amount, 2),
         "items": order.items,
-        "paid_at": order.paid_at.strftime("%Y-%m-%d"),
-        "delivered_at": order.delivered_at.strftime("%Y-%m-%d") if order.delivered_at else None,
+        # Local dates: a delivery at 06:30 Beijing time is 22:30 UTC the day before (N-024).
+        "paid_at": local_date(order.paid_at, zone_of(ctx.tenant)),
+        "delivered_at": local_date(order.delivered_at, zone_of(ctx.tenant)) if order.delivered_at else None,
         "days_since_delivery": days,
         "region": order.region,
         "refundable": refundable,
@@ -239,7 +241,7 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
                          f"{tenant.quality_window_days} 天内仅质量问题可以退换")
         reasons.append(customer_note)  # published policy, so the customer may hear it too
         ctx.add_evidence("tool", "after_sales_window", json.dumps({
-            "order_id": order.id, "delivered_at": _as_utc(order.delivered_at).strftime("%Y-%m-%d"),
+            "order_id": order.id, "delivered_at": local_date(order.delivered_at, zone_of(tenant)),
             "days_since_delivery": days, "return_window_days": tenant.return_window_days,
             "quality_window_days": tenant.quality_window_days,
         }, ensure_ascii=False))

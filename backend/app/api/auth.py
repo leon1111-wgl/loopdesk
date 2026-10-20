@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..audit import changes, record
 from ..db import get_db
+from ..localtime import is_valid_zone
 from ..models import Tenant, User
 from ..security import (DUMMY_PASSWORD_HASH, Principal, create_token, get_principal, rate_limiter, require_admin,
                         require_staff, shared_rate_limiter, verify_password)
@@ -27,6 +28,7 @@ class TenantPatch(BaseModel):
     return_window_days: int | None = Field(default=None, ge=0, le=365)
     quality_window_days: int | None = Field(default=None, ge=0, le=365)
     approval_admin_threshold: float | None = Field(default=None, ge=0, le=1000000)
+    timezone: str | None = Field(default=None, max_length=64)
 
 
 def user_out(user: User, tenant: Tenant) -> dict:
@@ -40,7 +42,7 @@ def tenant_out(tenant: Tenant) -> dict:
     return {"id": tenant.id, "slug": tenant.slug, "name": tenant.name, "industry": tenant.industry,
             "auto_refund_limit": tenant.auto_refund_limit, "ticket_sla_hours": tenant.ticket_sla_hours,
             "return_window_days": tenant.return_window_days, "quality_window_days": tenant.quality_window_days,
-            "approval_admin_threshold": tenant.approval_admin_threshold}
+            "approval_admin_threshold": tenant.approval_admin_threshold, "timezone": tenant.timezone}
 
 
 def _login_limiter(backend: str, db: Session):
@@ -118,6 +120,10 @@ def patch_tenant(body: TenantPatch, principal: Principal = Depends(require_admin
         tenant.quality_window_days = body.quality_window_days
     if body.approval_admin_threshold is not None:
         tenant.approval_admin_threshold = body.approval_admin_threshold
+    if body.timezone is not None:
+        if not is_valid_zone(body.timezone):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"未知的时区：{body.timezone}（请用 IANA 名称，例如 Asia/Shanghai）")
+        tenant.timezone = body.timezone
     diff = changes(before, tenant_out(tenant))
     if diff:  # risk limits and after-sales windows decide whether money moves without a person
         record(db, principal, "tenant.update", f"tenant:{tenant.id}", changes=diff)

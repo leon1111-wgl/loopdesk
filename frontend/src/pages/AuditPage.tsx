@@ -38,6 +38,7 @@ const LABEL: Record<string, string> = {
   note: "备注",
   erased: "抹除的记录",
   approval_admin_threshold: "审批分级线（元）",
+  timezone: "时区",
   tool: "工具",
   order_id: "订单号",
   amount: "金额（元）",
