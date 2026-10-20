@@ -31,6 +31,7 @@ from .. import audit
 from ..channels.wecom import notify_approval
 from ..config import Settings
 from ..guardrails.injection import Channels, detect_injection, unsafe_answer
+from ..guardrails.judge import judge as judge_answer, worth_judging
 from ..guardrails.pii import PIIReport, mask_pii
 from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.breaker import CircuitBreaker
@@ -65,6 +66,7 @@ UNSAFE_TEXT = ("抱歉，这条回复涉及您的账户和资金安全，没有�
 UNSAFE_REASON = "回答里有索要验证码、银行卡号、密码，或官方渠道以外的链接、联系方式、转账要求，已拦截并转人工"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 REWRITE_BUDGET_SECONDS = 5.0
+JUDGE_BUDGET_SECONDS = 8.0  # the output judge waits this long at most; past it the rules' verdict stands
 TOOL_LABEL = {"request_refund": "退款"}
 
 logger = logging.getLogger(__name__)
@@ -272,12 +274,13 @@ class AgentRuntime:
             span.set(cache_id=entry.id, hits=entry.hits, age_seconds=int(age), kb_signature=entry.kb_signature)
         evidence = [Evidence(**e) for e in (entry.meta or {}).get("evidence", [])]
         ctx = self._context(tenant, user, run, conversation, False, evidence)
-        gate = _StreamGate(ctx)  # an answer cached before the output check existed is checked too
-        for start in range(0, len(entry.answer), 8):
-            if shown := gate.feed(entry.answer[start : start + 8]):
+        if not self._judging():  # with the output judge on, answers are shown whole, after the checks
+            gate = _StreamGate(ctx)  # an answer cached before the output check existed is checked too
+            for start in range(0, len(entry.answer), 8):
+                if shown := gate.feed(entry.answer[start : start + 8]):
+                    yield {"type": "token", "step": 1, "text": shown}
+            if shown := gate.flush():
                 yield {"type": "token", "step": 1, "text": shown}
-        if shown := gate.flush():
-            yield {"type": "token", "step": 1, "text": shown}
         verification = (entry.meta or {}).get("verification")
         if verification:
             run.evidence_coverage = verification.get("coverage")
@@ -410,7 +413,7 @@ class AgentRuntime:
     # ================================================================ the loop
     def _loop(self, run: Run, tracer: Tracer, ctx: ToolContext, state: dict[str, Any],
               messages: list[LLMMessage], queue: list[ToolCall], started: float) -> Iterator[dict[str, Any]]:
-        stream_tokens = self.settings.evidence_mode != "strict"
+        stream_tokens = self.settings.evidence_mode != "strict" and not self._judging()
         specs = [t.spec() for t in self.registry.for_role(ctx.user.role)]
         # One budget for the whole run: without it, 6 steps x 2 model tiers x 3 attempts x 60 s
         # could hold a connection and a worker thread for over half an hour.
@@ -640,6 +643,29 @@ class AgentRuntime:
         meta = {"disputed": disputed} if ctx.is_staff else {"citations": []}
         yield from self._finish(run, tracer, ctx, state, text, started, status="handoff", extra_meta=meta)
 
+    def _judging(self) -> bool:
+        return self.settings.output_guard == "llm" and self.provider.name != "mock"
+
+    def _judge(self, tracer: Tracer, ctx: ToolContext, text: str):
+        """A fast model's verdict on a model answer the rules passed (guardrails/judge.py), or None:
+        the model is skipped while its breaker is open, and a failed or unreadable verdict leaves the
+        rules' result standing. The span records which of these happened."""
+        fast = self.settings.llm_model_fast
+        with tracer.span("guardrail", "output_judge", {"answer": text}) as span:
+            span.model = fast
+            if self.breaker.state(fast) != "closed":
+                span.set(skipped="breaker_open")
+                return None
+            judgement = judge_answer(self.provider, fast, text, _channels(ctx),
+                                     deadline=time.monotonic() + JUDGE_BUDGET_SECONDS)
+            if judgement is None:
+                span.status = "error"
+                span.set(error="no verdict; the rules' result stands")
+                return None
+            span.prompt_tokens, span.completion_tokens = judgement.prompt_tokens, judgement.completion_tokens
+            span.set(unsafe=judgement.unsafe, category=judgement.category, reason=judgement.reason)
+            return judgement
+
     def _fallback_handoff(self, tracer: Tracer, ctx: ToolContext, reason: str) -> str:
         """The agent gave up (step limit, model refusal): really hand the customer to a person
         rather than only suggesting it. A ticket and the conversation's handoff state make the
@@ -703,6 +729,10 @@ class AgentRuntime:
                 extra_meta: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
         final_text = text or MODEL_ERROR_TEXT
         reasons = unsafe_answer(final_text, _reviewed(ctx), _channels(ctx))
+        if not reasons and verify and self._judging() and worth_judging(final_text):
+            judgement = self._judge(tracer, ctx, final_text)
+            if judgement is not None and judgement.unsafe:
+                reasons = [f"judge_{judgement.category or 'unsafe'}"]
         if reasons:  # never sent (N-038): a person takes over, and the dashboard names the sources
             with tracer.span("guardrail", "unsafe_answer", {"answer": final_text}) as span:
                 span.status = "error"

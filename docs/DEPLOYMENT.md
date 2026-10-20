@@ -123,6 +123,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowl
 | `LLM_STREAM_USAGE` | `1` | 流式请求时要求返回 usage；厂商不支持时设为 `0`，系统会改用估算值 |
 | `ANTHROPIC_EFFORT` | `low` | Claude 的 effort 档位 |
 | `PRICES` | 示例价格 | `{"model": [输入, 输出]}`，单位：元 / 百万 token |
+| `OUTPUT_GUARD` | `rules` | `rules` / `llm`：`llm` 时，规则放过、带诈骗线索的模型回答再由快模型判断，回答不再流式输出；模型失败时以规则结果为准 |
 | `EMBEDDING_PROVIDER` | `hashing` | `hashing`（离线）/ `openai_compat` |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | — / `512` | 向量模型；远程模型返回的维度必须等于 `EMBEDDING_DIM`，否则建索引时报错 |
 | `EVIDENCE_MODE` | `annotate` | `annotate`：流式输出并标注；`strict`：缓冲输出，校验不通过就拦截 |

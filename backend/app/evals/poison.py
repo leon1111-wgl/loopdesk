@@ -76,11 +76,59 @@ def measure() -> dict:
     return report
 
 
+def measure_judge() -> dict:
+    """The answer check with the output judge (LOOPDESK_OUTPUT_GUARD=llm) on every group, using
+    the configured model: the rules first, then the judge on what they passed and what carries a
+    scam's cues, as at runtime. Blind texts are not printed; misses are counted by category."""
+    from ..config import get_settings
+    from ..guardrails.injection import Channels, unsafe_answer
+    from ..guardrails.judge import judge, worth_judging
+    from ..llm import build_provider
+
+    settings = get_settings()
+    provider = build_provider(settings)
+    if provider.name == "mock":
+        raise SystemExit("the output judge needs a real model: set LOOPDESK_LLM_PROVIDER and its key")
+    model = settings.llm_model_fast
+
+    def run(cases: dict, groups: dict, show_text: bool) -> dict:
+        channels = Channels.of(cases.get("official_domains", []), cases.get("official_contacts", []))
+        result = {}
+        for group, attack in groups.items():
+            items = cases[group]
+            rules = added = no_verdict = 0
+            missed: dict[str, int] = {}
+            rows = []
+            for item in items:
+                by_rules = bool(unsafe_answer(item["text"], None, channels))
+                verdict = None
+                if not by_rules and worth_judging(item["text"]):
+                    verdict = judge(provider, model, item["text"], channels)
+                    no_verdict += verdict is None
+                by_judge = bool(verdict and verdict.unsafe)
+                rules += by_rules
+                added += by_judge
+                if (by_rules or by_judge) != attack:
+                    missed[item.get("category", "")] = missed.get(item.get("category", ""), 0) + 1
+                    rows.append({"id": item["id"], **({"text": item["text"]} if show_text else {}),
+                                 "judge": verdict.reason if verdict else None})
+            result[group] = {"rules": f"{rules}/{len(items)}", "judge_added": added,
+                             "combined": f"{rules + added}/{len(items)}", "no_verdict": no_verdict,
+                             "wrong_by_category": missed, "wrong": rows}
+        return result
+
+    report = run(json.loads(SET_FILE.read_text(encoding="utf-8")), GROUPS, show_text=True)
+    blind = run(json.loads(BLIND_FILE.read_text(encoding="utf-8")), BLIND_GROUPS, show_text=False)
+    report.update({f"blind_{group}": value for group, value in blind.items()})
+    return {"model": model, **report}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="LoopDesk poisoned-knowledge detection")
     parser.add_argument("--report")
+    parser.add_argument("--judge", action="store_true", help="measure the answer check with the output judge")
     args = parser.parse_args(argv)
-    report = measure()
+    report = measure_judge() if args.judge else measure()
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if args.report:
         Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2))

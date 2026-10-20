@@ -129,6 +129,9 @@ class Settings:
     evidence_pass_coverage: float = 0.8
     sentence_support_threshold: float = 0.5
     verifier: str = "lexical"  # lexical | llm
+    # rules | llm: after the rules, a fast model judges model answers that carry a scam's cues
+    # (guardrails/judge.py); answers are then not streamed, so nothing shows before the verdict.
+    output_guard: str = "rules"
     pii_masking: bool = True
     rate_limit_per_minute: int = 30
     login_attempts_per_email: int = 10  # per minute, against password guessing on one account
@@ -209,6 +212,9 @@ class Settings:
         s.evidence_pass_coverage = _env_float("EVIDENCE_PASS_COVERAGE", s.evidence_pass_coverage)
         s.sentence_support_threshold = _env_float("SENTENCE_SUPPORT_THRESHOLD", s.sentence_support_threshold)
         s.verifier = _env("VERIFIER", s.verifier)
+        s.output_guard = _env("OUTPUT_GUARD", s.output_guard)
+        if s.output_guard not in ("rules", "llm"):
+            raise ValueError(f"LOOPDESK_OUTPUT_GUARD must be rules or llm, not {s.output_guard!r}")
         s.pii_masking = _env_bool("PII_MASKING", s.pii_masking)
         s.rate_limit_per_minute = _env_int("RATE_LIMIT_PER_MINUTE", s.rate_limit_per_minute)
         s.login_attempts_per_email = _env_int("LOGIN_ATTEMPTS_PER_EMAIL", s.login_attempts_per_email)
