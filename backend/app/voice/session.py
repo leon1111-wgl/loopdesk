@@ -56,6 +56,10 @@ logger = logging.getLogger(__name__)
 CANCELLED_TEXT = "好的，已取消，没有提交。还有什么可以帮您？"
 REPEAT_TEXT = "好的，请您再说一遍订单号和金额。"
 BUSY_TEXT = "您说得太快了，请稍后再试。"
+UNCLEAR_TEXT = "抱歉，没有听清。确认请说“确认”，不对请说“取消”。"
+READBACK_FAILED_TEXT = ("抱歉，语音播报出了问题，这笔退款没有提交。您可以在页面上发送“{order} 申请退款”，"
+                        "或者说“转人工”。")
+MAX_READBACKS = 2
 INTERRUPTED_NOTE = "……"
 NOTHING_HEARD = "（顾客在播报前打断了这条回复）"
 
@@ -173,8 +177,8 @@ class VoiceSession:
         self.readback: dict | None = None  # a low-confidence order number or amount awaiting yes / no
         self.stream = None
         self.turn: Turn | None = None
-        self.turn_thread: threading.Thread | None = None
         self.turn_seq = 0
+        self.utterances: queue.Queue = queue.Queue()
         self.closed = False
         with self.db_factory() as db:
             tenant = db.get(Tenant, tenant_id)
@@ -183,6 +187,8 @@ class VoiceSession:
         self.tts_queue: queue.Queue = queue.Queue()
         self.tts_thread = threading.Thread(target=self._tts_worker, name="loopdesk-tts", daemon=True)
         self.tts_thread.start()
+        self.turn_thread = threading.Thread(target=self._turns, name="loopdesk-voice-turns", daemon=True)
+        self.turn_thread.start()
 
     # ================================================================ input (worker thread, in order)
     def handle_audio(self, data: bytes) -> None:
@@ -232,41 +238,52 @@ class VoiceSession:
         return understand(result, self.lexicon)
 
     def _utterance(self, result: ASRResult, event: Event, ended: float) -> None:
-        self._wait_for_turn()  # the history the next run reads must hold what was heard
-        transcript = self.understand(result)
-        latency = {"endpoint_wait_ms": round(endpoint_wait_ms(event) if event.reason == "silence" else 0.0, 1),
-                   "asr_final_ms": round(result.final_ms, 1)}
-        self.emit({"type": "transcript", "text": transcript.text, "entities": [e.to_dict() for e in transcript.entities],
-                   "pii": transcript.pii, "hotword_fixes": [list(f) for f in transcript.fixes],
-                   "endpoint": event.reason, **latency})
-        if not transcript.text:
-            self.emit({"type": "no_speech"})
-            return
-        self.turn_thread = threading.Thread(target=self._turn, args=(transcript, latency, ended),
-                                            name="loopdesk-voice-turn", daemon=True)
-        self.turn_thread.start()
+        """Hand the utterance to the turn thread and return: this worker keeps reading audio (VAD,
+        barge-in, playback reports) while a slow run is still answering the previous one."""
+        self.utterances.put((result, event, ended))
 
-    # ================================================================ a turn (its own thread)
-    def _turn(self, transcript: Transcript, latency: dict, ended: float) -> None:
-        try:
-            self._decide(transcript, latency, ended)
-        except Exception as exc:  # report, keep the session alive
-            logger.exception("voice turn failed")
-            self.emit({"type": "error", "message": f"{type(exc).__name__}"})
+    # ================================================================ turns (one thread, in order)
+    def _turns(self) -> None:
+        while (item := self.utterances.get()) is not None:
+            result, event, ended = item
+            try:
+                self._settle_previous()  # the history the next run reads must hold what was heard
+                transcript = self.understand(result)
+                latency = {"endpoint_wait_ms": round(endpoint_wait_ms(event) if event.reason == "silence" else 0.0, 1),
+                           "asr_final_ms": round(result.final_ms, 1)}
+                self.emit({"type": "transcript", "text": transcript.text,
+                           "entities": [e.to_dict() for e in transcript.entities], "pii": transcript.pii,
+                           "hotword_fixes": [list(f) for f in transcript.fixes], "endpoint": event.reason, **latency})
+                if not transcript.text:
+                    self.emit({"type": "no_speech"})
+                    continue
+                self._decide(transcript, latency, ended)
+            except Exception as exc:  # report, keep the session alive
+                logger.exception("voice turn failed")
+                self.emit({"type": "error", "message": f"{type(exc).__name__}"})
 
     def _decide(self, transcript: Transcript, latency: dict, ended: float) -> None:
         reply = classify_reply(transcript.text)
         self.confirmations.new_turn()  # a confirmation the last run did not use does not carry over
         pending = self.confirmations.pending
         if pending is not None:
-            if reply == "yes":
+            unclear = reply is None and len(transcript.text) <= 8 and not any(e.kind == "order_id" for e in transcript.entities)
+            if reply == "yes" or (unclear and not self._heard(pending.readback)):
                 if not self._heard(pending.readback):
-                    # Cut off, or never played: the customer has not heard the amount they are agreeing to.
+                    # Cut off before the amount, or never played: the customer has not heard what they agree to.
+                    if pending.attempts >= MAX_READBACKS:  # TTS keeps failing: do not loop, do not move money
+                        self.confirmations.decline()
+                        return self._prompt(READBACK_FAILED_TEXT.format(order=pending.order_id), transcript,
+                                            "readback_failed", latency, ended)
+                    pending.attempts += 1
                     return self._prompt(readback_refund(pending.order_id, pending.amount), transcript, "readback_again",
                                         latency, ended, pending=pending)
                 pending = self.confirmations.accept()
                 confirmation = self._record_confirmation(pending, transcript)
                 return self.run_agent(f"确认：{pending.utterance}", latency, ended, confirmation=confirmation)
+            if unclear:
+                # "呃", "好了" after hearing the amount: not an answer, not a new request. Ask again; it stays pending.
+                return self._prompt(UNCLEAR_TEXT, transcript, "readback_unclear", latency, ended)
             self.confirmations.decline()
             if reply == "no":
                 return self._prompt(CANCELLED_TEXT, transcript, "cancelled", latency, ended)
@@ -293,10 +310,10 @@ class VoiceSession:
     @staticmethod
     def _heard(sentence: "Sentence | None") -> bool:
         """Played to the end, as the client reported (or assumed, in the evaluation)."""
-        if sentence is None:
+        if sentence is None or sentence.samples == 0:  # no audio (TTS failed): nothing was heard, whatever is reported
             return False
         duration = sentence.samples / max(1, sentence.sample_rate) * 1000
-        return sentence.played or (sentence.samples > 0 and sentence.played_ms >= 0.95 * duration)
+        return sentence.played or sentence.played_ms >= 0.95 * duration
 
     def _record_confirmation(self, pending, transcript: Transcript) -> dict:
         """Consent to move money, kept like a reviewer's decision: who, what was read back, whether it
@@ -331,11 +348,11 @@ class VoiceSession:
             turn.message_id = message.id
         turn.generated = text
         self.emit({"type": "prompt", "kind": kind, "text": text, "message_id": turn.message_id})
-        sentence = self._say(turn, text)
-        if pending is not None:
-            pending.readback = sentence  # the yes is checked against this playback
-        if entity is not None:
-            entity["sentence"] = sentence
+        sentences = self._say_all(turn, text)
+        if pending is not None and sentences:
+            pending.readback = sentences[0]  # the sentence with the amount: the yes is checked against it
+        if entity is not None and sentences:
+            entity["sentence"] = sentences[-1]
         turn.run_done = True
         self._turn_sent(turn)
 
@@ -379,7 +396,7 @@ class VoiceSession:
             self._mark_confirmed(turn.message_id, confirmation)
         pending = self.confirmations.pending
         if blocked and pending is not None and pending is not pending_before:
-            pending.readback = self._say(turn, readback_refund(pending.order_id, pending.amount))
+            pending.readback = self._say_all(turn, readback_refund(pending.order_id, pending.amount))[0]
         elif replaced is not None:  # what was spoken before the gate stopped stands; then the replacement
             self._say_all(turn, replaced)
         elif not streamed and final:
@@ -390,19 +407,19 @@ class VoiceSession:
 
     def _mark_confirmed(self, answer_id: int | None, confirmation: dict) -> None:
         """The user message this run stored says "确认：<request>"; what the customer actually said is kept with it."""
+        if answer_id is None:  # the run ended before saving its answer: which user message is ours is unknown
+            return
         with self.db_factory() as db:
-            query = select(Message).where(Message.conversation_id == self.conversation_id, Message.role == "user")
-            if answer_id is not None:
-                query = query.where(Message.id < answer_id)
+            query = select(Message).where(Message.conversation_id == self.conversation_id, Message.role == "user",
+                                          Message.id < answer_id)
             message = db.execute(query.order_by(Message.id.desc()).limit(1)).scalar_one_or_none()
             if message is not None:
                 message.meta = {**(message.meta or {}), "voice": {"reply": confirmation["reply"],
                                                                   "confirmed": confirmation}}
                 db.commit()
 
-    def _say_all(self, turn: Turn, text: str) -> None:
-        for sentence in split_sentences(text):
-            self._say(turn, sentence)
+    def _say_all(self, turn: Turn, text: str) -> list[Sentence]:
+        return [s for s in (self._say(turn, sentence) for sentence in split_sentences(text)) if s is not None]
 
     def _say(self, turn: Turn, written: str) -> "Sentence | None":
         if not written.strip():
@@ -485,10 +502,8 @@ class VoiceSession:
         if turn.all_played() and not turn.cancelled:
             self._finalize(turn)
 
-    def _wait_for_turn(self) -> None:
-        thread = self.turn_thread
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=self.settings.run_deadline_seconds + 30)
+    def _settle_previous(self) -> None:
+        """Before the next utterance is answered: the last turn's message keeps what was heard."""
         turn = self.turn
         if turn is not None and self.assume_played:
             turn.sent.wait(timeout=120)
@@ -529,6 +544,8 @@ class VoiceSession:
         if self.closed:
             return
         self.closed = True
-        self._wait_for_turn()
+        self.utterances.put(None)  # turns already queued are answered first; the run always completes
+        self.turn_thread.join(timeout=self.settings.run_deadline_seconds + 30)
+        self._settle_previous()
         self.tts_queue.put(None)
         self.tts_thread.join(timeout=10)

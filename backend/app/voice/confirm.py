@@ -10,23 +10,31 @@ from dataclasses import dataclass, replace
 from ..agent.tools import ToolContext, ToolDef, ToolError, ToolRegistry
 
 _PUNCT = re.compile(r"[\s，,。.！!？?~～、…]+")
-_NO = re.compile(r"不对|不是|错了|取消|不要|算了|不用|别退|搞错|不确认|不行|no\b")
+_NO = re.compile(r"不对|不是|错了|取消|不要|算了|不用|别退|搞错|不确认|不确定|不行|不退|^不$|^别$|^错$|^no$")
 # A confirmation is a closed set of whole answers, clause by clause ("对的，退吧"). Anything else that
-# merely starts like one ("好的帮我查下物流", "可以退另一个订单吗") is a new request, not a yes: a false
-# yes moves money, a false "not an answer" only costs a repeated question (review, P0).
-_YES = {"确认", "确定", "对", "对的", "是", "是的", "没错", "好", "好的", "可以", "行", "嗯", "没问题", "ok", "okay",
-        "yes", "确认退款", "确定退款", "退吧", "就退吧", "可以退", "确认无误", "没错就是这个", "是这个", "就这个"}
-_NOT_AN_ANSWER = re.compile(r"[吗呢]|另|换|查|问|其他|还|再|想|一下|多少|什么|怎么|哪")
-_PARTICLES = re.compile(r"[吧啊呀了哦嘛]+$")
+# merely starts like one ("好的帮我查下物流", "可以退另一个订单吗") is not a yes: a false yes moves money,
+# an unclear answer only costs asking again (review). Backchannels ("嗯", "好了") are not consent.
+_YES = {"确认", "确定", "对", "对的", "是", "是的", "没错", "好", "好的", "可以", "行", "没问题", "ok", "okay", "yes",
+        "确认退款", "确定退款", "退", "退吧", "就退吧", "可以退", "确认无误", "没错就是这个", "是这个", "就这个", "对没错"}
+_NOT_AN_ANSWER = re.compile(r"[吗呢]|另|换|查|其他|还|再|想|一下|多少|什么|怎么|哪|(?<!没)问")
+_LEAD = re.compile(r"^[那哦噢啊哎呃嗯]+")  # 那确认 / 哦对 / 啊，是的
+_PARTICLES = re.compile(r"[吧啊呀哦嘛]+$")  # not 了: "好了" is "enough", not "yes"
 
 
-def _clause_is_yes(clause: str) -> bool:
-    clause = re.sub(r"(.)\1+$", r"\1", clause)  # 嗯嗯 / 对对对
-    return clause in _YES or _PARTICLES.sub("", clause) in _YES
+def _clause_is_yes(clause: str) -> bool | None:
+    """True / False, or None for a clause that is only a discourse marker ("啊")."""
+    clause = _LEAD.sub("", clause)
+    if not clause:
+        return None
+    for candidate in (clause, _PARTICLES.sub("", clause)):
+        for word in _YES:  # whole words, also repeated: 好的好的 / 确认确认 / 对对对
+            if candidate and len(candidate) % len(word) == 0 and candidate == word * (len(candidate) // len(word)):
+                return True
+    return False
 
 
 def classify_reply(text: str) -> str | None:
-    """"yes", "no", or None when the reply is not an answer to the read-back."""
+    """"yes", "no", or None when the reply is not (clearly) an answer to the read-back."""
     raw = (text or "").strip().lower()
     t = _PUNCT.sub("", raw)
     if not t or len(t) > 12:
@@ -35,8 +43,8 @@ def classify_reply(text: str) -> str | None:
         return "no"
     if _NOT_AN_ANSWER.search(t):
         return None
-    clauses = [c for c in _PUNCT.split(raw) if c]
-    return "yes" if clauses and all(_clause_is_yes(c) for c in clauses) else None
+    verdicts = [v for v in (_clause_is_yes(c) for c in _PUNCT.split(raw) if c) if v is not None]
+    return "yes" if verdicts and all(verdicts) else None
 
 
 def readback_refund(order_id: str, amount: float) -> str:
@@ -61,7 +69,8 @@ class Pending:
     order_id: str
     amount: float
     utterance: str  # what the customer asked, re-submitted once they confirm
-    readback: object = None  # the spoken read-back (session.Sentence): a yes counts only once it was heard
+    readback: object = None  # the sentence that says the amount (session.Sentence): a yes counts once it was heard
+    attempts: int = 0  # read-backs said again because the customer had not heard this one
 
 
 def _key(tool: str, order_id: object, amount: object) -> tuple[str, str, float]:

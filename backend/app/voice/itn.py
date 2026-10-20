@@ -115,19 +115,23 @@ def itn(raw: str) -> ITNResult:
     text = _DIGIT_RUN.sub(lambda m: "".join(_DIGIT.get(c, c) for c in m.group(0) if c in _DIGIT or c.isdigit()), text)
     inferred: set[str] = set()
 
-    def order(m: re.Match[str]) -> str:
+    def order(m: re.Match[str], before: str) -> str:
         prefix, digits = (m.group("prefix") or ""), m.group("digits")
         letters = prefix.replace(" ", "").lower()
         if letters == "so":
             return f"SO{digits}"
-        before = text[: m.start()]
         plausible = len(digits) == 11 and digits.startswith("20")
         if plausible and (letters or _ORDER_CONTEXT.search(before)):
             inferred.add(f"SO{digits}")  # "s wall 2026…" or "订单号 2026…": the format says it is an order
             return f"SO{digits}"
         return m.group(0)
 
-    text = _ORDER.sub(order, text)
+    pieces, last = [], 0
+    for m in _ORDER.finditer(text):  # in order, so "订单号 A 和 B" sees A already as SO…
+        pieces.append(text[last:m.start()])
+        pieces.append(order(m, "".join(pieces)))
+        last = m.end()
+    text = "".join(pieces) + text[last:]
 
     def money(m: re.Match[str]) -> str:
         num = m.group("num")
@@ -184,8 +188,15 @@ def assess(entities: list[Entity], *, inferred_prefix: set[str] = frozenset(),
     cheap: the order number's format (SO + date + 3 digits), a prefix that was inferred rather than
     heard, a second decoding pass that disagrees (the streaming pass versus the final pass), and the
     engine's own token probabilities when it reports them (Whisper does, Paraformer does not)."""
-    # Compared entity by entity: "198" is a substring of "1980块", and that pass disagrees.
-    others = [{(o.kind, o.value.upper()) for o in extract_entities(itn(p).text)} for p in other_passes if p]
+    # Compared entity by entity ("198" is a substring of "1980块", and that pass disagrees). A pass that
+    # has no entity of the kind is no evidence either way: streaming often drops the unit ("一百九十八").
+    others = []
+    for p in other_passes:
+        if p:
+            kinds: dict[str, set[str]] = {}
+            for o in extract_entities(itn(p).text):
+                kinds.setdefault(o.kind, set()).add(o.value.upper())
+            others.append(kinds)
     for e in entities:
         if e.kind == "term":
             continue
@@ -197,7 +208,7 @@ def assess(entities: list[Entity], *, inferred_prefix: set[str] = frozenset(),
             if e.value in inferred_prefix:
                 score = min(score, 0.5)
                 e.notes.append("prefix_inferred")
-        if others and any((e.kind, e.value.upper()) not in o for o in others):
+        if any(e.kind in o and e.value.upper() not in o[e.kind] for o in others):
             score = min(score, 0.4)
             e.notes.append("passes_disagree")
         if char_probs:

@@ -112,8 +112,12 @@ async def voice_ws(ws: WebSocket) -> None:
             except Exception:
                 logger.exception("voice input failed")
                 emit({"type": "error", "message": "语音处理失败"})
-        session.close()
-        emit(None)
+        try:
+            session.close()
+        except Exception:  # still end the sender, or the handler never returns
+            logger.exception("closing the voice session failed")
+        finally:
+            emit(None)
 
     def stop() -> None:
         while True:  # make room for the end marker even when the backlog is full

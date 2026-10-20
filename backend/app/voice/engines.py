@@ -368,31 +368,30 @@ class VoiceEngines:
         return {"asr": self.asr.name, "tts": self.tts.name, "tts_sample_rate": self.tts.sample_rate}
 
 
-_engines: VoiceEngines | None = None
-_problem: str | None = None
-_failed_at = 0.0
-_lock = threading.Lock()
-_clock = time.monotonic
-RETRY_SECONDS = 60.0  # a sidecar that was down at the first connection is tried again after this
-
-
-def build_engines(settings: Settings) -> tuple[VoiceEngines | None, str | None]:
+def build_engines(settings: Settings, asr: ASREngine | None = None
+                  ) -> tuple[VoiceEngines | None, str | None, ASREngine | None]:
+    """The configured engines, or None and why. Also returns the ASR when it loaded, so a retry after
+    a TTS failure (a sidecar that was down) does not load the ASR models again."""
     if settings.voice_asr == "off" or settings.voice_tts == "off":
-        return None, "语音通道未启用（LOOPDESK_VOICE_ASR / LOOPDESK_VOICE_TTS）"
+        return None, "语音通道未启用（LOOPDESK_VOICE_ASR / LOOPDESK_VOICE_TTS）", None
     if (settings.voice_asr == "scripted" or settings.voice_tts == "tone") and not settings.seed_demo:
-        return None, "测试用语音引擎只能在演示模式下使用"
+        return None, "测试用语音引擎只能在演示模式下使用", None
     try:
-        asr: ASREngine
-        if settings.voice_asr == "scripted":
-            asr = ScriptedASR([t for t in settings.voice_scripted_text.split("|") if t], cycle=True)
-        elif settings.voice_asr == "paraformer":
-            asr = ParaformerASR(settings.voice_device)
-        elif settings.voice_asr == "sensevoice":
-            asr = SenseVoiceASR(settings.voice_device)
-        elif settings.voice_asr == "whisper":
-            asr = WhisperASR(device=settings.voice_device)
-        else:
-            raise ValueError(f"unknown LOOPDESK_VOICE_ASR {settings.voice_asr!r}")
+        if asr is None:
+            if settings.voice_asr == "scripted":
+                asr = ScriptedASR([t for t in settings.voice_scripted_text.split("|") if t], cycle=True)
+            elif settings.voice_asr == "paraformer":
+                asr = ParaformerASR(settings.voice_device)
+            elif settings.voice_asr == "sensevoice":
+                asr = SenseVoiceASR(settings.voice_device)
+            elif settings.voice_asr == "whisper":
+                asr = WhisperASR(device=settings.voice_device)
+            else:
+                raise ValueError(f"unknown LOOPDESK_VOICE_ASR {settings.voice_asr!r}")
+    except Exception as exc:  # missing packages or weights
+        logger.warning("voice channel unavailable: %s: %s", type(exc).__name__, exc)
+        return None, f"语音识别引擎加载失败：{type(exc).__name__}", None
+    try:
         tts: TTSEngine
         if settings.voice_tts == "tone":
             tts = ToneTTS()
@@ -407,28 +406,37 @@ def build_engines(settings: Settings) -> tuple[VoiceEngines | None, str | None]:
         vad: Callable[[], VAD] = SileroVAD if settings.voice_vad == "silero" else EnergyVAD
         if settings.voice_vad == "silero":
             SileroVAD()  # fail now, not in the first session
-        return VoiceEngines(asr, tts, vad), None
-    except Exception as exc:  # missing packages or weights, a sidecar that is down
+        return VoiceEngines(asr, tts, vad), None, asr
+    except Exception as exc:  # a sidecar that is down, missing packages
         logger.warning("voice channel unavailable: %s: %s", type(exc).__name__, exc)
-        return None, f"语音引擎加载失败：{type(exc).__name__}"
+        return None, f"语音合成引擎加载失败：{type(exc).__name__}", asr
+
+
+_engines: VoiceEngines | None = None
+_problem: str | None = None
+_loaded_asr: ASREngine | None = None
+_failed_at = 0.0
+_lock = threading.Lock()
+_clock = time.monotonic
+RETRY_SECONDS = 60.0  # a sidecar that was down at the first connection is tried again after this
 
 
 def get_engines(settings: Settings) -> tuple[VoiceEngines | None, str | None]:
     """Built once per process, on first use (loading models takes seconds); after a failure, again at
     most once a minute, so a sidecar that comes up later is picked up without a restart."""
-    global _engines, _problem, _failed_at
+    global _engines, _problem, _failed_at, _loaded_asr
     with _lock:
         if _engines is None and (_problem is None or _clock() - _failed_at >= RETRY_SECONDS):
-            _engines, _problem = build_engines(settings)
+            _engines, _problem, _loaded_asr = build_engines(settings, _loaded_asr)
             _failed_at = _clock()
         return _engines, _problem
 
 
 def set_engines(engines: VoiceEngines | None, problem: str | None = None) -> None:
     """Tests install fake engines here."""
-    global _engines, _problem
+    global _engines, _problem, _loaded_asr
     with _lock:
-        _engines, _problem = engines, problem
+        _engines, _problem, _loaded_asr = engines, problem, None
 
 
 def describe(engines: VoiceEngines | None) -> str:

@@ -397,7 +397,7 @@ def test_engines_are_retried_after_a_failure(monkeypatch):
     from app.voice import engines
 
     calls = []
-    monkeypatch.setattr(engines, "build_engines", lambda s: (calls.append(1), (None, "sidecar down"))[1])
+    monkeypatch.setattr(engines, "build_engines", lambda s, asr=None: (calls.append(1), (None, "sidecar down", None))[1])
     clock = [1000.0]
     monkeypatch.setattr(engines, "_clock", lambda: clock[0])
     engines.set_engines(None, None)
@@ -433,3 +433,137 @@ def test_a_confirmation_left_over_from_an_earlier_turn_does_not_authorise_a_refu
     session.close()
     assert refunds() == []
     assert any(e.get("type") == "say" and "资金安全" in e.get("text", "") for e in events if isinstance(e, dict))
+
+
+# ---------------------------------------------------------------- review round 2
+def until_open(ws, kind):
+    """Like until(), but a closed socket fails the test instead of hanging it."""
+    events = []
+    while True:
+        message = ws.receive()
+        assert message["type"] != "websocket.close", f"closed {message.get('code')}"
+        if message.get("bytes") is not None:
+            continue
+        event = json.loads(message["text"])
+        events.append(event)
+        if event["type"] == "say_end":
+            ws.send_json({"type": "played", "turn": event["turn"], "id": event["id"], "done": True,
+                          "ms": event["samples"] / 16})
+        if event["type"] == kind:
+            return events
+
+
+def test_a_slow_answer_does_not_cut_the_customer_off(voice, monkeypatch):
+    # P1: the worker waited for the previous run while the browser kept streaming: the backlog filled
+    # and the session was closed (1013) on a run that was merely slow.
+    from app.api import voice as voice_api
+    from app.services import get_services
+
+    monkeypatch.setattr(voice_api, "MAX_BACKLOG", 12)
+    monkeypatch.setattr(get_services().provider, "stream_delay", 0.15)
+    voice.asr.transcripts += ["怎么取消自动续费", "会员退款多久能到账"]
+    with voice.connect() as ws:
+        say(ws)
+        say(ws, speech=0.8, pause=0.9)  # a second sentence while the first answer is still being written
+        for _ in range(40):
+            ws.send_bytes(silence(0.1).tobytes())
+        until_open(ws, "turn_saved")
+        until_open(ws, "turn_saved")
+
+
+def test_saying_yes_right_after_the_amount_confirms(voice):
+    # P1: the amount is its own sentence; talking over "确认请说确认……" after hearing it is a yes.
+    voice.asr.transcripts += ["SO二零二六一零一九一零一 帮我退款", "确认"]
+    with voice.connect() as ws:
+        say(ws)
+        events = until(ws, "turn_end", play=False)
+        says = [e for e in events if e["type"] == "say"]
+        ends = {e["id"]: e["samples"] for e in events if e["type"] == "say_end"}
+        amount, tail = says[-2], says[-1]
+        assert "18元" in amount["text"] and "确认" in tail["text"]
+        ws.send_json({"type": "played", "turn": amount["turn"], "id": amount["id"], "done": True,
+                      "ms": ends[amount["id"]] / 16})
+        ws.send_json({"type": "played", "turn": tail["turn"], "id": tail["id"], "ms": 300})
+        say(ws)  # "确认", over the instruction
+        until(ws, "turn_saved")  # the read-back turn, cut short
+        until(ws, "turn_saved")  # the confirmed refund
+    assert len(refunds()) == 1
+
+
+def test_an_unclear_reply_asks_again_and_keeps_the_refund_pending(voice):
+    voice.asr.transcripts += ["SO二零二六一零一九一零一 帮我退款", "呃", "确认"]
+    with voice.connect() as ws:
+        say(ws)
+        until(ws, "turn_saved")
+        say(ws)
+        events = until(ws, "turn_saved")
+        assert any(e["type"] == "prompt" and e["kind"] == "readback_unclear" for e in events)
+        say(ws)
+        until(ws, "turn_saved")
+    assert len(refunds()) == 1
+
+
+def test_read_backs_that_cannot_be_played_give_up(voice):
+    class MuteTTS(ToneTTS):
+        def synthesize(self, text):
+            return iter(())
+
+    set_engines(VoiceEngines(voice.asr, MuteTTS()))
+    voice.asr.transcripts += ["SO二零二六一零一九一零一 帮我退款", "确认", "确认", "确认"]
+    with voice.connect() as ws:
+        for _ in range(4):
+            say(ws)
+            events = until(ws, "turn_saved")
+    assert any(e["type"] == "prompt" and e["kind"] == "readback_failed" for e in events)
+    assert refunds() == []
+
+
+def test_a_failing_session_close_does_not_hang_the_socket(voice, monkeypatch):
+    import threading as _threading
+
+    from app.voice.session import VoiceSession
+
+    def broken(self):
+        raise RuntimeError("database gone")
+
+    monkeypatch.setattr(VoiceSession, "close", broken)
+    finished = _threading.Event()
+
+    def run():
+        with voice.connect():
+            pass
+        finished.set()
+
+    worker = _threading.Thread(target=run, daemon=True)
+    worker.start()
+    assert finished.wait(10), "the handler never returned"
+
+
+def test_retrying_engines_keeps_the_loaded_asr(monkeypatch):
+    from app.config import Settings
+    from app.voice import engines
+
+    built = []
+
+    class FakeParaformer(ScriptedASR):
+        name = "paraformer"
+
+        def __init__(self, device="cpu"):
+            super().__init__()
+            built.append(1)
+
+    def down(url, speaker=None):
+        raise ConnectionError("sidecar down")
+
+    monkeypatch.setattr(engines, "ParaformerASR", FakeParaformer)
+    monkeypatch.setattr(engines, "CosyVoiceTTS", down)
+    clock = [1000.0]
+    monkeypatch.setattr(engines, "_clock", lambda: clock[0])
+    engines.set_engines(None, None)
+    s = Settings()
+    s.voice_asr, s.voice_tts = "paraformer", "cosyvoice"
+    assert engines.get_engines(s)[0] is None
+    clock[0] += engines.RETRY_SECONDS + 1
+    assert engines.get_engines(s)[0] is None
+    assert len(built) == 1  # the ASR models were loaded once, only the sidecar is tried again
+    engines.set_engines(None, None)

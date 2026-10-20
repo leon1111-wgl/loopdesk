@@ -121,7 +121,7 @@ def test_split_sentences():
 
 # ---------------------------------------------------------------- spoken confirmation
 @pytest.mark.parametrize("reply,kind", [
-    ("确认", "yes"), ("对", "yes"), ("对的，退吧", "yes"), ("是的。", "yes"), ("嗯嗯", "yes"), ("没错", "yes"),
+    ("确认", "yes"), ("对", "yes"), ("对的，退吧", "yes"), ("是的。", "yes"), ("嗯嗯", None), ("没错", "yes"),
     ("好的", "yes"), ("确定", "yes"),
     ("不对", "no"), ("不是", "no"), ("取消", "no"), ("算了不退了", "no"), ("错了", "no"), ("对不对啊", "no"),
     ("SO20261015102 物流到哪了", None), ("我想问一下会员能不能退款", None), ("", None),
@@ -191,3 +191,66 @@ def test_partial_transcripts_hide_long_digit_runs():
 def test_the_second_of_two_order_numbers_keeps_its_prefix():
     assert itn("查一下 S O 二零二六一零零八零零二 和 二零二六一零一二零零三 两个单子").text == \
         "查一下SO20261008002和SO20261012003两个单子"
+
+
+# ---------------------------------------------------------------- review round 2
+@pytest.mark.parametrize("reply", ["好的好的", "是的是的", "确认确认", "没问题", "好的，没问题", "那确认", "那就退吧", "哦对",
+                                   "啊，是的", "对，退"])
+def test_common_ways_of_saying_yes(reply):
+    assert classify_reply(reply) == "yes"
+
+
+@pytest.mark.parametrize("reply", ["嗯", "嗯……", "好了", "行了", "OK了"])
+def test_backchannels_are_not_consent(reply):
+    assert classify_reply(reply) != "yes"
+
+
+@pytest.mark.parametrize("reply", ["不退", "不确定", "不", "别"])
+def test_more_declines(reply):
+    assert classify_reply(reply) == "no"
+
+
+@pytest.mark.parametrize("sentence,leak", [
+    ("您的手机号是１３８１２３４５６７８。", "１３８"),
+    ("门店电话 010-12345678。", "12345678"),
+    ("门店电话 02112345678。", "12345678"),
+    ("验证码（六位）：482913。", "482913"),
+    ("短信码 482913。", "482913"),
+    ("激活码 ABCD-EFGH-1234。", "ABCD"),
+    ("兑换码 7788990011。", "7788990011"),
+    ("护照 E12345678 已登记。", "12345678"),
+    ("您的手机号是一三八一二三四五六七八。", "一三八一二三四五六七八"),
+])
+def test_speakable_more_formats(sentence, leak):
+    speech = speakable(sentence)
+    assert speech.redacted and leak not in speech.text
+
+
+@pytest.mark.parametrize("sentence,kept", [
+    ("快递单号 73120123456789，可以在快递官网查询。", "七三一二"),
+    ("运单号 SF 1402 9384 7512。", "1402"),
+    ("工单号 2026101812345 已创建。", "2026101812345"),
+    ("退款流水号 2026101812345678。", "2026101812345678"),
+])
+def test_speakable_keeps_reference_numbers_the_customer_asked_for(sentence, kept):
+    speech = speakable(sentence)
+    assert speech.redacted == []
+
+
+def test_speakable_reads_thousands_as_one_amount():
+    assert "1234.56元" in speakable("退款 ¥1,234.56 已提交。").text
+
+
+def test_a_missing_amount_in_the_other_pass_is_not_a_disagreement():
+    final = itn("SO二零二六一零一九一零一 退款一百九十八块").text
+    entities = assess(extract_entities(final), other_passes=["SO二零二六一零一九一零一 退款一百九十八"])
+    assert all(e.confidence > 0.9 for e in entities)
+
+
+def test_two_order_numbers_after_dingdanhao():
+    assert itn("订单号二零二六一零零八零零二和二零二六一零一二零零三").text == "订单号SO20261008002和SO20261012003"
+
+
+def test_refund_read_back_puts_the_amount_in_its_own_sentence():
+    assert split_sentences(readback_refund("SO20261019101", 18.0)) == [
+        "为了您的资金安全，跟您确认一下：订单号SO20261019101，退款金额18元。", "确认请说“确认”，不对请说“取消”。"]
