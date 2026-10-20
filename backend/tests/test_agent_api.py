@@ -400,3 +400,35 @@ def test_resolution_rate_is_per_conversation_and_excludes_refusals(client, ask, 
     overview = client.get("/api/metrics/overview", headers=admin).json()
     assert overview["conversations"] == 4
     assert (overview["resolution_rate"], overview["refusal_rate"], overview["handoff_rate"]) == (0.25, 0.25, 0.25)
+
+
+def test_approvals_above_the_tenant_threshold_need_an_administrator(client, ask, login):
+    # Review round 3, N-021: any agent could approve any amount (¥1299 without a word); the
+    # four-eyes rule only stopped self-approval, and the requester is usually the customer.
+    customer, agent, admin = login("customer@leon.demo"), login("agent@leon.demo"), login("admin@leon.demo")
+    _, events = ask(customer, "SO20261008002 我要退款")
+    big = by_type(events, "approval_required")[0]["approval_id"]
+    pending = {a["id"]: a for a in client.get("/api/approvals", headers=agent).json()}
+    assert pending[big]["required_role"] == "admin"
+    r = client.post(f"/api/approvals/{big}/decide", json={"decision": "approve"}, headers=agent)
+    assert r.status_code == 403 and "管理员" in r.json()["detail"]
+    assert client.post(f"/api/approvals/{big}/decide", json={"decision": "approve"}, headers=admin).status_code == 200
+
+    _, events = ask(customer, "SO20261012003 我要退款")
+    small = by_type(events, "approval_required")[0]["approval_id"]  # ¥268: over the automatic limit, under ¥500
+    assert client.post(f"/api/approvals/{small}/decide", json={"decision": "approve"}, headers=agent).status_code == 200
+
+    client.patch("/api/tenant", json={"approval_admin_threshold": 100}, headers=admin)
+    assert client.get("/api/tenant", headers=admin).json()["approval_admin_threshold"] == 100
+
+
+def test_a_rejection_must_say_why(client, ask, login):
+    # N-021: rejecting needed no reason, and the customer read "审核意见：无".
+    _, events = ask(login("customer@leon.demo"), "SO20261008002 我要退款")
+    approval_id = by_type(events, "approval_required")[0]["approval_id"]
+    agent = login("agent@leon.demo")
+    r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "reject", "comment": "  "}, headers=agent)
+    assert r.status_code == 400 and "原因" in r.json()["detail"]
+    r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "reject", "comment": "已超过售后期"},
+                    headers=agent)
+    assert r.status_code == 200 and "已超过售后期" in r.json()["final"]["text"]

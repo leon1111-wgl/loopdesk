@@ -13,6 +13,7 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const own = approval.requested_by?.id === user?.id;
+  const needsAdmin = approval.required_role === "admin" && user?.role !== "admin";
 
   async function decide(decision: "approve" | "reject") {
     setBusy(true);
@@ -54,6 +55,9 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
             <b style={{ fontSize: 20 }}>{yuan(approval.arguments.amount)}</b>
           </div>
           <div className="badge badge-warning" style={{ width: "fit-content" }}>{approval.reason}</div>
+          {approval.required_role === "admin" && (
+            <div className="badge badge-info" style={{ width: "fit-content" }}>金额超过租户的审批分级线，需要管理员通过</div>
+          )}
         </div>
         <div className="stack">
           <div className="faint">Agent 提交的证据包（{approval.evidence.length} 条）</div>
@@ -75,10 +79,12 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
         <div className="card-pad stack" style={{ borderTop: "1px solid var(--border)" }}>
           <ErrorBanner error={error} />
           {own && <div className="notice">这是你自己发起的申请，按四眼原则需要其他同事审批。</div>}
+          {needsAdmin && !own && <div className="notice">这笔金额需要管理员通过；你可以驳回（需写明原因），或留给管理员处理。</div>}
           <div className="row decision-row">
-            <input className="input" placeholder="审批意见（会告知顾客）" value={comment} onChange={(e) => setComment(e.target.value)} />
-            <button className="btn btn-danger" disabled={busy || own} onClick={() => decide("reject")}><X size={15} /> 驳回</button>
-            <button className="btn btn-success" disabled={busy || own} onClick={() => decide("approve")}><Check size={15} /> 通过并执行</button>
+            <input className="input" placeholder="审批意见（会告知顾客），驳回时必填" value={comment} onChange={(e) => setComment(e.target.value)} />
+            <button className="btn btn-danger" disabled={busy || own || !comment.trim()} title={comment.trim() ? undefined : "驳回需要写明原因"}
+              onClick={() => decide("reject")}><X size={15} /> 驳回</button>
+            <button className="btn btn-success" disabled={busy || own || needsAdmin} onClick={() => decide("approve")}><Check size={15} /> 通过并执行</button>
           </div>
           {result && <div className="notice">已通知顾客：{result}</div>}
         </div>

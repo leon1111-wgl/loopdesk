@@ -121,6 +121,7 @@ export interface Approval {
   reviewer: { id: number; name: string } | null;
   question: string;
   comment: string;
+  required_role: "admin" | "agent";
   created_at: string;
   decided_at: string | null;
 }

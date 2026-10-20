@@ -26,6 +26,7 @@ class TenantPatch(BaseModel):
     ticket_sla_hours: int | None = Field(default=None, ge=1, le=168)
     return_window_days: int | None = Field(default=None, ge=0, le=365)
     quality_window_days: int | None = Field(default=None, ge=0, le=365)
+    approval_admin_threshold: float | None = Field(default=None, ge=0, le=1000000)
 
 
 def user_out(user: User, tenant: Tenant) -> dict:
@@ -38,7 +39,8 @@ def user_out(user: User, tenant: Tenant) -> dict:
 def tenant_out(tenant: Tenant) -> dict:
     return {"id": tenant.id, "slug": tenant.slug, "name": tenant.name, "industry": tenant.industry,
             "auto_refund_limit": tenant.auto_refund_limit, "ticket_sla_hours": tenant.ticket_sla_hours,
-            "return_window_days": tenant.return_window_days, "quality_window_days": tenant.quality_window_days}
+            "return_window_days": tenant.return_window_days, "quality_window_days": tenant.quality_window_days,
+            "approval_admin_threshold": tenant.approval_admin_threshold}
 
 
 def _login_limiter(backend: str, db: Session):
@@ -111,6 +113,8 @@ def patch_tenant(body: TenantPatch, principal: Principal = Depends(require_admin
         tenant.return_window_days = body.return_window_days
     if body.quality_window_days is not None:
         tenant.quality_window_days = body.quality_window_days
+    if body.approval_admin_threshold is not None:
+        tenant.approval_admin_threshold = body.approval_admin_threshold
     diff = changes(before, tenant_out(tenant))
     if diff:  # risk limits and after-sales windows decide whether money moves without a person
         record(db, principal, "tenant.update", f"tenant:{tenant.id}", changes=diff)

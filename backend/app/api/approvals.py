@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from ..agent.runtime import ResumeError
 from ..channels.feishu import FeishuClient
 from ..db import get_db
-from ..models import Approval, Conversation, Run, User
+from ..models import Approval, Conversation, Run, Tenant, User
 from ..security import Principal, require_staff
 from ..services import get_services
 from .common import get_owned, iso
@@ -24,6 +24,14 @@ class DecisionIn(BaseModel):
     comment: str = Field(default="", max_length=500)
 
 
+def required_role(a: Approval, tenant: Tenant) -> str:
+    """Who may approve: above the tenant's threshold, an administrator only. The four-eyes rule
+    alone (no self-approval) left any single agent able to release any amount, because the
+    requester is usually the customer."""
+    amount = float((a.arguments or {}).get("amount") or 0)
+    return "admin" if amount > tenant.approval_admin_threshold else "agent"
+
+
 def approval_out(db: Session, a: Approval) -> dict:
     requester = db.get(User, a.requested_by)
     reviewer = db.get(User, a.reviewer_id) if a.reviewer_id else None
@@ -34,6 +42,7 @@ def approval_out(db: Session, a: Approval) -> dict:
         "requested_by": {"id": requester.id, "name": requester.name, "role": requester.role} if requester else None,
         "reviewer": {"id": reviewer.id, "name": reviewer.name} if reviewer else None,
         "question": run.input_text if run else "", "comment": a.comment,
+        "required_role": required_role(a, db.get(Tenant, a.tenant_id)),
         "created_at": iso(a.created_at), "decided_at": iso(a.decided_at),
     }
 
@@ -56,6 +65,12 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
         raise HTTPException(status.HTTP_409_CONFLICT, "该审批单已处理")
     if approval.requested_by == principal.user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "不能审批自己发起的申请（四眼原则）")
+    if body.decision == "reject" and not body.comment.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "驳回必须填写原因：顾客会看到这条意见")
+    if (body.decision == "approve" and required_role(approval, principal.tenant) == "admin"
+            and principal.user.role != "admin"):
+        threshold = principal.tenant.approval_admin_threshold
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"金额超过 ¥{threshold:.0f}，需要管理员审批（坐席可以驳回）")
     services = get_services()
     try:
         events = services.runtime(db).resume(approval, body.decision, principal.user, body.comment)
