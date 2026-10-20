@@ -8,12 +8,18 @@ engine decodes with and without the tenant's hotwords (Paraformer: SeACo's list 
 pass; Whisper: the prompt; SenseVoice has no biasing), so the hotword gain is a paired
 comparison on the same audio. The streaming pass is fed in 100 ms frames as the live channel
 feeds it, and its per-chunk compute time is recorded: below 600 ms per 600 ms chunk is what
-"keeps up in real time" means.
+"keeps up in real time" means. Paraformer writes no punctuation: its final pass with hotwords is
+also recorded punctuated (LOOPDESK_VOICE_PUNC, FunASR ct-punc), with the time that step takes.
+
+Punctuation is text only, so earlier Paraformer transcripts can be punctuated without the audio:
+
+    python -m app.evals.voice.asr_run --repunctuate 'prev/*/asr-paraformer-*.jsonl' --out out/asr-paraformer-punc.jsonl
 """
 
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import time
 from pathlib import Path
@@ -39,22 +45,50 @@ def _items(synth_dirs: list[str], noisy: set[str]) -> list[tuple[dict, Path, str
     return items
 
 
+def repunctuate(patterns: list[str], out: Path, punc) -> int:
+    """Earlier Paraformer records with their final pass punctuated (``final_hw_punc``, ``punc_ms``), by
+    the same code the live channel runs after the final pass."""
+    from ...voice.engines import ASRResult, punctuate
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    n = 0
+    with out.open("w", encoding="utf-8") as fh:
+        for path in sorted({f for p in patterns for f in glob.glob(p)}):
+            for row in read_jsonl(Path(path)):
+                if row.get("engine") != "paraformer" or row.get("final_hw") is None:
+                    continue
+                result = punctuate(ASRResult(row["final_hw"], {"final": row["final_hw"]}), punc)
+                row.update(final_hw_punc=result.text, punc_ms=None if result.punc_ms is None else round(result.punc_ms, 2),
+                           repunctuated=True)
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+                n += 1
+    print(f"{n} transcripts punctuated -> {out}")
+    return 0 if n else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--engine", required=True, choices=["paraformer", "sensevoice", "whisper"])
-    parser.add_argument("--synth", nargs="+", required=True)
+    parser.add_argument("--engine", choices=["paraformer", "sensevoice", "whisper"])
+    parser.add_argument("--synth", nargs="+", default=[])
+    parser.add_argument("--repunctuate", nargs="+", default=[],
+                        help="earlier Paraformer transcripts (jsonl globs): punctuate their final pass, decode nothing")
     parser.add_argument("--noisy", default="")
     parser.add_argument("--shard", default="0/1")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
+    from ...voice import engines
+
+    if args.repunctuate:
+        return repunctuate(args.repunctuate, Path(args.out), engines.Punctuator(args.device))
+    if not args.engine or not args.synth:
+        parser.error("--engine and --synth are required (or --repunctuate)")
     index, count = (int(x) for x in args.shard.split("/"))
 
     hotwords = tenant_hotwords()
-    from ...voice import engines
-
     if args.engine == "paraformer":
         engine = engines.ParaformerASR(args.device, two_pass=True)
+        punctuated = engines.PunctuatedASR(engine, engines.Punctuator(args.device))  # what LOOPDESK_VOICE_PUNC serves
     elif args.engine == "sensevoice":
         engine = engines.SenseVoiceASR(args.device)
     else:
@@ -74,15 +108,18 @@ def main(argv: list[str] | None = None) -> int:
                       "variant": row["variant"], "condition": name, "engine": args.engine,
                       "seconds": round(len(audio) / 16000, 3), "hotwords": len(words)}
             if args.engine == "paraformer":
-                stream = engine.stream(words)
+                stream = punctuated.stream(words)
                 for start in range(0, len(audio), 1600):  # 100 ms frames, like the browser sends
                     stream.accept(audio[start:start + 1600])
-                result = stream.finish()  # streaming pass flushed + SeACo final with hotwords
+                result = stream.finish()  # streaming pass flushed + SeACo final with hotwords + punctuation
+                punc_ms = result.punc_ms or 0.0
                 started = time.perf_counter()
                 without = engine.decode_final(audio, [])
                 record.update(streaming=result.passes["streaming"], final_hw=result.passes["final"],
-                              final_nohw=without, chunk_ms=[round(c, 1) for c in result.chunk_ms],
-                              final_hw_ms=round(result.final_ms, 1),
+                              final_hw_punc=result.text, final_nohw=without,
+                              chunk_ms=[round(c, 1) for c in result.chunk_ms],
+                              final_hw_ms=round(result.final_ms - punc_ms, 1),  # as before: without punctuation
+                              punc_ms=None if result.punc_ms is None else round(result.punc_ms, 2),
                               final_nohw_ms=round((time.perf_counter() - started) * 1000, 1))
             elif args.engine == "sensevoice":
                 started = time.perf_counter()

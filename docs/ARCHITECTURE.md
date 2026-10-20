@@ -186,6 +186,7 @@ Agent 调用 create_ticket ─► 工单（open），due_at = 建单时间 + 承
 端点检测：能量或 Silero VAD，按音频时长计时（尾部静音 600 ms 判一句结束；按住说话松开即结束，不等静音）
   ▼
 流式 ASR：Paraformer 流式出中间结果 ─► 一句结束后 SeACo-Paraformer 带热词整句重解码（两遍）
+  ─► 可选：整句加标点（ct-punc，LOOPDESK_VOICE_PUNC；Paraformer 不出标点，中间结果不加）
   ▼
 ITN（S O 二零二六… → SO2026…，一百九十八块 → 198块）─► 热词纠错（拼音相同的词换成租户的套餐、商品名）
   ─► 实体置信度（订单号格式、两遍是否一致、引擎给出的词概率）─► PII 脱敏（之后才显示、存储、交给模型）

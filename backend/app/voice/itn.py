@@ -32,14 +32,17 @@ _SPACE_NEAR_CJK = re.compile(rf"(?<=[{_CJK}\d])\s+|\s+(?=[{_CJK}\d])")
 _SINGLE_LETTERS = re.compile(r"(?<![A-Za-z])([A-Za-z])\s+(?=[A-Za-z](?![A-Za-z]))")
 # Five or more digits in a row, spoken or written, with at most one separator between them.
 _DIGIT_RUN = re.compile(rf"[{_DIGIT_CHARS}0-9](?:[ ,，、\-]?[{_DIGIT_CHARS}0-9]){{4,}}")
-# An order number: up to six Latin letters (the ASR's attempt at "SO": "SO", "s o", "s wall")
-# or the words 订单/单号 just before, then the digits. Applied after _DIGIT_RUN.
-_ORDER = re.compile(r"(?<![A-Za-z0-9])(?P<prefix>[A-Za-z](?:\s?[A-Za-z]){0,5})?\s*[,，:：]?\s*(?P<digits>\d{8,14})(?!\d)")
+# An order number: up to six Latin letters (the ASR's attempt at "SO": "SO", "s o", "s wall"; a
+# punctuation model may put commas between them: "s，o，") or the words 订单/单号 just before, then the
+# digits. Applied after _DIGIT_RUN.
+_ORDER = re.compile(r"(?<![A-Za-z0-9])(?P<prefix>[A-Za-z](?:[\s,，、]?[A-Za-z]){0,5})?\s*[,，:：]?\s*(?P<digits>\d{8,14})(?!\d)")
 # 订单号 2026…, or the second of two: "SO20261008002 和 20261012003".
 # "S O" said the Chinese way and written as characters: 艾斯欧 / 爱思欧 / I斯欧 / I欧 / 爱四欧 (seen in the
 # synthetic dev set's errors; the digits that follow were right, the prefix was lost).
 # "S O" said like the English word "so" comes back as 搜 / 骚 / 嗖 (CosyVoice, a later run).
-_SO_SPOKEN = re.compile(r"(?:[爱艾埃Ii][斯思四死丝司Cc4]?[欧偶哦鸥Oo]|[爱艾埃][斯思四死丝司]|[搜骚嗖])(?=\s*20\d{9}(?!\d))")
+# A punctuation model may put a comma between the two ("爱思欧，二零二六…").
+_SO_SPOKEN = re.compile(r"(?:[爱艾埃Ii][斯思四死丝司Cc4]?[欧偶哦鸥Oo]|[爱艾埃][斯思四死丝司]|[搜骚嗖])"
+                        r"(?=\s*[,，、:：]?\s*20\d{9}(?!\d))")
 _ORDER_CONTEXT = re.compile(r"(?:订单号?|单号|SO\d{11}\s*(?:和|跟|与|还有|、|，|,))(?:是|为)?[,，:：]?\s*$")
 # Money: a numeral (spoken or written) and 块/元, optionally a trailing 毛/角 digit ("九块九", "三块五毛").
 _MONEY = re.compile(rf"(?P<num>[{_NUMERAL_CHARS}点0-9.]+|\d+(?:\.\d+)?万)(?P<unit>块钱|块|元)(?P<tail>[{_DIGIT_CHARS}](?:毛|角)?)?")
@@ -48,6 +51,10 @@ _PERCENT = re.compile(rf"百分之(?P<num>[{_NUMERAL_CHARS}点]+)")
 # the digit part of a word ("app一直", "vip一个月").
 _LETTER_CODE = re.compile(rf"(?<![A-Za-z])(?P<letters>[A-Za-z]{{1,2}})(?P<digit>[{_DIGIT_CHARS}])"
                           rf"(?![{_NUMERAL_CHARS}点下直些样般起定共次个])")
+# NFKC turns the punctuation a Chinese model writes (，？！：；) into ASCII; next to Chinese it goes back,
+# so the customer and the agent read "退款，另外发票怎么开？" as the customer would have typed it.
+_ASCII_PUNCT_BY_CJK = re.compile(rf"(?<=[{_CJK}])[,?!:;]|[,?!:;](?=[{_CJK}])")
+_FULL_WIDTH = {",": "，", "?": "？", "!": "！", ":": "：", ";": "；"}
 AMOUNT_RE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:块钱|块|元)")
 ORDER_ID_FORMAT = re.compile(r"^SO(20\d{2})(\d{2})(\d{2})\d{3}$")
 
@@ -122,7 +129,7 @@ def itn(raw: str) -> ITNResult:
 
     def order(m: re.Match[str], before: str) -> str:
         prefix, digits = (m.group("prefix") or ""), m.group("digits")
-        letters = prefix.replace(" ", "").lower()
+        letters = re.sub(r"[^A-Za-z]", "", prefix).lower()
         if letters == "so":
             return f"SO{digits}"
         plausible = len(digits) == 11 and digits.startswith("20")
@@ -153,6 +160,7 @@ def itn(raw: str) -> ITNResult:
     text = _MONEY.sub(money, text)
     text = _PERCENT.sub(lambda m: f"{_number_text(v)}%" if (v := cn_number(m.group('num'))) is not None else m.group(0), text)
     text = _LETTER_CODE.sub(lambda m: f"{m.group('letters').upper()}{_DIGIT[m.group('digit')]}", text)
+    text = _ASCII_PUNCT_BY_CJK.sub(lambda m: _FULL_WIDTH[m.group(0)], text)
     return ITNResult(text, inferred)
 
 

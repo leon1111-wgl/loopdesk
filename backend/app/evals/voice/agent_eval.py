@@ -1,7 +1,10 @@
 """Task success by voice versus by text, on the ASR transcripts the voice-eval workflow produced.
 
-    python -m app.evals.voice.agent_eval --asr 'data/asr-paraformer-*.jsonl' --field final_hw \\
+    python -m app.evals.voice.agent_eval --asr 'data/asr-*.jsonl' --config paraformer-2pass+hotwords+punc \\
         --variants kokoro-zf_001-1 --conditions clean,snr5 --report agent.json
+
+``--config`` is one of the report's configurations (app/evals/voice/report.py CONFIGS): an engine and
+the transcript field it is scored on; ``--field`` alone takes that field from every record given.
 
 The agent and the scoring are the regression suite's (app/evals/runner.py): the same cases, the
 same sandbox and checks, dry-run tools. The only difference is the input: the text question
@@ -44,6 +47,11 @@ from ...voice.lexicon import lexicon_for
 from ...voice.session import understand
 from ..runner import _resolve_user, build_sandbox, score_case
 from .dataset import read_jsonl
+from .report import CONFIGS
+
+# A punctuated transcript and the decoder's own output it was made from: the live channel keeps the
+# latter as a pass, so a read-back can catch punctuation that changed an entity.
+DECODED_FROM = {"final_hw_punc": "final_hw"}
 
 
 class _Run:
@@ -123,12 +131,13 @@ class Evaluator:
         passed, checks, answer, tools = score_case(case, summary)
         return {"passed": passed, "checks": checks, "first_sentence_ms": first, "answer": answer}
 
-    def voice(self, record: dict, hyp: str) -> dict:
+    def voice(self, record: dict, hyp: str, decoded: str | None = None) -> dict:
         slug, key = record["tenant"], record["key"]
         sandbox, tenant, lexicon = self._sandbox(slug)
         case = self.cases[(slug, key)]
         user = _resolve_user(sandbox, tenant, case)
-        transcript = understand(ASRResult(hyp, {"final": hyp, "streaming": record.get("streaming") or hyp}), lexicon)
+        passes = {"final": decoded if decoded is not None else hyp, "streaming": record.get("streaming") or hyp}
+        transcript = understand(ASRResult(hyp, passes), lexicon)
         conversation = self._conversation(sandbox, tenant, user, case)
         confirmations = Confirmations()
         registry = gate_registry(self.services.registry, confirmations, lambda: transcript.text)
@@ -179,6 +188,7 @@ def attribute(text_passed: bool, voice: dict) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--asr", nargs="+", required=True)
+    parser.add_argument("--config", choices=sorted(CONFIGS), help="an engine and its transcript field (sets --field)")
     parser.add_argument("--field", default="final_hw")
     parser.add_argument("--variants", default="")
     parser.add_argument("--conditions", default="clean")
@@ -192,6 +202,7 @@ def main(argv: list[str] | None = None) -> int:
     from ...seed import seed_demo
     from ...services import Services, set_services
 
+    engine, field = CONFIGS[args.config] if args.config else (None, args.field)
     settings = get_settings()
     tmp = tempfile.TemporaryDirectory()
     settings.database_url = f"sqlite:///{Path(tmp.name) / 'voice-agent.db'}"
@@ -203,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     conditions = set(args.conditions.split(","))
     excluded = {x for x in args.exclude.split(",") if x}
     records = [r for p in args.asr for f in sorted(glob.glob(p)) for r in read_jsonl(Path(f))
-               if r.get(args.field) is not None and r["condition"] in conditions
+               if r.get(field) is not None and (engine is None or r.get("engine") == engine) and r["condition"] in conditions
                and (not variants or r["variant"] in variants) and r["id"] not in excluded]
     with new_session() as db:
         seed_demo(db, services.embedder)
@@ -212,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         with ThreadPoolExecutor(args.workers) as pool:
             text = dict(zip(keys, pool.map(lambda k: evaluator.text(*k), keys)))
             records = [r for r in records if (r["tenant"], r["key"]) in text]
-            voice = list(pool.map(lambda r: evaluator.voice(r, r[args.field]), records))
+            voice = list(pool.map(lambda r: evaluator.voice(r, r[field], r.get(DECODED_FROM.get(field, field))), records))
     results, by_condition = [], defaultdict(lambda: defaultdict(int))
     for record, v in zip(records, voice):
         t = text[(record["tenant"], record["key"])]
@@ -239,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         return round(ordered[min(len(ordered) - 1, round(q * (len(ordered) - 1)))], 1) if ordered else None
 
     summary = {
-        "model": f"{settings.llm_provider}:{settings.llm_model_strong}", "field": args.field,
+        "model": f"{settings.llm_provider}:{settings.llm_model_strong}", "config": args.config, "field": field,
         "variants": sorted(variants), "cases": len(keys), "excluded": sorted(excluded),
         "text_pass_rate": round(sum(t["passed"] for t in text.values()) / len(text), 4) if text else None,
         "by_condition": {c: {**s, "voice_pass_rate": round(s["voice_passed"] / s["n"], 4),

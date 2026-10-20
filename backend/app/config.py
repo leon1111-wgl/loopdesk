@@ -213,6 +213,8 @@ class Settings:
     voice_vad: str = "energy"  # energy | silero
     voice_device: str = "cpu"  # where FunASR runs: cpu | cuda | mps
     voice_hotwords: bool = True  # the tenant's plan and product names bias the ASR
+    # Punctuation on the final transcript for engines that write none (Paraformer): FunASR ct-punc.
+    voice_punc: bool = False
     voice_end_silence_ms: int = 600  # trailing silence that ends an utterance (continuous mode)
     voice_barge_in_ms: int = 240  # speech this long while the agent talks stops it
     voice_readback_threshold: float = 0.6  # an order number or amount below this is read back first
@@ -311,6 +313,7 @@ class Settings:
         s.voice_vad = _env("VOICE_VAD", s.voice_vad)
         s.voice_device = _env("VOICE_DEVICE", s.voice_device)
         s.voice_hotwords = _env_bool("VOICE_HOTWORDS", s.voice_hotwords)
+        s.voice_punc = _env_bool("VOICE_PUNC", s.voice_punc)
         s.voice_end_silence_ms = _env_int("VOICE_END_SILENCE_MS", s.voice_end_silence_ms)
         s.voice_barge_in_ms = _env_int("VOICE_BARGE_IN_MS", s.voice_barge_in_ms)
         s.voice_readback_threshold = _env_float("VOICE_READBACK_THRESHOLD", s.voice_readback_threshold)

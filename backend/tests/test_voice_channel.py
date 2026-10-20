@@ -612,3 +612,163 @@ def test_a_newer_utterance_interrupts_the_answer_before_it(voice, monkeypatch):
     assert answers[1].meta["voice"]["interrupted"] is True and answers[1].meta["voice"]["delivery"] == "interrupted"
     second_turn = next(e["turn"] for e in events if e["type"] == "turn_saved" and e["message_id"] == answers[1].id)
     assert any(e["type"] == "barge_in" and e["turn"] == second_turn for e in events)
+
+
+# ---------------------------------------------------------------- punctuation (LOOPDESK_VOICE_PUNC)
+class _Unpunctuated:
+    """A streaming engine that writes no punctuation, like Paraformer: partials while audio comes in,
+    then the final pass."""
+
+    name, punctuates = "paraformer", False
+
+    def __init__(self, final: str, streaming: str | None = None):
+        self.final, self.streaming = final, streaming if streaming is not None else final
+
+    def stream(self, hotwords):
+        from app.voice.engines import ASRResult
+
+        engine = self
+
+        class Stream:
+            def accept(self, pcm):
+                return engine.streaming[: len(engine.streaming) // 2] or None
+
+            def finish(self):
+                return ASRResult(engine.final, {"streaming": engine.streaming, "final": engine.final}, final_ms=100.0)
+
+        return Stream()
+
+
+def _split_requests(text: str) -> str:
+    return text.replace("退款另外", "退款，另外") + "？"
+
+
+def test_punctuation_goes_on_the_final_text_only():
+    from app.voice.engines import PunctuatedASR
+    from app.voice.session import understand
+
+    seen = []
+    final = "so二零二六零九一八零零一我要退货退款另外发票怎么开"
+    asr = PunctuatedASR(_Unpunctuated(final), lambda text: seen.append(text) or _split_requests(text))
+    assert asr.name == "paraformer" and asr.punctuates
+    stream = asr.stream([])
+    assert stream.accept(silence(0.1)) == final[: len(final) // 2]  # partials are shown as decoded
+    result = stream.finish()
+    assert seen == [final]
+    assert result.text == "so二零二六零九一八零零一我要退货退款，另外发票怎么开？"
+    assert result.passes["final"] == final  # the decoder's own output stays a pass of its own
+    assert result.punc_ms is not None and result.final_ms == pytest.approx(100.0 + result.punc_ms)
+    transcript = understand(result, Lexicon([]))
+    assert transcript.text == "SO20260918001我要退货退款，另外发票怎么开？"
+    assert [(e.kind, e.value, e.confidence) for e in transcript.entities] == [("order_id", "SO20260918001", 0.95)]
+
+
+def test_an_empty_utterance_is_not_sent_to_the_punctuation_model():
+    from app.voice.engines import PunctuatedASR
+
+    seen = []
+    result = PunctuatedASR(_Unpunctuated(""), lambda text: seen.append(text) or text).stream([]).finish()
+    assert result.text == "" and seen == [] and result.punc_ms is None
+
+
+def test_a_failing_punctuation_model_keeps_the_words(caplog):
+    from app.voice.engines import PunctuatedASR
+
+    def broken(text):
+        raise RuntimeError("index out of range")
+
+    with caplog.at_level("WARNING", logger="app.voice.engines"):
+        result = PunctuatedASR(_Unpunctuated("帮我查一下物流"), broken).stream([]).finish()
+    assert result.text == "帮我查一下物流" and result.punc_ms is None  # the turn goes on, unpunctuated
+    assert "punctuation failed" in caplog.text
+
+
+def test_an_amount_the_punctuation_split_is_read_back():
+    # The unpunctuated final pass is a second reading: punctuation that changes an entity is caught.
+    from app.voice.engines import PunctuatedASR
+    from app.voice.session import understand
+
+    asr = PunctuatedASR(_Unpunctuated("先退我一百九十八块"), lambda text: text.replace("一百", "一百，"))
+    transcript = understand(asr.stream([]).finish(), Lexicon([]))
+    amount = next(e for e in transcript.entities if e.kind == "amount")
+    assert amount.value == "98" and amount.confidence < 0.6 and "passes_disagree" in amount.notes
+
+
+def test_punctuation_setting_wraps_only_engines_that_write_none(monkeypatch, caplog):
+    from app.config import Settings
+    from app.voice import engines
+
+    class FakeParaformer(ScriptedASR):
+        name, punctuates = "paraformer", False
+
+        def __init__(self, device="cpu"):
+            super().__init__()
+
+    class FakeSenseVoice(ScriptedASR):
+        name, punctuates = "sensevoice", True
+
+        def __init__(self, device="cpu"):
+            super().__init__()
+
+    loaded = []
+
+    class FakePunctuator:
+        def __init__(self, device="cpu"):
+            loaded.append(device)
+
+        def __call__(self, text):
+            return text + "。"
+
+    monkeypatch.setattr(engines, "ParaformerASR", FakeParaformer)
+    monkeypatch.setattr(engines, "SenseVoiceASR", FakeSenseVoice)
+    monkeypatch.setattr(engines, "Punctuator", FakePunctuator)
+    s = Settings()
+    s.voice_asr, s.voice_tts, s.seed_demo = "paraformer", "tone", True
+    assert s.voice_punc is False  # off by default
+    built, problem, _ = engines.build_engines(s)
+    assert problem is None and isinstance(built.asr, FakeParaformer) and loaded == []
+    assert built.describe()["punctuation"] is False
+
+    s.voice_punc = True
+    built, problem, _ = engines.build_engines(s)
+    assert isinstance(built.asr, engines.PunctuatedASR) and built.asr.name == "paraformer" and loaded == ["cpu"]
+    assert built.describe()["punctuation"] is True
+
+    s.voice_asr = "sensevoice"  # writes its own punctuation: nothing to add, no model loaded
+    built, _, _ = engines.build_engines(s)
+    assert isinstance(built.asr, FakeSenseVoice) and loaded == ["cpu"]
+
+    def missing(device="cpu"):
+        raise ImportError("No module named 'funasr'")
+
+    monkeypatch.setattr(engines, "Punctuator", missing)
+    s.voice_asr = "paraformer"
+    with caplog.at_level("WARNING", logger="app.voice.engines"):
+        built, problem, _ = engines.build_engines(s)
+    assert problem is None and isinstance(built.asr, FakeParaformer)  # the channel works, unpunctuated
+    assert "punctuation" in caplog.text
+
+
+def test_voice_punc_is_read_from_the_environment(monkeypatch):
+    from app.config import Settings
+
+    assert Settings.from_env().voice_punc is False
+    monkeypatch.setenv("LOOPDESK_VOICE_PUNC", "1")
+    assert Settings.from_env().voice_punc is True
+
+
+def test_the_agent_receives_the_punctuated_transcript(voice):
+    from app.voice.engines import PunctuatedASR
+
+    voice.asr.transcripts.append("怎么取消自动续费另外学生开会员有优惠吗")
+    set_engines(VoiceEngines(PunctuatedASR(voice.asr, lambda text: text.replace("续费另外", "续费，另外")),
+                             ToneTTS(ms_per_char=20)))
+    with voice.connect() as ws:
+        say(ws)
+        events = until(ws, "turn_saved")
+    transcript = next(e for e in events if e["type"] == "transcript")
+    assert transcript["text"] == "怎么取消自动续费，另外学生开会员有优惠吗"
+    with new_session() as db:
+        asked = db.execute(select(Message).where(Message.conversation_id == voice.conversation,
+                                                 Message.role == "user")).scalars().all()
+    assert [m.content for m in asked] == ["怎么取消自动续费，另外学生开会员有优惠吗"]

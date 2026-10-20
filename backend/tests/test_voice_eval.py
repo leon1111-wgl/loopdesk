@@ -137,3 +137,122 @@ def test_respelled_latin_words_are_neither_scored_nor_mined_for_aliases():
     assert "term" not in row["entities"]  # the speaker said 艾扣币: not a hotword test
     tables = report.asr_tables([cosy], hotwords)
     assert tables["alias_suggestions"] == {"Echo币": {"爱扣币": 1}}  # mined from the final pass with hotwords
+
+
+# ---------------------------------------------------------------- punctuation on the final pass (Paraformer)
+class _Punctuator:
+    """Stands in for FunASR ct-punc: Chinese characters joined (it reads SeACo's "我 要 退" token by
+    token), a comma before 另外, a question mark at the end."""
+
+    def __init__(self, device="cpu"):
+        self.device = device
+
+    def __call__(self, text):
+        import re
+
+        return re.sub(r"(?<=[一-鿿])\s+(?=[一-鿿])", "", text).replace("退款另外", "退款，另外") + "？"
+
+
+def test_asr_run_records_the_punctuated_final_pass(tmp_path, monkeypatch):
+    from app.evals.voice import asr_run
+    from app.voice import engines
+
+    final = "我要退货退款另外发票怎么开"
+
+    class FakeParaformer:
+        name, punctuates = "paraformer", False
+
+        def __init__(self, device="cpu", two_pass=True):
+            pass
+
+        def stream(self, hotwords):
+            class Stream:
+                def accept(self, pcm):
+                    return None
+
+                def finish(self):
+                    return engines.ASRResult(final, {"streaming": final, "final": final}, final_ms=50.0, chunk_ms=[10.0])
+
+            return Stream()
+
+        def decode_final(self, audio, hotwords):
+            return final
+
+    monkeypatch.setattr(engines, "ParaformerASR", FakeParaformer)
+    monkeypatch.setattr(engines, "Punctuator", _Punctuator)
+    monkeypatch.setattr(asr_run, "tenant_hotwords", lambda: {"leon": []})
+    (tmp_path / "v").mkdir()
+    write_wav(tmp_path / "v" / "a.wav", (np.sin(np.arange(16000) * 0.08) * 8000).astype(np.int16))
+    (tmp_path / "manifest.jsonl").write_text(json.dumps(
+        {"id": "leon/a", "tenant": "leon", "key": "a", "question": "我要退货退款，另外发票怎么开？", "variant": "v",
+         "path": "v/a.wav"}, ensure_ascii=False) + "\n", encoding="utf-8")
+    out = tmp_path / "out" / "asr.jsonl"
+    asr_run.main(["--engine", "paraformer", "--synth", str(tmp_path), "--out", str(out)])
+    [record] = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert record["final_hw"] == final  # unchanged: comparable with earlier runs
+    assert record["final_hw_punc"] == "我要退货退款，另外发票怎么开？"
+    assert record["punc_ms"] >= 0 and record["final_hw_ms"] == 50.0  # finish() without the punctuation step
+
+
+def test_earlier_transcripts_can_be_punctuated_without_decoding_audio_again(tmp_path, monkeypatch):
+    from app.evals.voice import asr_run
+    from app.voice import engines
+
+    monkeypatch.setattr(engines, "Punctuator", _Punctuator)
+    base = {"tenant": "leon", "key": "a", "question": "我要退货退款，另外发票怎么开？", "variant": "v", "condition": "clean"}
+    (tmp_path / "run1" / "asr-paraformer-0").mkdir(parents=True)
+    (tmp_path / "run1" / "asr-paraformer-0" / "asr-paraformer-0.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in [
+        {**base, "id": "leon/a", "engine": "paraformer", "streaming": "我要退货退款另外发票怎么开",
+         "final_hw": "我 要 退 货 退 款 另 外 发 票 怎 么 开", "final_nohw": "我 要 退 货 退 款 另 外 发 票 怎 么 开"},
+        {**base, "id": "leon/b", "engine": "paraformer", "streaming": "", "final_hw": "", "final_nohw": ""},
+        {**base, "id": "leon/a", "engine": "sensevoice", "final_nohw": "我要退货退款，另外发票怎么开？"},
+    ]), encoding="utf-8")
+    out = tmp_path / "out" / "asr-paraformer-punc.jsonl"
+    asr_run.main(["--repunctuate", str(tmp_path / "run1" / "*" / "*.jsonl"), "--out", str(out)])
+    rows = {r["id"]: r for r in map(json.loads, out.read_text(encoding="utf-8").splitlines())}
+    assert set(rows) == {"leon/a", "leon/b"}  # Paraformer only
+    assert rows["leon/a"]["final_hw_punc"] == "我要退货退款，另外发票怎么开？" and rows["leon/a"]["punc_ms"] >= 0
+    assert rows["leon/a"]["final_hw"] == "我 要 退 货 退 款 另 外 发 票 怎 么 开" and rows["leon/a"]["repunctuated"] is True
+    assert rows["leon/b"]["final_hw_punc"] == "" and rows["leon/b"]["punc_ms"] is None
+
+
+def test_report_scores_the_punctuated_final_pass_as_its_own_config():
+    record = {"id": "leon/a", "tenant": "leon", "key": "a", "question": "SO20260918001 我要退货退款，另外发票怎么开？",
+              "variant": "v", "condition": "clean", "engine": "paraformer", "seconds": 3.0,
+              "streaming": "so二零二六零九一八零零一我要退货退款另外发票怎么开",
+              "final_hw": "s o 二 零 二 六 零 九 一 八 零 零 一 我 要 退 货 退 款 另 外 发 票 怎 么 开",
+              "final_hw_punc": "s o二零二六零九一八零零一，我要退货退款，另外发票怎么开", "chunk_ms": [100.0],
+              "final_hw_ms": 400.0, "punc_ms": 12.5}
+    assert report.CONFIGS["paraformer-2pass+hotwords+punc"] == ("paraformer", "final_hw_punc")
+    rows = {(r["config"], r["text"]): r for r in report.asr_tables([record], {"leon": []})["asr"] if r["variant"] == "all"}
+    plain, punc = rows[("paraformer-2pass+hotwords", "itn+lexicon")], rows[("paraformer-2pass+hotwords+punc", "itn+lexicon")]
+    assert punc["cer"] == plain["cer"] == 0.0 and punc["entities"] == plain["entities"]  # punctuation is not recognition
+    latency = report.latency_tables([record], [], [], [])["asr_latency"]["paraformer"]
+    assert latency["punc_ms_p50"] == 12.5 and latency["punc_ms_p95"] == 12.5 and latency["punc_n"] == 1
+
+
+def test_agent_eval_measures_what_punctuation_changes(tmp_path, settings, monkeypatch):
+    from app.evals.voice import agent_eval
+
+    base = {"id": "leon/multi_intent_refund_and_invoice", "tenant": "leon", "key": "multi_intent_refund_and_invoice",
+            "variant": "v", "condition": "clean"}
+    rows = [{**base, "engine": "paraformer", "streaming": "so二零二六零九一八零零一我要退货退款另外发票怎么开",
+             "final_hw": "s o 二 零 二 六 零 九 一 八 零 零 一 我 要 退 货 退 款 另 外 发 票 怎 么 开",
+             "final_hw_punc": "s o二零二六零九一八零零一，我要退货退款，另外发票怎么开"},
+            # another engine's record in the same files: a config picks its own engine's records only
+            {**base, "engine": "whisper", "final_hw": "ISO 2026-0918-001,我要退货退款"}]
+    path = tmp_path / "asr.jsonl"
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    monkeypatch.setattr("app.config.get_settings", lambda: settings)
+    results = {}
+    for config in ("paraformer-2pass+hotwords", "paraformer-2pass+hotwords+punc"):
+        out = tmp_path / f"{config}.json"
+        agent_eval.main(["--asr", str(path), "--config", config, "--report", str(out)])
+        result = json.loads(out.read_text(encoding="utf-8"))
+        assert result["summary"]["config"] == config and len(result["voice"]) == 1
+        results[config] = result["voice"][0]
+    # Without commas the offline agent answers the refund and drops the invoice question.
+    assert not results["paraformer-2pass+hotwords"]["passed"]
+    assert results["paraformer-2pass+hotwords"]["cause"] == "asr_punctuation"
+    assert results["paraformer-2pass+hotwords+punc"]["passed"]
+    assert results["paraformer-2pass+hotwords+punc"]["transcript"] == "SO20260918001，我要退货退款，另外发票怎么开"

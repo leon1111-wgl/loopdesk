@@ -34,6 +34,7 @@ CONFIGS = {  # name: (engine, hypothesis field)
     "paraformer-streaming": ("paraformer", "streaming"),
     "paraformer-2pass": ("paraformer", "final_nohw"),
     "paraformer-2pass+hotwords": ("paraformer", "final_hw"),
+    "paraformer-2pass+hotwords+punc": ("paraformer", "final_hw_punc"),  # LOOPDESK_VOICE_PUNC: ct-punc on the final pass
     "sensevoice": ("sensevoice", "final_nohw"),
     "whisper": ("whisper", "final_nohw"),
     "whisper+prompt": ("whisper", "final_hw"),
@@ -172,6 +173,9 @@ def latency_tables(records: list[dict], vad: list[dict], tts: list[dict], synth:
         if chunks:
             entry.update(chunk_ms_p50=pct(chunks, 0.5), chunk_ms_p95=pct(chunks, 0.95), chunk_audio_ms=600,
                          streaming_rtf_p50=round(statistics.median(chunks) / 600, 3))
+        punc = [r["punc_ms"] for r in rows if r.get("punc_ms") is not None]
+        if punc:  # what the punctuation step adds to the final pass
+            entry.update(punc_n=len(punc), punc_ms_p50=pct(punc, 0.5), punc_ms_p95=pct(punc, 0.95))
         asr[engine] = entry
     endpoint = defaultdict(list)
     for row in vad:

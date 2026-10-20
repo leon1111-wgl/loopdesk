@@ -33,11 +33,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ASRResult:
-    text: str
-    passes: dict[str, str] = field(default_factory=dict)  # e.g. {"streaming": ..., "final": ...}
+    text: str  # what is handed on: the final pass, punctuated when the engine writes no punctuation
+    passes: dict[str, str] = field(default_factory=dict)  # each pass as decoded: {"streaming": ..., "final": ...}
     char_probs: list[tuple[str, float]] | None = None  # token, probability (engines that report it)
     final_ms: float = 0.0  # compute time of finish() after the end of the utterance
     chunk_ms: list[float] = field(default_factory=list)  # compute time of each streaming chunk
+    punc_ms: float | None = None  # the punctuation step's share of final_ms (None: no punctuation step)
 
 
 class ASRStream(Protocol):
@@ -49,6 +50,7 @@ class ASRStream(Protocol):
 
 class ASREngine(Protocol):
     name: str
+    punctuates: bool  # writes punctuation itself; False: LOOPDESK_VOICE_PUNC adds it to the final text
 
     def stream(self, hotwords: list[str]) -> ASRStream: ...
 
@@ -105,6 +107,8 @@ class _BufferedStream:
 PARAFORMER_STREAMING = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
 PARAFORMER_SEACO = "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
 SENSEVOICE = "iic/SenseVoiceSmall"
+# The punctuation model FunASR's own 2-pass server puts after the final pass.
+PUNC_CT = "iic/punc_ct-transformer_zh-cn-common-vad_realtime-vocab272727"
 CHUNK_SIZE = [0, 10, 5]  # 600 ms chunks, 300 ms look-ahead
 CHUNK_SAMPLES = CHUNK_SIZE[1] * 960
 
@@ -126,6 +130,7 @@ class ParaformerASR:
     passes are also a confidence signal: an order number they disagree on is read back."""
 
     name = "paraformer"
+    punctuates = False
 
     def __init__(self, device: str = "cpu", two_pass: bool = True):
         self.device, self.two_pass = device, two_pass
@@ -187,6 +192,7 @@ class SenseVoiceASR:
     """SenseVoice-Small: non-streaming, fast, writes digits itself (use_itn). No hotword support."""
 
     name = "sensevoice"
+    punctuates = True
 
     def __init__(self, device: str = "cpu"):
         self.model = _funasr(SENSEVOICE, device)
@@ -209,6 +215,7 @@ class WhisperASR:
     the initial prompt, the only biasing Whisper has; word probabilities feed entity confidence."""
 
     name = "whisper"
+    punctuates = True
 
     def __init__(self, model: str = "large-v3-turbo", device: str = "cpu", use_prompt: bool = True):
         from faster_whisper import WhisperModel
@@ -229,6 +236,76 @@ class WhisperASR:
         text = "".join(s.text for s in segments).strip()
         probs = [(w.word, float(w.probability)) for s in segments for w in (s.words or [])]
         return ASRResult(text, {"final": text}, char_probs=probs)
+
+
+# ---------------------------------------------------------------- punctuation (engines that write none)
+class Punctuator:
+    """FunASR's CT-Transformer punctuation model. Paraformer writes no punctuation, so "S O 二零二六…我要退货
+    退款另外发票怎么开" reaches the agent as one run-on request; with the commas back it is two. Text only
+    and small: it runs on the final text, never on the partials shown while the customer talks. Each
+    utterance starts with an empty cache: a turn is punctuated on its own, not as the previous one's tail."""
+
+    def __init__(self, device: str = "cpu", model: str = PUNC_CT):
+        self.model = _funasr(model, device)
+        self.lock = threading.Lock()
+
+    def __call__(self, text: str) -> str:
+        with self.lock:
+            res = self.model.generate(input=text, cache={})
+        return _funasr_text(res) or text
+
+
+def punctuate(result: ASRResult, punc: Callable[[str], str]) -> ASRResult:
+    """Punctuate the text handed on, and time it. The passes keep what the decoder wrote, so the
+    unpunctuated final pass is a second reading: punctuation that changes an order number or an amount
+    makes the passes disagree, and the entity is read back. A model error keeps the words unpunctuated."""
+    if not result.text.strip():
+        return result
+    started = time.perf_counter()
+    try:
+        text = punc(result.text)
+    except Exception:
+        logger.warning("voice punctuation failed, the transcript stays unpunctuated", exc_info=True)
+        result.final_ms += (time.perf_counter() - started) * 1000
+        return result
+    result.text, result.punc_ms = text, (time.perf_counter() - started) * 1000
+    result.final_ms += result.punc_ms
+    return result
+
+
+class _PunctuatedStream:
+    def __init__(self, stream: ASRStream, punc: Callable[[str], str]):
+        self.inner, self.punc = stream, punc
+
+    def accept(self, pcm: np.ndarray) -> str | None:
+        return self.inner.accept(pcm)
+
+    def finish(self) -> ASRResult:
+        return punctuate(self.inner.finish(), self.punc)
+
+
+class PunctuatedASR:
+    """An engine that writes no punctuation, with ``punc`` applied to its final text (LOOPDESK_VOICE_PUNC)."""
+
+    punctuates = True
+
+    def __init__(self, engine: ASREngine, punc: Callable[[str], str]):
+        self.engine, self.punc, self.name = engine, punc, engine.name
+
+    def stream(self, hotwords: list[str]) -> _PunctuatedStream:
+        return _PunctuatedStream(self.engine.stream(hotwords), self.punc)
+
+
+def with_punctuation(asr: ASREngine, settings: Settings) -> ASREngine:
+    """``asr`` with punctuation when it is switched on and the engine writes none. A punctuation model that
+    cannot be loaded leaves the channel working, unpunctuated: the agent still gets every word."""
+    if not settings.voice_punc or getattr(asr, "punctuates", False):
+        return asr
+    try:
+        return PunctuatedASR(asr, Punctuator(settings.voice_device))
+    except Exception as exc:  # missing packages or weights
+        logger.warning("voice punctuation unavailable, transcripts stay unpunctuated: %s: %s", type(exc).__name__, exc)
+        return asr
 
 
 # ---------------------------------------------------------------- TTS
@@ -326,6 +403,7 @@ class ScriptedASR:
     streaming pass a different reading than the final one."""
 
     name = "scripted"
+    punctuates = True  # a scripted transcript is used as written
 
     def __init__(self, transcripts: list[str | dict] | None = None, cycle: bool = False):
         self.transcripts, self.cycle = list(transcripts or []), cycle
@@ -365,7 +443,8 @@ class VoiceEngines:
     vad: Callable[[], VAD] = EnergyVAD  # a fresh detector per session: model VADs keep state
 
     def describe(self) -> dict:
-        return {"asr": self.asr.name, "tts": self.tts.name, "tts_sample_rate": self.tts.sample_rate}
+        return {"asr": self.asr.name, "tts": self.tts.name, "tts_sample_rate": self.tts.sample_rate,
+                "punctuation": getattr(self.asr, "punctuates", False)}
 
 
 def build_engines(settings: Settings, asr: ASREngine | None = None
@@ -381,7 +460,7 @@ def build_engines(settings: Settings, asr: ASREngine | None = None
             if settings.voice_asr == "scripted":
                 asr = ScriptedASR([t for t in settings.voice_scripted_text.split("|") if t], cycle=True)
             elif settings.voice_asr == "paraformer":
-                asr = ParaformerASR(settings.voice_device)
+                asr = with_punctuation(ParaformerASR(settings.voice_device), settings)
             elif settings.voice_asr == "sensevoice":
                 asr = SenseVoiceASR(settings.voice_device)
             elif settings.voice_asr == "whisper":

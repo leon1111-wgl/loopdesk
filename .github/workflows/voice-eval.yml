@@ -5,6 +5,8 @@ name: Voice eval
 # ASR engines, sweep the endpointer, time the TTS engines, and publish one report artifact.
 # The agent's pass rate on the transcripts is measured separately (app.evals.voice.agent_eval),
 # because it needs the LLM, not the speech models.
+# `reuse` skips the audio: it punctuates the Paraformer transcripts of earlier runs (punctuation is
+# text only), e.g. -f synth=none -f reuse=39475750196,39484338163.
 
 on:
   workflow_dispatch:
@@ -16,6 +18,10 @@ on:
       synth:
         description: "TTS engines to synthesise with (a run's report covers these; reports of several runs can be merged)"
         default: "kokoro,cosyvoice,say"
+        required: false
+      reuse:
+        description: "Earlier run ids, comma-separated: punctuate their Paraformer transcripts (set synth to none)"
+        default: ""
         required: false
 
 permissions:
@@ -141,10 +147,41 @@ jobs:
       - uses: actions/download-artifact@v4
         with: {pattern: "synth-*", path: out}
       - uses: actions/cache@v4
-        with: {path: "~/.cache/modelscope\n~/.cache/huggingface", key: "asr-${{ matrix.engine }}-v1"}
+        # v2 for Paraformer: the punctuation model (ct-punc) joined its models.
+        with: {path: "~/.cache/modelscope\n~/.cache/huggingface", key: "asr-${{ matrix.engine }}-${{ matrix.engine == 'paraformer' && 'v2' || 'v1' }}"}
       - run: python -m app.evals.voice.asr_run --engine ${{ matrix.engine }} --synth ../out/synth-* --noisy $NOISY --shard ${{ matrix.shard }}/6 --out ../out/asr/asr-${{ matrix.engine }}-${{ matrix.shard }}.jsonl
       - uses: actions/upload-artifact@v4
         with: {name: "asr-${{ matrix.engine }}-${{ matrix.shard }}", path: out/asr}
+
+  repunctuate:
+    name: Punctuate earlier Paraformer transcripts
+    if: inputs.reuse != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions: {contents: read, actions: read}
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install torch torchaudio --index-url $TORCH_CPU && pip install -r requirements.txt $(grep -E '^(funasr|modelscope)' requirements-voice.txt | cut -d' ' -f1)
+      - name: Earlier transcripts
+        env: {GH_TOKEN: "${{ github.token }}", REUSE: "${{ inputs.reuse }}"}
+        run: |
+          for id in ${REUSE//,/ }; do
+            [[ "$id" =~ ^[0-9]+$ ]] || { echo "not a run id: $id"; exit 1; }
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" --pattern 'asr-paraformer-*' --dir "../prev/$id"
+          done
+          find ../prev -name '*.jsonl' | sort
+      - uses: actions/cache@v4
+        with: {path: ~/.cache/modelscope, key: punc-ct-v1}
+      - env: {REUSE: "${{ inputs.reuse }}"}
+        run: |
+          for id in ${REUSE//,/ }; do
+            python -m app.evals.voice.asr_run --repunctuate "../prev/$id/*/*.jsonl" --out "../out/asr/asr-paraformer-punc-$id.jsonl"
+          done
+      - uses: actions/upload-artifact@v4
+        with: {name: asr-paraformer-punc, path: out/asr}
 
   vad:
     name: Endpointing sweep (energy, Silero)
@@ -166,7 +203,7 @@ jobs:
 
   report:
     name: Report
-    needs: [synth-kokoro, synth-cosyvoice, synth-say, asr, vad]
+    needs: [synth-kokoro, synth-cosyvoice, synth-say, asr, repunctuate, vad]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: backend}}

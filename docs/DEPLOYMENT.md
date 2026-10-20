@@ -273,6 +273,7 @@ pip install -r requirements-voice.txt                                           
 | `LOOPDESK_VOICE_BARGE_IN_MS` | `240` | 播报中顾客说话持续多久才算打断 |
 | `LOOPDESK_VOICE_READBACK_THRESHOLD` | `0.6` | 订单号、金额的置信度低于它先复述 |
 | `LOOPDESK_VOICE_HOTWORDS` | `1` | 用租户知识库里的领域词和商品名做热词 |
+| `LOOPDESK_VOICE_PUNC` | `0` | 给不出标点的引擎（Paraformer）的整句结果加标点（FunASR ct-punc，`iic/punc_ct-transformer_zh-cn-common-vad_realtime-vocab272727`，约 280 MB）；中间结果不加；模型加载失败时照常不带标点。效果和耗时见 EVALUATION 的语音评测 |
 | `LOOPDESK_VOICE_COSYVOICE_URL` | `http://127.0.0.1:50000` | CosyVoice sidecar 地址 |
 | `LOOPDESK_VOICE_TTS_VOICE` | — | 音色：Kokoro 的音色名（如 `zf_001`）、`say` 的声音名 |
 

@@ -302,3 +302,35 @@ def test_so_said_as_the_english_word(raw):
 
 def test_sou_elsewhere_is_left_alone():
     assert itn("搜一下会员价格").text == "搜一下会员价格"
+
+
+# ---------------------------------------------------------------- punctuated transcripts (LOOPDESK_VOICE_PUNC)
+@pytest.mark.parametrize("raw,expected", [
+    # What a punctuation model writes into Paraformer's output: commas around and inside a spoken order
+    # number, a question mark at the end. ITN still finds the number, and the punctuation stays Chinese
+    # (NFKC alone turns "，" into ",").
+    ("s o 二零二六零九一八零零一，我要退货退款，另外发票怎么开？", "SO20260918001，我要退货退款，另外发票怎么开？"),
+    ("S O，二零二六，一零零八，零零二，的快递到哪了", "SO20261008002，的快递到哪了"),
+    ("s，o，二零二六一零一五一零二年卡我要退款", "SO20261015102年卡我要退款"),
+    ("爱思欧，二零二六一零一五一零二，年卡我要退款。", "SO20261015102，年卡我要退款。"),
+    ("搜，二零二六一零一五一零二帮我查一下", "SO20261015102帮我查一下"),
+    ("订单号是，二零二六一零零八零零二。", "订单号是SO20261008002。"),
+    ("一百九十八块，另外能开发票吗？", "198块，另外能开发票吗？"),
+    ("我的手机号是，一三八，一二三四，五六七八。", "我的手机号是，13812345678。"),
+    ("下载的歌能导出成 M P 三吗？", "下载的歌能导出成MP3吗？"),
+    # English stays English; numbers keep their own separators.
+    ("where is my order S O 二零二六一零零八零零二?", "where is my order SO20261008002?"),
+    ("下午3:30以后发货吗？", "下午3:30以后发货吗？"),
+])
+def test_itn_on_punctuated_text(raw, expected):
+    assert itn(raw).text == expected
+
+
+def test_a_comma_inside_the_spoken_prefix_does_not_make_it_inferred():
+    assert itn("s，o，二零二六一零一五一零二").inferred_prefix == set()
+    assert itn("爱思欧，二零二六一零一五一零二").inferred_prefix == set()
+
+
+def test_punctuation_does_not_change_the_canonical_text():
+    assert canonical("s o 二零二六零九一八零零一，我要退货退款，另外发票怎么开？") == \
+        canonical("SO20260918001 我要退货退款，另外发票怎么开？")
