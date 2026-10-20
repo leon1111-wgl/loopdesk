@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from ..localtime import local_date, zone_of
 from ..models import Approval, Conversation, Order, Refund, Tenant, Ticket, User
@@ -164,11 +165,30 @@ def track_shipment(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- refunds (high risk)
+def _refund_of(db: Session, approval_id: int) -> Refund | None:
+    return db.execute(select(Refund).where(Refund.approval_id == approval_id)).scalar_one_or_none()
+
+
 def _refund_for_approval(ctx: ToolContext) -> Refund | None:
     """The approval id is the idempotency key: retrying an approved run must not move money twice."""
     if ctx.approval_id is None or ctx.dry_run:
         return None
-    return ctx.db.execute(select(Refund).where(Refund.approval_id == ctx.approval_id)).scalar_one_or_none()
+    return _refund_of(ctx.db, ctx.approval_id)
+
+
+def _refund_executed(db: Session, approval_id: int) -> dict[str, Any] | None:
+    """The refund an approval already made, as request_refund reports it (ToolDef.executed). A
+    refund row is there exactly when the refund was made: the row and the order's claim commit
+    together."""
+    refund = _refund_of(db, approval_id)
+    return _refund_result(refund, "approved") if refund is not None else None
+
+
+def _refund_result(refund: Refund, status: str) -> dict[str, Any]:
+    return {
+        "status": status, "refund_id": refund.id, "order_id": refund.order_id, "amount": refund.amount,
+        "message": f"退款单 #{refund.id} 已受理，退款金额 ¥{refund.amount:.2f} 将按原支付方式退回。",
+    }
 
 
 def _application_time(ctx: ToolContext) -> datetime:
@@ -281,10 +301,7 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
 def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     done = _refund_for_approval(ctx)
     if done is not None:
-        return {
-            "status": "approved", "refund_id": done.id, "order_id": done.order_id, "amount": done.amount,
-            "message": f"退款单 #{done.id} 已受理，退款金额 ¥{done.amount:.2f} 将按原支付方式退回。",
-        }
+        return _refund_result(done, "approved")
     # Re-validate at execution time: the order may have changed while waiting for approval.
     checked = _refund_precheck(ctx, args)
     amount = checked["amount"]
@@ -332,10 +349,7 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         ctx.db.commit()  # keep what the run had pending, and end the transaction (SQLite's write lock)
         raise
     ctx.db.commit()
-    return {
-        "status": status, "refund_id": refund.id, "order_id": checked["order_id"], "amount": amount,
-        "message": f"退款单 #{refund.id} 已受理，退款金额 ¥{amount:.2f} 将按原支付方式退回。",
-    }
+    return _refund_result(refund, status)
 
 
 # ---------------------------------------------------------------- tickets & handoff
@@ -453,6 +467,7 @@ def build_registry() -> ToolRegistry:
         risk="high",
         precheck=_refund_precheck,
         approval=_refund_policy,
+        executed=_refund_executed,
     ))
     registry.register(ToolDef(
         name="create_ticket",

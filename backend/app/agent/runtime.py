@@ -95,6 +95,13 @@ class ToolOutcome:
 
 
 
+def rejected_result(tool: str, comment: str) -> dict[str, Any]:
+    """A rejection as a tool result: the model words the answer from it, and a resume killed
+    before that tells the customer its message as it stands (app.ops.stale_runs)."""
+    return {"status": "rejected", "comment": comment,
+            "message": f"{TOOL_LABEL.get(tool, '该操作')}申请未通过人工审核。审核意见：{comment or '无'}。"}
+
+
 def _plain(chunk: str) -> str:
     """A knowledge chunk as one quotable passage: list markers and line breaks removed."""
     return "".join(re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", line).strip() for line in chunk.splitlines())
@@ -350,11 +357,7 @@ class AgentRuntime:
                     # If the model then fails, the degraded reply is what was done, not a guess.
                     state["executed_message"] = str(outcome.output.get("message") or APPROVED_FALLBACK_TEXT)
             else:
-                outcome = ToolOutcome("result", {
-                    "status": "rejected",
-                    "comment": comment,
-                    "message": f"{TOOL_LABEL.get(call.name, '该操作')}申请未通过人工审核。审核意见：{comment or '无'}。",
-                })
+                outcome = ToolOutcome("result", rejected_result(call.name, comment))
                 ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
             messages.append(self._tool_message(call, outcome))
             events.append({"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,

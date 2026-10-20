@@ -1,9 +1,11 @@
 """Tool registry with risk levels and approval policies.
 
-A tool declares three things beyond its schema:
+A tool declares up to four things beyond its schema:
 - ``risk``: read (no side effects) / write (reversible side effects) / high (money moves);
 - ``precheck``: validation that must pass BEFORE a human is asked to approve anything;
-- ``approval``: a policy that returns a reason when this specific call needs a human.
+- ``approval``: a policy that returns a reason when this specific call needs a human;
+- ``executed``: for a tool with an approval policy, its result if it already ran for a given
+  approval, else None (app.ops.stale_runs asks after a resume was killed).
 
 Identity for permission checks comes from ``ToolContext`` (the logged-in user), never
 from model-generated arguments, so prompt injection cannot widen what a tool may do.
@@ -86,6 +88,7 @@ class ApprovalRequired(Exception):
 
 Handler = Callable[[ToolContext, dict[str, Any]], dict[str, Any]]
 Policy = Callable[[ToolContext, dict[str, Any]], "ApprovalNeed | str | None"]
+Executed = Callable[[Session, int], "dict[str, Any] | None"]
 
 
 @dataclass
@@ -98,6 +101,7 @@ class ToolDef:
     roles: tuple[str, ...] = ("admin", "agent", "customer")
     precheck: Handler | None = None
     approval: Policy | None = None
+    executed: Executed | None = None
 
     def spec(self) -> ToolSpec:
         return ToolSpec(self.name, self.description, self.parameters)
