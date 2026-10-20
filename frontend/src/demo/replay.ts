@@ -103,6 +103,7 @@ function answer(path: string, init: RequestInit): Promise<Response> {
     return hit !== undefined ? json(hit) : json({ detail: "静态演示没有录制这一页的数据" }, 404);
   }
 
+  if (method === "POST" && path === "/api/auth/logout") return json({ signed_out: true });
   if (method === "POST" && path === "/api/conversations") {
     const now = new Date().toISOString();
     const conversation = { id: nextId++, title: "新对话", channel: "web", status: "bot", created_at: now, updated_at: now };

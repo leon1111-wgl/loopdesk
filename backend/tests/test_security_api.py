@@ -197,7 +197,8 @@ PUBLIC_ROUTES = {
     ("POST", "/api/channels/feishu/{tenant_slug}/events"),  # authenticated by Feishu's verification token
 }
 CUSTOMER_ROUTES = {
-    ("GET", "/api/auth/me"), ("GET", "/api/conversations"), ("POST", "/api/conversations"),
+    ("GET", "/api/auth/me"), ("POST", "/api/auth/logout"),  # signs out only the caller
+    ("GET", "/api/conversations"), ("POST", "/api/conversations"),
     ("GET", "/api/conversations/{conversation_id}/messages"),
     ("POST", "/api/conversations/{conversation_id}/stream"), ("POST", "/api/chat"),
     ("POST", "/api/messages/{message_id}/feedback"),
@@ -316,3 +317,28 @@ def test_rate_limit_backend_is_validated(monkeypatch):
     monkeypatch.setenv("LOOPDESK_RATE_LIMIT_BACKEND", "redis")
     with pytest.raises(ValueError, match="RATE_LIMIT_BACKEND"):
         Settings.from_env()
+
+
+def test_logout_revokes_the_token_on_the_server(client, login):
+    # N-043: "退出" only deleted the token in the browser; a copy of it kept working for 12 hours.
+    laptop, phone = login("customer@leon.demo"), login("customer@leon.demo")
+    assert client.post("/api/auth/logout", headers=laptop).json() == {"signed_out": True}
+    assert client.get("/api/auth/me", headers=laptop).status_code == 401
+    assert client.post("/api/conversations", json={}, headers=laptop).status_code == 401
+    assert client.get("/api/auth/me", headers=phone).status_code == 401, "one counter per user: every device"
+    fresh = login("customer@leon.demo")
+    assert client.get("/api/auth/me", headers=fresh).status_code == 200, "signing in again works"
+    assert client.get("/api/auth/me", headers=login("customer2@leon.demo")).status_code == 200, "other users untouched"
+    assert client.post("/api/auth/logout").status_code == 401
+
+
+def test_an_admin_can_sign_a_user_out_of_every_device(client, login):
+    admin, agent = login("admin@leon.demo"), login("agent@leon.demo")
+    mia = client.get("/api/auth/me", headers=agent).json()["id"]
+    assert client.post(f"/api/admin/users/{mia}/sign-out", headers=agent).status_code == 403
+    assert client.post(f"/api/admin/users/{mia}/sign-out", headers=admin).json() == {"user_id": mia, "signed_out": True}
+    assert client.get("/api/approvals", headers=agent).status_code == 401
+    entry = client.get("/api/audit", headers=admin).json()[0]
+    assert entry["action"] == "user.sign_out" and entry["target"] == f"user:{mia}"
+    iris_admin = login("admin@iris.demo")
+    assert client.post(f"/api/admin/users/{mia}/sign-out", headers=iris_admin).status_code == 404, "tenant isolation"

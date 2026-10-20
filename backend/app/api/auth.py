@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -82,6 +82,23 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)) -> dic
     return {"token": create_token(user), "user": user_out(user, tenant)}
 
 
+def _revoke_tokens(db: Session, user_id: int) -> None:
+    """Every token issued to the user so far stops working on its next request. One counter per
+    user, so signing out ends every device's session; a per-session list would need a table of
+    issued tokens. The increment runs in SQL, so two concurrent sign-outs both count."""
+    db.execute(update(User).where(User.id == user_id).values(token_version=User.token_version + 1)
+               .execution_options(synchronize_session=False))
+
+
+@router.post("/auth/logout")
+def logout(principal: Principal = Depends(get_principal), db: Session = Depends(get_db)) -> dict:
+    """Server-side sign-out (N-043). Deleting the token in the browser is not enough: a copy
+    taken from localStorage, a proxy log or a shared machine kept working until it expired."""
+    _revoke_tokens(db, principal.user.id)
+    db.commit()
+    return {"signed_out": True}
+
+
 @router.get("/auth/me")
 def me(principal: Principal = Depends(get_principal)) -> dict:
     return user_out(principal.user, principal.tenant)
@@ -145,3 +162,16 @@ def erase_personal_data(user_id: int, principal: Principal = Depends(require_adm
     record(db, principal, "user.erase", f"user:{target.id}", erased=erased)
     db.commit()
     return {"user_id": target.id, "erased": erased}
+
+
+@router.post("/admin/users/{user_id}/sign-out")
+def force_sign_out(user_id: int, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Sign a user of the admin's tenant out of every device, e.g. a lost laptop or a leaked
+    token. The account itself keeps working: the user signs in again with the password."""
+    from .common import get_owned
+
+    target = get_owned(db, User, user_id, principal.tenant.id)
+    _revoke_tokens(db, target.id)
+    record(db, principal, "user.sign_out", f"user:{target.id}")  # by id, like user.erase
+    db.commit()
+    return {"user_id": target.id, "signed_out": True}

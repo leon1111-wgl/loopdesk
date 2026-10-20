@@ -37,8 +37,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
-    setToken(null);
-    setUser(null);
+    // Revoke the token on the server first (N-043); sign out locally even if that fails,
+    // e.g. offline or the token already expired.
+    api
+      .post("/api/auth/logout")
+      .catch(() => undefined)
+      .finally(() => {
+        setToken(null);
+        setUser(null);
+      });
   }, []);
 
   return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>;
