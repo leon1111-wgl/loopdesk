@@ -89,11 +89,20 @@ _FRAUD_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"(?:微信|vx|v信|wx|weixin|wechat|qq|whatsapp|telegram)(?:号|号码|群|账号|id)?:?(?:是|为)?"
         r"(?:[a-z][a-z0-9_-]{5,19}|\d{5,12})")),
 ]
-# A warning about fraud uses the same words ("客服不会索要验证码", "如遇到要求您转账的情况，请挂断").
-_WARNING = re.compile(
-    r"不会|不要|请勿|切勿|勿|不得|禁止|谨防|警惕|小心|防止|以防|不可|无需|无须|不需要|不用|从不|绝不|决不|拒绝"
-    r"|如遇|遇到|自称|冒充|诈骗|骗子|骗局|never|not|n't|noone|nobody|beware|scam|fraud")
+# A warning about the trick uses the same words ("客服不会索要验证码", "请勿将验证码告诉他人",
+# "谨防冒充客服索要验证码", "如遇到要求您转账的情况，请挂断"). It is a warning only when the negation
+# governs the request itself: right before its verb, a beware-frame earlier in the clause, or an
+# if-you-meet frame around it. A purpose clause is not ("为防止诈骗，请将验证码发给客服核验"), and
+# English "not" is only matched as "do not"/"will not" (the text has no spaces left: "note" ≠ not).
+_NEGATED = re.compile(
+    r"(?:不会|不要|请勿|切勿|勿|不得|禁止|绝不|决不|从不|无需|无须|不需要|不用|拒绝|没有人会|任何人都不会)"
+    r"(?:向(?:您|你|任何人|他人)|主动|以任何(?:理由|方式|名义)|通过任何(?:渠道|方式)|在任何情况下|要求(?:您|你)|让(?:您|你))*$"
+    r"|(?:never|donot|don't|dont|willnot|won't|wont|shallnot|doesnot|doesn't|noone|nobody)[a-z']{0,12}$")
+_BEWARE = re.compile(r"谨防|警惕|小心|当心|提防|防范|beware")
+_IF_MET = re.compile(r"如遇|遇到|若有|如有|如果有|凡是|一旦有")
+_SCENARIO = re.compile(r"^[^。!?;,:]{0,12}?(?:的情况|的人|的电话|的短信|的链接|的网站|时)")
 _BOUNDARY = "。!?;,:."
+_CITATION = re.compile(r"\[\d+(?:[,，]\d+)*\]")
 
 # Instructions addressed to the support agent. In an internal handbook they are its purpose; in a
 # customer-facing policy they are out of place ("客服应告知顾客：请添加微信……"), so public only.
@@ -116,19 +125,29 @@ def detect_injection(text: str) -> InjectionReport:
     return InjectionReport(bool(matches), matches)
 
 
-def _clause_before(norm: str, start: int) -> str:
-    cut = max(norm.rfind(mark, 0, start) for mark in _BOUNDARY)
-    return norm[cut + 1:start]
+def _clause(norm: str, start: int, end: int) -> tuple[str, str]:
+    """The text of the clause before a match, and after it."""
+    left = max(norm.rfind(mark, 0, start) for mark in _BOUNDARY) + 1
+    rights = [i for i in (norm.find(mark, end) for mark in _BOUNDARY) if i >= 0]
+    return norm[left:start], norm[end:min(rights) if rights else len(norm)]
+
+
+def _is_warning(before: str, after: str) -> bool:
+    return bool(_NEGATED.search(before) or _BEWARE.search(before)
+                or (_IF_MET.search(before) and _SCENARIO.search(after)))
 
 
 def _fraud(norm: str, trusted: str = "") -> list[str]:
     found = []
     for name, pattern in _FRAUD_PATTERNS:
         for match in pattern.finditer(norm):
-            if _WARNING.search(_clause_before(norm, match.start())):
+            before, after = _clause(norm, match.start(), match.end())
+            if _is_warning(before, after):
                 continue  # a warning about the trick, not the trick
-            if trusted and match.group(0) in trusted:
-                continue  # quoted from knowledge an administrator reviewed and released
+            # Quoted from knowledge an administrator reviewed and released: the whole clause, not
+            # only the matched words ("请先缴纳 5000 元保证金后再退款" is not the supplier FAQ).
+            if trusted and _CITATION.sub("", before + match.group(0) + after) in trusted:
+                continue
             found.append(name)
             break
     return found

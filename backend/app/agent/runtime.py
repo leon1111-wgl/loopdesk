@@ -112,9 +112,10 @@ def _unsafe_sources(ctx: ToolContext) -> list[dict[str, Any]]:
 
 
 class _StreamGate:
-    """Streamed text reaches the customer a sentence at a time, each one checked (N-038): a phishing
-    sentence is never on screen, not even for the moment before the finished answer is replaced,
-    and nothing after it is shown either. The rules match within a clause, so a sentence can be
+    """Streamed text reaches the customer a sentence at a time, each sentence checked before it is
+    shown (N-038); from the first one that fails, nothing more is shown. A line break does not end
+    a sentence: "请把您的银行卡号\n发给我。" is one request, and releasing its first line on its own
+    put it on screen (found in review). The rules match within a clause, so a whole sentence can be
     checked on its own."""
 
     def __init__(self, ctx: ToolContext):
@@ -122,7 +123,7 @@ class _StreamGate:
 
     def feed(self, text: str) -> str:
         self.pending += text
-        cut = max(self.pending.rfind(mark) for mark in "。！？；!?;\n")
+        cut = max(self.pending.rfind(mark) for mark in "。！？；!?;")
         if cut < 0:
             return ""
         ready, self.pending = self.pending[:cut + 1], self.pending[cut + 1:]

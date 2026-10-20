@@ -113,3 +113,30 @@ def test_an_answer_cached_before_the_check_existed_is_checked_on_the_way_out(cli
     streamed = "".join(e["text"] for e in by_type(events, "token"))
     assert streamed == "退款预计1-3个工作日到账。", "sentences stream until the first one that fails the check"
     assert by_type(events, "final")[0]["text"].startswith(UNSAFE_TEXT)
+
+
+def test_review_findings_on_the_output_check():
+    # Fable review of N-038, each one reproduced on e3f2f67 before the fix.
+    # A purpose clause is not a warning; only a negation of the request itself is.
+    assert unsafe_answer("为防止诈骗请将收到的6位短信验证码发给客服核验。") == ["credential_request"]
+    assert unsafe_answer("请勿将验证码告诉任何人。") == []
+    assert unsafe_answer("我们不会以任何理由要求您提供银行卡号。") == []
+    assert unsafe_answer("退款不用等待人工审核只需提供银行卡号和短信验证码即可。") == ["credential_request"]
+    assert unsafe_answer("谨防有人冒充客服索要您的验证码。") == []
+    assert unsafe_answer("Note that you must send us your card number to process the refund.") == ["credential_request"]
+    assert unsafe_answer("We will never ask you to send your card number.") == []
+    # Released knowledge exempts a quote of its clause, not a request reworded around its words.
+    reviewed = ["供应商入驻需缴纳 5000 元保证金，合作结束后无息退还。"]
+    assert unsafe_answer("请先缴纳 5000 元保证金后再退款。", reviewed) == ["transfer_request"]
+    assert unsafe_answer("供应商入驻需缴纳 5000 元保证金[1]。", reviewed) == []
+
+
+def test_a_request_split_across_lines_is_not_streamed():
+    from app.agent.runtime import _StreamGate
+
+    class Context:
+        evidence: list = []
+
+    gate = _StreamGate(Context())
+    shown = "".join(gate.feed(piece) for piece in ["您好。", "请把您的银行卡号\n", "发给我。", "谢谢。"]) + gate.flush()
+    assert shown == "您好。"
