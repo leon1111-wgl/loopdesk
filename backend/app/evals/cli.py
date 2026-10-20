@@ -10,10 +10,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 from sqlalchemy import select
+
+from .scratch import scratch_database_url
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = get_settings()
     if args.fresh:
-        settings.database_url = f"sqlite:///{Path(tempfile.mkdtemp()) / 'eval.db'}"
+        settings.database_url = scratch_database_url("eval")
     init_engine(settings.database_url)
     create_all()
     services = Services(settings)

@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import tempfile
 from pathlib import Path
 
 from sqlalchemy import select
+
+from .scratch import scratch_database_url
 
 PROBE_FILE = Path(__file__).resolve().parents[2] / "evals" / "gate_probe.json"
 
@@ -38,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     from ..services import Services
 
     settings = get_settings()
-    settings.database_url = f"sqlite:///{Path(tempfile.mkdtemp()) / 'gate.db'}"
+    settings.database_url = scratch_database_url("gate")
     init_engine(settings.database_url)
     create_all()
     services = Services(settings)

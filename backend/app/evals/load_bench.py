@@ -21,12 +21,13 @@ import socket
 import statistics
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
 
 import httpx
+
+from .scratch import scratch_database_url
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 QUESTIONS = [
@@ -165,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report")
     args = parser.parse_args(argv)
 
-    database_url = args.database_url or f"sqlite:///{Path(tempfile.mkdtemp()) / 'load.db'}"
+    database_url = args.database_url or scratch_database_url("load")
     _prepare_database(database_url)
     proc, base = _start_server(database_url, args.workers, 24.0 if args.cache == "on" else 0.0)
     try:

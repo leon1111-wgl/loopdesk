@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import tempfile
 from pathlib import Path
 
 from sqlalchemy import select
+
+from .scratch import scratch_database_url
 
 SET_FILE = Path(__file__).resolve().parents[2] / "evals" / "paraphrase.json"
 
@@ -36,7 +37,7 @@ def measure(settings=None) -> dict:
     from ..services import Services
 
     settings = settings or get_settings()
-    settings.database_url = f"sqlite:///{Path(tempfile.mkdtemp()) / 'paraphrase.db'}"
+    settings.database_url = scratch_database_url("paraphrase")
     init_engine(settings.database_url)
     create_all()
     services = Services(settings)

@@ -14,9 +14,10 @@ import argparse
 import json
 import random
 import statistics
-import tempfile
 import time
 from pathlib import Path
+
+from .scratch import scratch_database_url
 
 QUESTIONS = ["退款多久能到账", "退货运费谁出", "积分可以怎么抵扣", "发票怎么开", "会员有什么权益",
              "能货到付款吗", "海外订单多久送到", "怎么修改收货地址", "银行卡退款要几天", "快递丢了怎么办"]
@@ -49,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - benchmark 
     from ..textutil import split_sentences
 
     settings = Settings()
-    settings.database_url = f"sqlite:///{Path(tempfile.mkdtemp()) / 'retrieval.db'}"
+    settings.database_url = scratch_database_url("retrieval")
     init_engine(settings.database_url)
     prepare_database(settings.database_url, True)
     services = Services(settings)
