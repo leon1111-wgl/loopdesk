@@ -29,9 +29,14 @@ _SHIPMENT = re.compile(r"物流|快递|到哪|发货了吗|配送|运单|什么�
                        re.IGNORECASE)
 # "退款到哪一步了", "退款进度查一下", "SO… 的退款多久到账": a question about a refund, read-only (N-056).
 # An explicit request in the same sentence ("我要退款，多久到账") still files one.
-_PROGRESS = re.compile(r"进度|到哪一?步|怎么样了|处理得?怎么样|到账了?(?:吗|没)|到没到账|退回来了?(?:吗|没)"
+_PROGRESS = re.compile(r"进度|到哪一?步|退款到哪了|怎么样了|处理得?怎么样|到账了?(?:吗|没)|到没到账|退回来了?(?:吗|没)"
                        r"|(?:多久|几天|什么时候|啥时候)(?:能|才能|可以)?到账|status|progress", re.IGNORECASE)
 _APPLY = re.compile(r"我要退|申请退|帮我退|给我退|退我|想退|要退|退一下|退掉")
+# "我的快递咋还没到", "我最近买的那个扫地机器人到哪了", "快递到哪了": about one of the customer's
+# own orders even without its number, so look their orders up instead of searching policy (N-057).
+# "我的银行卡号…能退到这张卡吗" is a policy question: "我的" counts only before an order word.
+_OWN = re.compile(r"我的(?:快递|包裹|订单|单|货|东西|退款)|我那|我最近|我买的|我刚买|我上次|我下的")
+_MINE = re.compile(_OWN.pattern + r"|单子|到哪了|到哪儿|还没到|咋还没|怎么还没")
 _TICKET = re.compile(r"报修|故障|坏了|工单|无法使用|打不开|不工作|失灵|连不上")
 # A ticket is for a problem being reported ("坏了", "打不开", "出故障了"), not for a question about how
 # problems are handled ("P1故障多久响应？", "怎么报修？"): the knowledge base answers those.
@@ -67,6 +72,40 @@ def split_intents(text: str) -> tuple[str, str | None]:
 
 def asks_refund_status(text: str) -> bool:
     return bool(_REFUND.search(text) or "到账" in text) and bool(_PROGRESS.search(text)) and not _APPLY.search(text)
+
+
+def about_my_order(text: str) -> bool:
+    """A refund or delivery question about the customer's own order, asked without an order number."""
+    if ORDER_ID_RE.search(text):
+        return False
+    if asks_refund_status(text):
+        return bool(_OWN.search(text) or "单子" in text)
+    if _REFUND.search(text):
+        # "我要退款", "我买的那个扫地机器人退货"; not "快递还没到能退款吗" or "我买的东西能退货吗", which ask about policy.
+        return bool(_APPLY.search(text) or (_OWN.search(text) and not _ASKING.search(text.strip())))
+    return bool(_SHIPMENT.search(text) and _MINE.search(text))
+
+
+def _names_item(text: str, name: str) -> bool:
+    """"扫地机器人" names "扫地机器人 X1": any two Chinese characters of the item name in a row."""
+    han = re.sub(r"[^\u4e00-\u9fff]", "", name)
+    return any(han[i:i + 2] in text for i in range(len(han) - 1))
+
+
+def pick_my_order(text: str, listing: dict[str, Any]) -> str | None:
+    """The one order a question without a number is about, or None when it has to be asked.
+    Only read-only questions are followed up on a guess; a refund is never filed on one."""
+    orders = listing.get("orders") or []
+    named = [o for o in orders if any(_names_item(text, n) for n in o.get("items") or [])]
+    if named:
+        candidates = named
+    elif asks_refund_status(text):
+        candidates = [o for o in orders if o.get("status") == "refunding"]
+    elif _SHIPMENT.search(text) and not _REFUND.search(text):
+        candidates = [o for o in orders if o.get("status") == "shipped"]
+    else:
+        candidates = []
+    return candidates[0]["order_id"] if len(candidates) == 1 else None
 
 
 def wants_human(text: str) -> bool:
@@ -162,6 +201,16 @@ class MockLLM(LLMProvider):
                 return "track_shipment", {"order_id": found[len(tracked)]}
             return None
 
+        if about_my_order(text) and "list_my_orders" in available:
+            if can("list_my_orders"):
+                return "list_my_orders", {}
+            listing = (results.get("list_my_orders") or [{}])[-1]
+            # Read-only questions may follow a single match; money never moves on an order we picked.
+            picked = None if (_REFUND.search(text) and not asks_refund_status(text)) else pick_my_order(text, listing)
+            if picked is None:
+                return None  # list the orders and ask which one
+            order_ids = [picked]
+
         if order_ids:
             order_id = order_ids[0]
             if can("get_order"):
@@ -215,6 +264,10 @@ class MockLLM(LLMProvider):
         handoff = last("handoff_to_human")
         if handoff:
             parts.append(handoff.get("message") or handoff.get("error", ""))
+
+        listing = last("list_my_orders")
+        if listing and not results.get("get_order"):
+            parts.append(self._ask_which(text, listing))
 
         orders = results.get("get_order") or []
         refund = last("request_refund")
@@ -279,6 +332,20 @@ class MockLLM(LLMProvider):
         if not parts:
             parts.append(REFUSAL)
         return "".join(p for p in parts if p)
+
+    @staticmethod
+    def _ask_which(text: str, listing: dict[str, Any]) -> str:
+        if listing.get("error"):
+            return f"暂时查不到您的订单：{listing['error']}。也可以直接告诉我订单号。"
+        orders = listing.get("orders") or []
+        if not orders:
+            return "没有查到您账号下的订单。如果是用其他账号下的单，请告诉我订单号。"
+        lines = "；".join(f"{o['order_id']}（{'、'.join(o.get('items') or [])}，{o['status_text']}，¥{o['amount']:.2f}）"
+                         for o in orders)
+        if _REFUND.search(text) and not asks_refund_status(text):
+            return (f"您账号下最近的订单有：{lines}。请问要申请退款的是哪一单？"
+                    f"请回复“订单号 申请退款”，例如“{orders[0]['order_id']} 申请退款”。")
+        return f"您账号下最近的订单有：{lines}。请问要查询的是哪一单？回复订单号即可。"
 
     @staticmethod
     def _refund_progress(order: dict[str, Any]) -> str:

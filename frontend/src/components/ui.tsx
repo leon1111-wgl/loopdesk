@@ -8,6 +8,7 @@ export const ROLE_TEXT: Record<string, string> = { admin: "管理员", agent: "�
 
 export const TOOL_TEXT: Record<string, string> = {
   search_knowledge: "检索知识库",
+  list_my_orders: "列出我的订单",
   get_order: "查询订单",
   track_shipment: "查询物流",
   request_refund: "发起退款",

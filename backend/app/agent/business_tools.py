@@ -1,4 +1,4 @@
-"""The six business tools the support agent can call.
+"""The seven business tools the support agent can call.
 
 Keys starting with "_" in a tool result are trace-only: the runtime records them in the
 span and strips them before the result reaches the model.
@@ -54,6 +54,7 @@ ONE_REFUND_TEXT = "每个订单只能在线申请一次退款，如需再退请�
 PENDING_TEXT = ("退款申请已提交（退款单 #{id}），支付系统暂未返回结果，我们会继续核实，请勿重复申请；"
                 "处理结果以订单状态为准。")
 COUNTED = ("pending", "processing", "succeeded")  # ledger states the velocity limit counts
+MY_ORDERS_LIMIT = 5
 LIVE = ("claiming", "pending", "processing", "succeeded")  # states that hold an order (models.LIVE_REFUND)
 
 
@@ -295,6 +296,23 @@ def list_orders(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         "order_id": o.order_id, "status_text": _status_text(o), "amount": round(o.amount, 2),
         "paid_at": local_date(o.paid_at, zone) if o.paid_at else None, "items": [i["name"] for i in o.items],
     } for o in orders]}
+
+
+def list_my_orders(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """The signed-in customer's own recent orders, newest first (N-057): most people do not know
+    their order number, they say "my parcel" or "the robot vacuum I bought". Always the caller's
+    own orders, whatever the arguments say; read-only, so the agent may follow up on a single
+    match, but it asks before filing a refund on an order it picked."""
+    try:
+        orders = ctx.orders.list_orders(customer_ref(ctx.user), limit=MY_ORDERS_LIMIT)
+    except GatewayError as exc:
+        raise ToolUnavailable(ORDER_SYSTEM_DOWN_TEXT) from exc
+    zone = zone_of(ctx.tenant)
+    return {"orders": [{
+        "order_id": o.order_id, "status": o.status, "status_text": _status_text(o), "amount": round(o.amount, 2),
+        "paid_at": local_date(o.paid_at, zone) if o.paid_at else None,
+        "items": [str(i.get("name", "")) for i in o.items],
+    } for o in orders[:MY_ORDERS_LIMIT]]}
 
 
 def track_shipment(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -672,6 +690,15 @@ def build_registry() -> ToolRegistry:
             "required": ["order_id"],
         },
         handler=get_order,
+    ))
+    registry.register(ToolDef(
+        name="list_my_orders",
+        description=("列出当前顾客自己最近的订单（订单号、状态、金额、商品，最多 5 笔）。顾客没有提供订单号、"
+                     "只说“我的快递”“我买的那个扫地机器人”时先调用它：只有一笔对得上就继续查这一笔；"
+                     "多笔时把订单列给顾客，请顾客确认是哪一单。不要替顾客猜订单去申请退款。"),
+        parameters={"type": "object", "properties": {}},
+        handler=list_my_orders,
+        roles=("customer",),  # staff look a customer up by e-mail (list_orders, MCP), not through their own account
     ))
     registry.register(ToolDef(
         name="track_shipment",

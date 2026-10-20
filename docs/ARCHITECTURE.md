@@ -8,7 +8,7 @@
 |---|---|---|
 | API 层 | `backend/app/api/` | 鉴权、租户隔离、限流、REST 与 SSE |
 | Agent 运行时 | `backend/app/agent/runtime.py` | 工具调用循环、人工审批暂停与恢复、最终回答校验 |
-| 工具 | `backend/app/agent/tools.py` `business_tools.py` | 工具注册、风险分级、预校验、审批策略、六个业务工具 |
+| 工具 | `backend/app/agent/tools.py` `business_tools.py` | 工具注册、风险分级、预校验、审批策略、七个业务工具 |
 | 订单与支付系统 | `backend/app/integrations/` | `OrderGateway`（查订单、列出顾客订单、物流）和 `RefundGateway`（带幂等键退款、查退款状态）：默认是演示表，按租户可换成商家自己的 HTTP 接口；退款对账任务 `app/ops/refund_reconcile.py` |
 | 证据校验器 | `backend/app/agent/verifier.py` | 逐句校验引用、数字和措辞是否有依据 |
 | 检索 | `backend/app/rag/` | 解析、标题感知切分、Embedding、BM25 + 向量 + RRF |
@@ -34,6 +34,8 @@ POST /api/conversations/{id}/stream   (SSE)
  ├─ 5. Agent 循环
  │     LLM → get_order(SO20261008002)            风险 read，直接执行；结果带该订单的退款记录和等待审核的申请，
  │                                               问“退款到哪一步了”用它回答，不再发起退款（N-056）
+ │     （没报订单号：“我的快递咋还没到”）LLM → list_my_orders()  只列本人订单；只读问题对上一笔就接着查，
+ │                                               退款申请先请顾客确认是哪一单，不替顾客猜（N-057）
  │     LLM → search_knowledge("退款 到账 工作日")  证据编号 [2] 加入证据清单
  │     LLM → request_refund(amount=1299)         风险 high
  │            ├─ precheck：订单存在且属于本人、金额为有限正数且 ≤ 实付、状态可退、未超过售后期限、没有待审批的同单申请；
