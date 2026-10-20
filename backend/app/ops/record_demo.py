@@ -24,6 +24,8 @@ from typing import Any
 # The chat page's suggestions (frontend/src/pages/ChatPage.tsx, SUGGESTIONS and STAFF_EXTRA): every
 # account records the ones it is shown, so each suggestion replays. Keep the two lists in step.
 SUGGESTED = {
+    "echo": ["怎么取消自动续费？", "SO20261019101 刚被扣了续费，帮我退款", "SO20261015102 年卡我要退款",
+             "SO20261001104 申请退款", "SO20261018105 Echo币充错了，能退款吗？", "演唱会门票买了怎么退？"],
     "leon": ["退款多久能到账？", "SO20261008002 的快递到哪了？", "订单 SO20260918001 申请退款", "SO20261008002 我要退款",
              "SO20260918011 我要退货退款", "以旧换新活动怎么参加？"],
     "iris": ["免费版有多少存储空间？", "P1故障多久响应？", "怎么导出团队的全部文档？"],
@@ -33,6 +35,7 @@ STAFF_EXTRA = ["一线客服最多可以发放多少钱的补偿券？", "帮我
 # Asked only in the demo, to give the staff pages something to act on: a refund an agent may approve,
 # a ticket with a promised response time, a customer waiting for a person.
 DEMO_ONLY = {
+    "customer2@echo.demo": ["退款一直不到账，我要投诉，给我转人工！", "App一直闪退打不开，马上帮我处理"],
     "customer@leon.demo": ["SO20261012003 我要退款", "我买的扫地机器人坏了开不了机，马上给我处理！"],
     "customer2@leon.demo": ["我的蓝牙小音箱坏了，连不上", "转人工"],
 }
@@ -117,6 +120,11 @@ def record() -> dict[str, Any]:
                 "rating": "correction", "reason_category": "knowledge_gap",
                 "correction": "以旧换新活动仅限手机和平板品类，旧机审核通过后可抵扣50-800元，抵扣金额以质检结果为准。"},
                 headers=agent).raise_for_status()
+            # Echo音乐, the main demo: the annual-card refund stays pending for the reviewer; a person takes Ryan's complaint
+            chloe = auth["agent@echo.demo"]
+            ryan = next(h for h in client.get("/api/handoffs", headers=chloe).json() if h["customer"] == "Ryan")
+            client.post(f"/api/handoffs/{ryan['ticket_id']}/reply", json={"content": "您好，我是人工客服 Chloe，这就帮您查退款进度。"},
+                        headers=chloe).raise_for_status()
             client.patch("/api/tenant", json={"approval_admin_threshold": 800}, headers=admin).raise_for_status()
             client.post("/api/evals/runs", json={"suite": "default"}, headers=admin).raise_for_status()
             client.get("/api/export/tickets.csv?days=30", headers=agent).raise_for_status()

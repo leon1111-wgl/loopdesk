@@ -78,6 +78,34 @@ def _days_since_delivery(order: OrderInfo, at: datetime) -> int | None:
     return max(0, (at - _as_utc(order.delivered_at)).days)
 
 
+def _virtual(order: OrderInfo) -> bool:
+    """Memberships, coins, digital albums: they take effect on payment and nothing is shipped
+    (an order system marks such items "virtual")."""
+    return bool(order.items) and all(item.get("virtual") for item in order.items)
+
+
+# How the after-sales policy is worded for goods that are shipped, and for what takes effect on
+# payment (the windows themselves are the tenant's: return_window_days, quality_window_days).
+_SHIPPED_WORDS = {"delivered": "已签收", "since": "签收", "first": "无理由退货", "second": "仅质量问题可以退换"}
+_VIRTUAL_WORDS = {"delivered": "已开通", "since": "开通", "first": "无理由退款", "second": "需核实本期权益未使用后才能退款"}
+
+
+def _words(order: OrderInfo) -> dict[str, str]:
+    return _VIRTUAL_WORDS if _virtual(order) else _SHIPPED_WORDS
+
+
+def _status_text(order: OrderInfo) -> str:
+    if order.status == "delivered":
+        return _words(order)["delivered"]
+    return STATUS_TEXT.get(order.status, order.status)
+
+
+def _no_online_refund(order: OrderInfo) -> str | None:
+    """Why an item cannot be refunded online, when the order system says so (coins, digital albums,
+    a subscription billed by an app store): the customer hears the reason, a person handles exceptions."""
+    return next((str(item["no_online_refund"]) for item in order.items if item.get("no_online_refund")), None)
+
+
 def _last_refund_day(tenant: Tenant) -> int:
     """After this many days since delivery no refund can be filed online at all."""
     return max(tenant.return_window_days, tenant.quality_window_days)
@@ -214,21 +242,23 @@ def _refund_progress(ctx: ToolContext, order_id: str) -> tuple[list[dict[str, An
 # ---------------------------------------------------------------- orders
 def get_order(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     order = _load_order(ctx, _order_id(args))
-    status_text = STATUS_TEXT.get(order.status, order.status)
+    status_text = _status_text(order)
     refundable = order.status in REFUNDABLE
     refund_note = "" if refundable else f"该订单当前状态为“{status_text}”，不能重复申请退款"
+    if refundable and _no_online_refund(order):
+        refundable, refund_note = False, _no_online_refund(order)
     live = _live_refund(ctx, order.order_id) if refundable else None
     if live is not None:  # filed here, and the order system does not show it (yet, or keeps partly refunded orders open)
         refundable, refund_note = False, _held_by(live).removesuffix("，请勿重复提交")
     days = _days_since_delivery(order, datetime.now(timezone.utc))
     if refundable and days is not None:
-        tenant = ctx.tenant
+        tenant, words = ctx.tenant, _words(order)
         if days > _last_refund_day(tenant):
             refundable = False
-            refund_note = f"订单已签收 {days} 天，超过 {_last_refund_day(tenant)} 天的售后期限"
+            refund_note = f"订单已{words['since']} {days} 天，超过 {_last_refund_day(tenant)} 天的售后期限"
         elif days > tenant.return_window_days:
-            refund_note = (f"订单已签收 {days} 天，已超过 {tenant.return_window_days} 天无理由退货期限，"
-                           f"{tenant.quality_window_days} 天内仅质量问题可以退换，提交后需要人工核实")
+            refund_note = (f"订单已{words['since']} {days} 天，已超过 {tenant.return_window_days} 天{words['first']}期限，"
+                           f"{tenant.quality_window_days} 天内{words['second']}，提交后需要人工核实")
     refunds, waiting = _refund_progress(ctx, order.order_id)
     return {
         "order_id": order.order_id,
@@ -262,7 +292,7 @@ def list_orders(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolUnavailable(ORDER_SYSTEM_DOWN_TEXT) from exc
     zone = zone_of(ctx.tenant)
     return {"customer": customer, "orders": [{
-        "order_id": o.order_id, "status_text": STATUS_TEXT.get(o.status, o.status), "amount": round(o.amount, 2),
+        "order_id": o.order_id, "status_text": _status_text(o), "amount": round(o.amount, 2),
         "paid_at": local_date(o.paid_at, zone) if o.paid_at else None, "items": [i["name"] for i in o.items],
     } for o in orders]}
 
@@ -273,6 +303,10 @@ def track_shipment(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         shipment = ctx.orders.get_shipment(order.order_id) if order.status != "paid" else None
     except GatewayError as exc:
         raise ToolUnavailable(ORDER_SYSTEM_DOWN_TEXT) from exc
+    if _virtual(order):
+        names = "、".join(str(item.get("name", "")) for item in order.items)
+        return {"order_id": order.order_id, "shipped": False, "virtual": True,
+                "message": f"订单 {order.order_id}（{names}）是虚拟商品，付款后即时生效，没有物流信息。"}
     if shipment is None or not shipment.events:
         return {"order_id": order.order_id, "shipped": False, "message": f"订单 {order.order_id} 目前还未发货。"}
     latest = shipment.events[-1]
@@ -385,13 +419,15 @@ def _validated(ctx: ToolContext, args: dict[str, Any]) -> tuple[OrderInfo, float
     if amount > order.amount + 1e-6:
         raise ToolError(f"退款金额 ¥{amount:.2f} 超过订单实付金额 ¥{order.amount:.2f}")
     if order.status not in REFUNDABLE:
-        raise ToolError(f"该订单当前状态为“{STATUS_TEXT.get(order.status, order.status)}”，不能发起退款")
+        raise ToolError(f"该订单当前状态为“{_status_text(order)}”，不能发起退款")
+    if _no_online_refund(order):
+        raise ToolError(_no_online_refund(order))
     days = _days_since_delivery(order, _application_time(ctx))
     if days is not None and days > _last_refund_day(ctx.tenant):
         # A hard rule, not an approval: the policy leaves nothing to decide. Exceptions
         # (goodwill, warranty) belong to a human in the back office, not to the agent.
-        raise ToolError(f"订单已签收 {days} 天，超过 {_last_refund_day(ctx.tenant)} 天的售后期限，不能在线申请退款；"
-                        "如有特殊情况，可以转人工客服处理")
+        raise ToolError(f"订单已{_words(order)['since']} {days} 天，超过 {_last_refund_day(ctx.tenant)} 天的售后期限，"
+                        "不能在线申请退款；如有特殊情况，可以转人工客服处理")
     if ctx.approval_id is None:
         pending = ctx.db.execute(select(Approval).where(
             Approval.tenant_id == ctx.tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
@@ -454,8 +490,9 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
     # the tool cannot look at the customer's photos: a person decides, whatever the amount.
     days = _days_since_delivery(order, datetime.now(timezone.utc))
     if days is not None and days > tenant.return_window_days:
-        customer_note = (f"订单已签收 {days} 天，超过 {tenant.return_window_days} 天无理由退货期限，"
-                         f"{tenant.quality_window_days} 天内仅质量问题可以退换")
+        words = _words(order)
+        customer_note = (f"订单已{words['since']} {days} 天，超过 {tenant.return_window_days} 天{words['first']}期限，"
+                         f"{tenant.quality_window_days} 天内{words['second']}")
         reasons.append(customer_note)  # published policy, so the customer may hear it too
         ctx.add_evidence("tool", "after_sales_window", json.dumps({
             "order_id": order.order_id, "delivered_at": local_date(order.delivered_at, zone_of(tenant)),

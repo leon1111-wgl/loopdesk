@@ -32,14 +32,14 @@ def _page_suggestions() -> dict[str, list[str]]:
 
 def test_the_recorder_and_the_chat_page_offer_the_same_questions():
     page = _page_suggestions()
-    assert page["leon"] == record_demo.SUGGESTED["leon"] and page["iris"] == record_demo.SUGGESTED["iris"]
+    assert all(page[tenant] == record_demo.SUGGESTED[tenant] for tenant in ("echo", "leon", "iris"))
     assert page["staff_extra"] == record_demo.STAFF_EXTRA
 
 
 def test_customers_are_not_offered_attack_samples():
     """The customer's chat is the shop's support page: prompt-injection samples are a staff test case (N-046)."""
     page = _page_suggestions()
-    customer = [q for tenant in ("leon", "iris") for q in page[tenant]]
+    customer = [q for tenant in ("echo", "leon", "iris") for q in page[tenant]]
     customer += [q for questions in record_demo.DEMO_ONLY.values() for q in questions]
     assert not [q for q in customer if detect_injection(q).suspicious]
     assert any(detect_injection(q).suspicious for q in page["staff_extra"]), "the staff test bench keeps one"
@@ -66,6 +66,14 @@ def test_the_staff_pages_have_something_to_show(recording):
     assert bodies[admin["/api/audit/verify"]]["ok"] is True
     for url in (u for u in admin if u.startswith("/api/runs/")):
         assert bodies[admin[url]]["spans"], url  # each trace can be opened
+
+
+def test_the_main_demo_has_a_refund_to_review_and_a_person_at_work(recording):
+    bodies, admin = recording["bodies"], recording["responses"]["admin@echo.demo"]
+    pending = bodies[admin["/api/approvals?status_filter=pending"]]
+    assert [a["arguments"]["order_id"] for a in pending] == ["SO20261015102"]
+    assert [(h["customer"], h["assignee"]) for h in bodies[admin["/api/handoffs"]]] == [("Ryan", "Chloe")]
+    assert [t["status"] for t in bodies[admin["/api/tickets"]]] == ["open"]
 
 
 def test_nothing_secret_is_published(recording):

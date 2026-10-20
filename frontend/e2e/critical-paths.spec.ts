@@ -80,6 +80,26 @@ test("refund over the auto limit waits for an admin, then the customer sees the 
   await expect(answers.last()).toContainText("退款");
 });
 
+test("Echo音乐: an annual-card refund waits for an agent; the member sees it go through", async ({ browser }) => {
+  // The main demo (a fictional music service): memberships are virtual orders, refunds count from the charge.
+  const lily = await signIn(browser, "customer@echo.demo");
+  await ask(lily, "SO20261015102 年卡我要退款");
+  await expect(lily.getByText("已提交人工审核，结果出来后会自动显示在这里")).toBeVisible();
+  const answers = lily.locator(".msg.assistant");
+  const before = await answers.count();
+
+  const chloe = await signIn(browser, "agent@echo.demo");
+  await chloe.goto("/approvals");
+  const card = chloe.locator(".card").filter({ hasText: "SO20261015102" }).filter({ hasText: "待审批" });
+  await expect(card).toHaveCount(1);
+  await card.getByPlaceholder("审批意见（会告知顾客）").fill("年卡未使用会员权益，同意退款");
+  await card.getByRole("button", { name: "通过并执行" }).click();
+  await expect(chloe.getByText(/审批单 #\d+ 已通过并执行/)).toBeVisible();
+
+  await expect(answers).toHaveCount(before + 1, { timeout: 20_000 });
+  await expect(answers.last()).toContainText("198");
+});
+
 test("customer asks for a person; the agent replies from the handoff queue", async ({ browser }) => {
   const jack = await signIn(browser, "customer2@leon.demo");
   await ask(jack, "给我转人工");

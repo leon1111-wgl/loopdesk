@@ -147,4 +147,6 @@ def test_indexes_are_built_at_startup_and_readiness_waits_for_them(settings, mon
         from app.rag.retrieval import prewarm
         assert prewarm.done.wait(10)
         assert client.get("/api/ready").status_code == 200
-    assert len(index_manager._cache) == 2, "both demo tenants are warm"
+    from app.seed import TENANTS
+
+    assert len(index_manager._cache) == len(TENANTS), "every demo tenant is warm"

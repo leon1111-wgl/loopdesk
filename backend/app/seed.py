@@ -1,4 +1,4 @@
-"""Demo data: two tenants, users, knowledge documents, orders and eval cases.
+"""Demo data: three tenants, users, knowledge documents, orders and eval cases.
 
 Everything here is SYNTHETIC. Run ``python -m app.seed --reset`` to rebuild the
 local database from scratch.
@@ -20,6 +20,7 @@ from .rag.ingest import ingest_document
 from .security import hash_password
 
 DEMO_PASSWORD = "loopdesk-demo"
+FEATURED_TENANT = "echo"  # listed first on the login page: the main demo scenario
 BASE_DIR = Path(__file__).resolve().parent.parent
 SEED_DIR = BASE_DIR / "seed_data"
 EVAL_DIR = BASE_DIR / "evals"
@@ -53,6 +54,27 @@ TENANTS = [
         "documents": [
             ("product_faq.md", "产品常见问题", "public"),
             ("sla.md", "SLA 与工单说明", "public"),
+        ],
+    },
+    # The main demo: a fictional music-streaming service. Memberships, coins and digital albums are
+    # virtual orders, so the refund windows (3 days, then 7 with a person) count from the charge.
+    {
+        "slug": "echo", "name": "Echo音乐", "industry": "music", "auto_refund_limit": 20.0, "ticket_sla_hours": 8,
+        "return_window_days": 3, "quality_window_days": 7, "official_domains": ["echomusic.example"],
+        "users": [
+            ("admin@echo.demo", "Ethan", "admin"),
+            ("agent@echo.demo", "Chloe", "agent"),
+            ("customer@echo.demo", "Lily", "customer"),
+            ("customer2@echo.demo", "Ryan", "customer"),
+        ],
+        "documents": [
+            ("membership.md", "会员与自动续费", "public"),
+            ("digital_album.md", "数字专辑与付费单曲", "public"),
+            ("copyright.md", "版权与歌曲变灰", "public"),
+            ("coins_minors.md", "Echo币与未成年人保护", "public"),
+            ("account.md", "账号与安全", "public"),
+            ("audio_download.md", "音质与下载", "public"),
+            ("internal_handbook.md", "客服内部操作手册", "internal"),
         ],
     },
 ]
@@ -113,9 +135,38 @@ def _orders(customer: User, other: User) -> list[Order]:
     ]
 
 
+def _virtual_order(order_id: str, customer: User, name: str, amount: float, paid: datetime, **item) -> Order:
+    """A membership, coins or a digital album: in effect from the moment it is paid, nothing to ship."""
+    return Order(id=order_id, tenant_id=customer.tenant_id, customer_id=customer.id, amount=amount, status="delivered",
+                 items=[{"name": name, "qty": 1, "price": amount, "virtual": True, **item}],
+                 paid_at=paid, delivered_at=paid)
+
+
+def _echo_orders(lily: User, ryan: User) -> list[Order]:
+    return [
+        # Charged yesterday, ¥18: inside 3 days and under the ¥20 limit, refunded automatically.
+        _virtual_order("SO20261019101", lily, "豪华会员 连续包月（自动续费）", 18.0, _ago(1, 2)),
+        # ¥198: over the automatic limit, a person approves.
+        _virtual_order("SO20261015102", lily, "豪华会员 年卡", 198.0, _ago(2, 4)),
+        # Day 5: between the windows, a person checks the benefits were not used.
+        _virtual_order("SO20261014103", lily, "普通会员 连续包月（自动续费）", 12.0, _ago(5, 3)),
+        # Day 19: past every window.
+        _virtual_order("SO20261001104", lily, "普通会员 单月", 15.0, _ago(19, 3)),
+        _virtual_order("SO20261018105", lily, "Echo币 980个", 98.0, _ago(2, 6),
+                       no_online_refund="Echo币充值成功后不支持退款；如为未成年人使用家长账号误充值，可由监护人转人工客服申请"),
+        _virtual_order("SO20261012106", lily, "数字专辑《夏夜电台》", 30.0, _ago(8, 1),
+                       no_online_refund="数字专辑购买后不支持退款；如因系统原因重复购买，可转人工客服核实"),
+        _virtual_order("SO20261016107", lily, "豪华会员 连续包月（App Store）", 18.0, _ago(1, 5),
+                       no_online_refund="该订单通过App Store扣费，退款需要向Apple申请"),
+        _virtual_order("SO20261010108", ryan, "普通会员 年卡", 138.0, _ago(10, 2)),
+    ]
+
+
 def fixture_orders(tenant_slug: str, users_by_email: dict[str, User]) -> list[Order]:
     """Deterministic business data. Also used by the eval sandbox, so evaluations never
     depend on whatever state the live orders are in."""
+    if tenant_slug == "echo":
+        return _echo_orders(users_by_email["customer@echo.demo"], users_by_email["customer2@echo.demo"])
     if tenant_slug != "leon":
         return []
     emma, jack = users_by_email["customer@leon.demo"], users_by_email["customer2@leon.demo"]
@@ -216,6 +267,9 @@ DEMO_TRAFFIC = [
     ("agent@leon.demo", ["一线客服最多可以发放多少钱的补偿券？"]),
     ("customer2@leon.demo", ["七天无理由退货有什么条件？"]),  # repeat of Emma's first question: answer-cache hit
     ("customer@iris.demo", ["P1故障多久响应？"]),
+    ("customer@echo.demo", ["怎么取消自动续费？", "那苹果手机呢？"]),
+    ("customer@echo.demo", ["SO20261015102 年卡我要退款"]),
+    ("customer2@echo.demo", ["为什么我收藏的歌变灰了？"]),
 ]
 
 

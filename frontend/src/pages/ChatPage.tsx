@@ -10,6 +10,14 @@ import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, HandoffState,
 // Each suggestion carries a tag naming the scenario it exercises. Customers see the questions
 // only: the tags (and the attack samples in STAFF_EXTRA) are test-bench vocabulary.
 const SUGGESTIONS: Record<string, [string, string][]> = {
+  echo: [
+    ["怎么取消自动续费？", "知识问答"],
+    ["SO20261019101 刚被扣了续费，帮我退款", "自动退款"],
+    ["SO20261015102 年卡我要退款", "需人工审批"],
+    ["SO20261001104 申请退款", "超出退款期"],
+    ["SO20261018105 Echo币充错了，能退款吗？", "不支持在线退款"],
+    ["演唱会门票买了怎么退？", "知识缺失"],
+  ],
   leon: [
     ["退款多久能到账？", "知识问答"],
     ["SO20261008002 的快递到哪了？", "查物流"],

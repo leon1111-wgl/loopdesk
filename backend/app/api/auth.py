@@ -16,7 +16,7 @@ from ..localtime import is_valid_zone
 from ..models import Tenant, User
 from ..security import (DUMMY_PASSWORD_HASH, Principal, create_token, get_principal, rate_limiter, require_admin,
                         require_staff, shared_rate_limiter, verify_password)
-from ..seed import DEMO_PASSWORD, TENANTS
+from ..seed import DEMO_PASSWORD, FEATURED_TENANT, TENANTS
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
@@ -123,9 +123,10 @@ def demo_accounts() -> dict:
     LOOPDESK_SEED_DEMO=0 (i.e. in a real deployment)."""
     if not get_settings().seed_demo:
         return {"accounts": [], "password": None}
+    featured_first = sorted(TENANTS, key=lambda spec: spec["slug"] != FEATURED_TENANT)
     accounts = [
         {"email": email, "name": name, "role": role, "tenant": spec["name"]}
-        for spec in TENANTS for email, name, role in spec["users"]
+        for spec in featured_first for email, name, role in spec["users"]
     ]
     return {"accounts": accounts, "password": DEMO_PASSWORD}
 
