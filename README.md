@@ -140,7 +140,7 @@ flowchart LR
     FW --> EV[(评测用例)] --> CI[回归评测 / CI 门禁]
 ```
 
-设计细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+设计细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。落地时会遇到的问题（以 AI Agent 特有的问题为主：幻觉、工具调用、提示注入、评测可信度、非确定性、延迟成本、模型故障、长时间运行的状态）见 [docs/CHALLENGES.md](docs/CHALLENGES.md)。
 
 ## 快速开始
 
@@ -239,7 +239,7 @@ backend/
   seed_data/      演示知识库（Markdown）
   tests/          pytest
 frontend/src/     React 控制台（对话、审批、知识库、链路、飞轮、评测、看板）
-docs/             架构、评测、部署、性能文档
+docs/             架构、评测、部署、性能、挑战与风险文档
 ```
 
 ## 技术栈
