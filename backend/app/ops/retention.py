@@ -7,6 +7,9 @@ keys or lose the audit trail. After ``days``:
 - run input/output text and state are replaced by a marker; metrics (tokens, cost,
   latency, verdict) stay for reporting;
 - message bodies and metadata are replaced by the marker;
+- tickets closed before the cutoff keep their status, priority and times, but their text (title
+  and description, the customer's words, and the resolution written to them) is replaced; open
+  tickets are left alone, someone still has to act on them;
 - expired answer-cache entries are deleted.
 Runs still waiting for an approval are never touched.
 
@@ -21,9 +24,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
-from ..models import AnswerCache, Message, Run, Span
+from ..models import AnswerCache, Message, Run, Span, Ticket
 
 REDACTED = "[已过保留期，内容已清除]"
+TICKET_TEXT_REDACTED = {"title": REDACTED, "description": REDACTED, "resolution": REDACTED}
 
 
 def apply_retention(db: Session, days: int, dry_run: bool = False) -> dict[str, int]:
@@ -32,10 +36,12 @@ def apply_retention(db: Session, days: int, dry_run: bool = False) -> dict[str, 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days)
     old_runs = select(Run.id).where(Run.created_at < cutoff, Run.status != "waiting_approval")
+    old_tickets = (Ticket.status == "closed", Ticket.closed_at < cutoff, Ticket.title != REDACTED)
     counts = {
         "spans": len(db.execute(select(Span.id).where(Span.run_id.in_(old_runs))).all()),
         "runs": len(db.execute(old_runs.where(Run.input_text != REDACTED)).all()),
         "messages": len(db.execute(select(Message.id).where(Message.created_at < cutoff, Message.content != REDACTED)).all()),
+        "tickets": len(db.execute(select(Ticket.id).where(*old_tickets)).all()),
         "answer_cache": len(db.execute(select(AnswerCache.id).where(AnswerCache.expires_at < now)).all()),
     }
     if dry_run:
@@ -44,6 +50,8 @@ def apply_retention(db: Session, days: int, dry_run: bool = False) -> dict[str, 
     db.execute(update(Run).where(Run.id.in_(old_runs)).values(input_text=REDACTED, output_text=REDACTED, state={}),
                execution_options={"synchronize_session": False})
     db.execute(update(Message).where(Message.created_at < cutoff).values(content=REDACTED, meta={}),
+               execution_options={"synchronize_session": False})
+    db.execute(update(Ticket).where(*old_tickets).values(**TICKET_TEXT_REDACTED),
                execution_options={"synchronize_session": False})
     db.execute(delete(AnswerCache).where(AnswerCache.expires_at < now))
     db.commit()
@@ -70,10 +78,10 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 def erase_user(db: Session, user_id: int) -> dict[str, int]:
-    """Right to erasure for one user: redact their conversations, runs and the feedback
-    written about their messages, drop trace spans, anonymise the account so it can no
-    longer sign in. Orders, refunds and approvals stay as accounting/audit records, but
-    the approval evidence (which quotes the conversation) is cleared."""
+    """Right to erasure for one user: redact their conversations, runs, the text of their
+    tickets and the feedback written about their messages, drop trace spans, anonymise the
+    account so it can no longer sign in. Orders, refunds and approvals stay as accounting/audit
+    records, but the approval evidence (which quotes the conversation) is cleared."""
     import secrets
 
     from ..models import Approval, Conversation, Feedback, User
@@ -97,6 +105,8 @@ def erase_user(db: Session, user_id: int) -> dict[str, int]:
                                execution_options={"synchronize_session": False}).rowcount,
         "approvals": db.execute(update(Approval).where(Approval.run_id.in_(run_ids)).values(evidence=[]),
                                 execution_options={"synchronize_session": False}).rowcount,
+        "tickets": db.execute(update(Ticket).where(Ticket.customer_id == user_id).values(**TICKET_TEXT_REDACTED),
+                              execution_options={"synchronize_session": False}).rowcount,
     }
     db.execute(update(Conversation).where(Conversation.user_id == user_id).values(title=REDACTED),
                execution_options={"synchronize_session": False})

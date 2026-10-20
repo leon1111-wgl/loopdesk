@@ -63,7 +63,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --days 90
 ```
 
-建议用 Kubernetes CronJob 或系统定时任务每天执行一次。超过保留期的链路明细（span）会被删除；运行记录的输入输出、对话正文会被替换为“已过保留期”的标记；token、成本、延迟、校验结论等指标，以及审批、退款、反馈这些审计和数据飞轮记录都会保留；仍在等待审批的运行不会被处理。
+建议用 Kubernetes CronJob 或系统定时任务每天执行一次。超过保留期的链路明细（span）会被删除；运行记录的输入输出、对话正文，以及超过保留期之前已关闭的工单的标题、描述和处理结果，会被替换为“已过保留期”的标记（未关闭的工单不动，还有人要处理）；token、成本、延迟、校验结论等指标，以及审批、退款、反馈这些审计和数据飞轮记录都会保留；仍在等待审批的运行不会被处理。
 
 ## 数据库迁移
 

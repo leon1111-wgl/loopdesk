@@ -73,3 +73,52 @@ def test_an_erased_account_loses_its_open_sessions_too(client, login):
     assert client.delete(f"/api/admin/users/{me['id']}/personal-data", headers=login("admin@leon.demo")).status_code == 200
     assert client.get("/api/auth/me", headers=customer).status_code == 401
     assert client.post("/api/conversations", json={}, headers=customer).status_code == 401
+
+
+BROKEN = "我买的扫地机器人坏了开不了机，马上给我处理！"
+
+
+def _closed_ticket(client, ask, login, email: str) -> int:
+    ask(login(email), BROKEN)
+    agent = login("agent@leon.demo")
+    ticket_id = max(t["id"] for t in client.get("/api/tickets", headers=agent).json())
+    client.post(f"/api/tickets/{ticket_id}/close", json={"resolution": "已安排上门检修，地址按订单"}, headers=agent)
+    return ticket_id
+
+
+def test_erasure_covers_the_customers_tickets(client, ask, login):
+    # Found while building the ticket workbench (N-019): a ticket's title and description are the
+    # customer's own words and its resolution is written to them, but erasure left tickets alone.
+    from app.models import Ticket, User
+
+    emma_ticket = _closed_ticket(client, ask, login, "customer@leon.demo")
+    jack_ticket = _closed_ticket(client, ask, login, "customer2@leon.demo")
+    with new_session() as db:
+        emma = db.query(User).filter(User.email == "customer@leon.demo").one().id
+    erased = client.delete(f"/api/admin/users/{emma}/personal-data", headers=login("admin@leon.demo")).json()["erased"]
+    assert erased["tickets"] == 1
+    with new_session() as db:
+        ticket = db.get(Ticket, emma_ticket)
+        assert (ticket.title, ticket.description, ticket.resolution) == (REDACTED, REDACTED, REDACTED)
+        assert ticket.status == "closed" and ticket.priority, "the record stays for reporting"
+        assert db.get(Ticket, jack_ticket).title != REDACTED, "other customers untouched"
+
+
+def test_retention_clears_the_text_of_long_closed_tickets(client, ask, login):
+    from app.models import Ticket
+
+    old_closed = _closed_ticket(client, ask, login, "customer@leon.demo")
+    ask(login("customer2@leon.demo"), BROKEN)
+    with new_session() as db:
+        still_open = db.query(Ticket).filter(Ticket.status == "open").one().id
+        long_ago = datetime.now(timezone.utc) - timedelta(days=120)
+        for ticket in db.query(Ticket):
+            ticket.created_at = long_ago
+        db.get(Ticket, old_closed).closed_at = long_ago
+        db.commit()
+        assert apply_retention(db, 90, dry_run=True)["tickets"] == 1
+        assert apply_retention(db, 90)["tickets"] == 1
+        closed = db.get(Ticket, old_closed)
+        assert (closed.title, closed.description, closed.resolution) == (REDACTED, REDACTED, REDACTED)
+        assert db.get(Ticket, still_open).title != REDACTED, "someone still has to act on an open ticket"
+        assert apply_retention(db, 90)["tickets"] == 0, "idempotent"
