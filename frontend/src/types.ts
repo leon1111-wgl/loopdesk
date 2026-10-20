@@ -126,6 +126,28 @@ export interface Approval {
   decided_at: string | null;
 }
 
+/** A row of the refund ledger (GET /api/refunds). follow_up: what the reconciliation job still does
+ * about it; "person" means nothing, and someone settles it from the payment system's back office;
+ * "stuck" is a row left in "claiming" (a bug the job logs). */
+export interface Refund {
+  id: number;
+  order_id: string;
+  amount: number;
+  status: "claiming" | "pending" | "processing" | "succeeded" | "failed";
+  attempts: number;
+  error: string;
+  external_id: string | null;
+  idempotency_key: string | null;
+  ticket_id: number | null;
+  approval_id: number | null;
+  conversation_id: number | null;
+  customer: { id: number; name: string } | null;
+  created_at: string;
+  updated_at: string | null;
+  follow_up: "resend" | "follow" | "person" | "stuck" | "demo" | null;
+  resend_until: string | null;
+}
+
 export interface DocumentRow {
   id: number;
   title: string;

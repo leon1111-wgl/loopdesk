@@ -231,6 +231,8 @@ class Refund(Base):
         Index("uq_refunds_live_order", "tenant_id", "order_id", unique=True,
               sqlite_where=text(LIVE_REFUND), postgresql_where=text(LIVE_REFUND)),
         Index("uq_refunds_idempotency_key", "idempotency_key", unique=True),
+        # The refund console: a tenant's unsettled refunds, counted by every staff page.
+        Index("ix_refunds_tenant_status_created", "tenant_id", "status", "created_at"),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)

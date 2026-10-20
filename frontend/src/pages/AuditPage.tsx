@@ -53,11 +53,13 @@ const LABEL: Record<string, string> = {
   conversation_id: "会话",
   message_id: "消息",
   overdue: "超过承诺时限",
+  outcome: "结果",
+  external_id: "支付系统退款号",
 };
 
 const VALUE: Record<string, string> = {
   public: "公开", internal: "仅内部", active: "生效", candidate: "候选", archived: "已归档",
-  approve: "通过", reject: "驳回", request_refund: "退款",
+  approve: "通过", reject: "驳回", request_refund: "退款", succeeded: "已退款", failed: "失败",
 };
 
 const CATEGORIES: [string, string][] = [

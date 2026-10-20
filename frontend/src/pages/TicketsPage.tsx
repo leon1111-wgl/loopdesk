@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Check, Hand } from "lucide-react";
 import { api } from "../api";
 import { Empty, ErrorBanner, Modal, time, useLoad } from "../components/ui";
@@ -60,10 +61,27 @@ function CloseModal({ ticket, onClose, onDone }: { ticket: Ticket; onClose: () =
 }
 
 export default function TicketsPage() {
+  const [params] = useSearchParams();
+  const focus = Number(params.get("ticket")) || null; // linked from another page, e.g. the refund console
   const [showClosed, setShowClosed] = useState(false);
   const { data, error, reload } = useLoad(() => api.get<Ticket[]>(`/api/tickets${showClosed ? "?status_filter=all" : ""}`), [showClosed]);
   const [closing, setClosing] = useState<Ticket | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Once per link: show the full list if the ticket is closed, then scroll to it. Later reloads
+  // (claiming, closing, the checkbox) must not jump back to it or re-tick the checkbox.
+  const focused = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focus || !data || focused.current === focus) return;
+    if (data.some((t) => t.id === focus)) {
+      focused.current = focus;
+      document.getElementById(`ticket-${focus}`)?.scrollIntoView({ block: "center" });
+    } else if (!showClosed) {
+      setShowClosed(true); // a closed ticket is only on the full list
+    } else {
+      focused.current = focus; // not among the recent ones either: give up
+    }
+  }, [focus, data, showClosed]);
 
   async function claim(ticket: Ticket) {
     setActionError(null);
@@ -90,7 +108,8 @@ export default function TicketsPage() {
           <thead><tr><th>工单</th><th>顾客</th><th>优先级</th><th>状态</th><th>承诺时限</th><th>接手人</th><th /></tr></thead>
           <tbody>
             {data?.map((t) => (
-              <tr key={t.id}>
+              <tr key={t.id} id={`ticket-${t.id}`} className={t.id === focus ? "row-focus" : undefined}
+                aria-current={t.id === focus ? "true" : undefined}>
                 <td><b>#{t.id} {t.title}</b>
                   {/* the agent often files the customer's own sentence as both title and description */}
                   {t.description && t.description.trim() !== t.title.trim() && <div className="faint small">{t.description}</div>}

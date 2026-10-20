@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
 // The roles' critical paths, each crossing from one role to another the way the
@@ -20,6 +22,23 @@ async function signIn(browser: Browser, email: string): Promise<Page> {
   await page.getByRole("button", { name: new RegExp(email.replace(".", "\\.")) }).click();
   await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
   return page;
+}
+
+/** A refund the payment system never answered, filed 26 hours ago: past the 24 hours the
+ * reconciliation job sends it again. The demo tables answer every refund at once, so the walkthrough
+ * writes this one into the server's database itself (the same row a timed-out payment call leaves). */
+function stuckRefund(orderId: string, email: string) {
+  const db = fileURLToPath(new URL("../../backend/.e2e.db", import.meta.url));
+  const script = `
+import sqlite3, sys, uuid
+db = sqlite3.connect(sys.argv[1])
+db.execute("""INSERT INTO refunds (tenant_id, order_id, customer_id, amount, reason, status, idempotency_key,
+                                   error, attempts, created_at)
+              SELECT tenant_id, ?, id, 268.0, '不想要了', 'pending', ?, 'unanswered: HTTP 503 after 3 attempt(s)', 3,
+                     datetime('now', '-26 hours') FROM users WHERE email = ?""", (sys.argv[2], uuid.uuid4().hex, sys.argv[3]))
+db.commit()
+`;
+  execFileSync(process.env.E2E_PYTHON ?? "python3", ["-c", script, db, orderId, email]);
 }
 
 async function ask(page: Page, text: string) {
@@ -157,4 +176,53 @@ test("an administrator edits a document; the knowledge page and the audit log sh
   const entry = leon.getByRole("row").filter({ hasText: "原版本" }).first();
   await expect(entry).toContainText("原版本：1.00");
   await expect(entry).toContainText("新版本：1.01");
+});
+
+test("a refund the payment system never answered: the admin checks it and settles it from the refund console", async ({ browser }) => {
+  stuckRefund("SO20261012003", "customer@leon.demo");
+
+  // Agents see it and why it waits for a person; only an administrator records the outcome.
+  const mia = await signIn(browser, "agent@leon.demo");
+  await expect(mia.getByRole("link", { name: /退款对账\s*1/ })).toBeVisible();
+  await mia.goto("/refunds");
+  const row = (page: Page) => page.getByRole("row").filter({ hasText: "SO20261012003" });
+  await expect(row(mia)).toContainText("需要人工确认");
+  await expect(row(mia)).toContainText("超过 24 小时，不再自动重发");
+  await expect(row(mia)).toContainText("发送 3 次");
+  await expect(row(mia)).toContainText("无回音：HTTP 503 after 3 attempt(s)");
+  await expect(row(mia).getByRole("button", { name: /确认/ })).toHaveCount(0);
+
+  const leon = await signIn(browser, "admin@leon.demo");
+  await leon.goto("/refunds");
+  const settle = row(leon).getByRole("button", { name: /确认退款 #\d+ 的结果/ });
+  // Keyboard: the dialog opens on the first choice, Escape closes it and returns to the button.
+  await settle.focus();
+  await leon.keyboard.press("Enter");
+  const dialog = leon.getByRole("dialog");
+  await expect(dialog.getByRole("radio", { name: /已退款/ })).toBeFocused();
+  await expect(dialog).toContainText("在支付后台查找用的幂等键"); // the one handle a refund nobody answered has
+  await expect(dialog.getByRole("radio", { name: /没有这笔退款/ })).toBeEnabled(); // past 24 hours: no re-send can pay it
+  await leon.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(settle).toBeFocused();
+
+  await leon.keyboard.press("Enter");
+  await leon.keyboard.press("Space");
+  await expect(dialog.getByRole("radio", { name: /已退款/ })).toBeChecked();
+  const confirm = dialog.getByRole("button", { name: "确认结果" });
+  await expect(confirm).toBeDisabled(); // the note is required
+  await dialog.getByLabel("支付系统退款号（可选）").fill("RF-E2E-0001");
+  await dialog.getByLabel(/核实说明/).fill("支付后台查到已原路退回");
+  await confirm.click();
+  await expect(leon.getByRole("status").filter({ hasText: "已记为已退款" })).toBeFocused();
+  await expect(row(leon)).toHaveCount(0);
+  await expect(leon.getByText("没有等待支付系统结果的退款")).toBeVisible();
+  await leon.getByRole("button", { name: "全部" }).click();
+  await expect(row(leon)).toContainText("已退款");
+  await expect(row(leon)).toContainText("RF-E2E-0001");
+
+  await leon.goto("/audit");
+  const entry = leon.getByRole("row").filter({ hasText: "人工确认退款结果" });
+  await expect(entry).toContainText("结果：已退款");
+  await expect(entry).toContainText("支付后台查到已原路退回");
 });

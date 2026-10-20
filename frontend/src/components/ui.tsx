@@ -153,6 +153,15 @@ export function time(iso?: string | null) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`;
 }
 
+/** A length of time for waits and deadlines: 5 分钟 / 3 小时 20 分钟 / 2 天 4 小时. */
+export function duration(ms: number) {
+  const minutes = Math.max(0, Math.round(ms / 60000));
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} 小时 ${minutes % 60} 分钟`;
+  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
+}
+
 export function fullTime(iso?: string | null) {
   return iso ? new Date(iso).toLocaleString("zh-CN", { hour12: false }) : "—";
 }

@@ -106,7 +106,8 @@ def _settle_pending(commerce: Commerce, refund_id: int, cutoff: datetime, now: d
         if refund.status == "pending" and _as_utc(refund.created_at) <= now - ESCALATE_AFTER and _unattended(db, refund):
             resend = ("对账任务仍会用原来的幂等键重发" if _as_utc(refund.created_at) > now - RESEND_WINDOW
                       else "已超过 24 小时，不再自动重发（对方可能已不保留这个幂等键，再发可能重复退款）")
-            _escalate(db, refund, f"支付系统一直没有确认这笔退款（已发送 {refund.attempts} 次，最近一次：{refund.error}），"
+            _escalate(db, refund, f"支付系统一直没有确认这笔退款（幂等键 {refund.idempotency_key}，"
+                                  f"已发送 {refund.attempts} 次，最近一次：{refund.error}），"
                                   f"订单仍被占用，{resend}。请在支付系统后台核实是否已退款，再用 "
                                   f"POST /api/refunds/{refund.id}/settle 记下结果（succeeded 或 failed）")
             counts["escalated"] += 1

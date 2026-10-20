@@ -714,6 +714,9 @@ def test_settling_a_stuck_refund_as_failed_frees_the_order(remote, settings, cli
     customer = login("customer@leon.demo")
     ask(customer, "SO20261020101 不想要了 退款")
     [refund] = _ledger("SO20261020101")
+    with new_session() as db:  # past the 24 hours it is sent again: only a person can still settle it
+        db.get(Refund, refund.id).created_at = datetime.now(timezone.utc) - timedelta(hours=25)
+        db.commit()
     r = client.post(f"/api/refunds/{refund.id}/settle", headers=login("admin@leon.demo"),
                     json={"outcome": "failed", "note": "支付后台没有这笔退款"})
     assert r.status_code == 200 and r.json()["status"] == "failed", r.text

@@ -151,6 +151,8 @@ def record() -> dict[str, Any]:
                         keep(f"/api/conversations/{handoff['conversation_id']}/messages")
                     keep("/api/tickets")
                     keep("/api/tickets?status_filter=all")
+                    for path in ("/summary", "?status=open", "?status=all"):  # the navigation count, the two tabs
+                        keep(f"/api/refunds{path}")
                     runs = []
                     for status in RUN_STATUSES:
                         page = keep(f"/api/runs?limit=100{f'&status={status}' if status else ''}")

@@ -123,7 +123,7 @@ p { margin: 0; }
 code, pre, .mono { font-family: var(--mono); font-size: 12px; }
 pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 ::selection { background: var(--primary-line); }
-:where(a, button, summary, [tabindex], input[type="checkbox"]):focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+:where(a, button, summary, [tabindex], input[type="checkbox"], input[type="radio"]):focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .table tr[tabindex]:focus-visible { outline-offset: -2px; }
 
 /* ---------- shell ---------- */
@@ -234,6 +234,20 @@ label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; 
 .table tr.clickable { cursor: pointer; }
 .table tr.clickable:hover td { background: var(--hover); }
 .table-wrap { overflow-x: auto; }
+.table .num { text-align: right; }
+.table tr.row-focus td { background: var(--primary-soft); }
+.table tr.row-focus .faint { color: var(--text-2); } /* keeps AA on the tinted row */
+.refund-error { min-width: 200px; max-width: 280px; overflow-wrap: break-word; }
+.refund-next { min-width: 150px; max-width: 220px; }
+.refund-key { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.refund-key code, .refund-key-inline { user-select: all; overflow-wrap: anywhere; }
+fieldset.choices { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+fieldset.choices legend { padding: 0; margin-bottom: 6px; }
+.choice { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 4px; cursor: pointer; font-size: 13px; }
+.choice:hover:not(.disabled) { border-color: var(--primary-line); }
+.choice.disabled { cursor: not-allowed; color: var(--text-2); border-style: dashed; background: var(--surface-2); }
+.choice:has(input:checked) { border-color: var(--primary); background: var(--primary-soft); }
+.choice input { margin: 3px 0 0; accent-color: var(--primary-solid); flex-shrink: 0; }
 .card > .table-wrap:first-child .table th:first-child { border-top-left-radius: 6px; }
 
 .tabs { display: inline-flex; border-bottom: 1px solid var(--border); gap: 20px; }

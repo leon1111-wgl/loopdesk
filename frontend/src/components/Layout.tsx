@@ -12,6 +12,7 @@ import {
   MessagesSquare,
   Monitor,
   Moon,
+  ReceiptText,
   RefreshCcw,
   ScrollText,
   Ticket,
@@ -30,6 +31,7 @@ const TITLES: Record<string, string> = {
   approvals: "审批队列",
   handoffs: "人工接待",
   tickets: "工单",
+  refunds: "退款对账",
   knowledge: "知识库",
   traces: "链路追踪",
   flywheel: "数据飞轮",
@@ -60,6 +62,7 @@ export default function Layout() {
   const [pending, setPending] = useState(0);
   const [waiting, setWaiting] = useState(0); // customers waiting for a person
   const [openTickets, setOpenTickets] = useState(0); // issue tickets promised a response
+  const [unsettled, setUnsettled] = useState(0); // refunds nothing settles any more: a person checks the payment system
   const [theme, setTheme] = useTheme();
   // Below 780px the sidebar becomes an off-canvas drawer opened from the top bar.
   const compact = useMediaQuery("(max-width: 780px)");
@@ -83,6 +86,10 @@ export default function Layout() {
       api
         .get<{ status: string }[]>("/api/tickets")
         .then((rows) => setOpenTickets(rows.filter((t) => t.status === "open").length))
+        .catch(() => undefined);
+      api
+        .get<{ unsettled: number; needs_person: number }>("/api/refunds/summary")
+        .then((counts) => setUnsettled(counts.needs_person))
         .catch(() => undefined);
     };
     load();
@@ -118,6 +125,7 @@ export default function Layout() {
           { to: "/approvals", label: "审批队列", icon: <ClipboardCheck size={16} />, count: pending },
           { to: "/handoffs", label: "人工接待", icon: <Headset size={16} />, count: waiting },
           { to: "/tickets", label: "工单", icon: <Ticket size={16} />, count: openTickets },
+          { to: "/refunds", label: "退款对账", icon: <ReceiptText size={16} />, count: unsettled },
         ]],
         ["知识与质量", [
           { to: "/knowledge", label: "知识库", icon: <BookOpen size={16} /> },

@@ -64,6 +64,11 @@ def test_the_staff_pages_have_something_to_show(recording):
     assert {t["status"] for t in bodies[admin["/api/tickets"]]} == {"open", "in_progress"}
     assert bodies[admin["/api/flywheel/patches"]] and bodies[admin["/api/evals/runs"]]
     assert bodies[admin["/api/audit/verify"]]["ok"] is True
+    # The demo tables move no money: the refund console has nothing waiting, and its full list says why.
+    assert bodies[admin["/api/refunds?status=open"]] == []
+    assert bodies[admin["/api/refunds/summary"]] == {"unsettled": 0, "needs_person": 0}
+    ledger = bodies[admin["/api/refunds?status=all"]]
+    assert ledger and {r["follow_up"] for r in ledger} <= {"demo", None}
     for url in (u for u in admin if u.startswith("/api/runs/")):
         assert bodies[admin[url]]["spans"], url  # each trace can be opened
 
@@ -81,5 +86,5 @@ def test_nothing_secret_is_published(recording):
     assert "eyJ" not in text, "no login token (JWTs start with eyJ)"
     assert "password_hash" not in text and "pbkdf2" not in text.lower()
     customer = recording["responses"]["customer@leon.demo"]
-    assert not any(url.startswith(("/api/runs", "/api/approvals", "/api/audit")) for url in customer), \
+    assert not any(url.startswith(("/api/runs", "/api/approvals", "/api/audit", "/api/refunds")) for url in customer), \
         "a customer's recording holds only what a customer may see"
