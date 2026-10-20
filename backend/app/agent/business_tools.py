@@ -179,6 +179,38 @@ def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
+REFUND_STATUS_TEXT = {
+    "pending": "已提交，等待支付系统确认",
+    "processing": "已受理，正在退回原支付方式",
+    "succeeded": "已退款成功",
+    "failed": "未能完成",
+}
+
+
+def _refund_progress(ctx: ToolContext, order_id: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """The refunds filed for an order and a request still waiting for a person, so "退款到哪一步了"
+    is answered from the ledger, read-only, instead of filing another refund (N-056). The caller has
+    already checked the order is the customer's; the approval's reason (risk controls) stays out."""
+    zone = zone_of(ctx.tenant)
+    rows = ctx.db.execute(select(Refund).where(
+        Refund.tenant_id == ctx.tenant.id, Refund.order_id == order_id, Refund.status != "claiming",
+    ).order_by(Refund.id.desc()).limit(5)).scalars()
+    refunds = [{
+        "refund_id": r.id, "amount": round(r.amount, 2), "status": r.status,
+        "status_text": REFUND_STATUS_TEXT.get(r.status, r.status),
+        "filed_on": local_date(r.created_at, zone) if r.created_at else None,
+    } for r in rows]
+    waiting = next((a for a in ctx.db.execute(select(Approval).where(
+        Approval.tenant_id == ctx.tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
+    ).order_by(Approval.id.desc())).scalars() if a.arguments.get("order_id") == order_id), None)
+    approval = None if waiting is None else {
+        "approval_id": waiting.id, "amount": round(float(waiting.arguments.get("amount") or 0), 2),
+        "status_text": "等待人工审核",
+        "filed_on": local_date(waiting.created_at, zone) if waiting.created_at else None,
+    }
+    return refunds, approval
+
+
 # ---------------------------------------------------------------- orders
 def get_order(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     order = _load_order(ctx, _order_id(args))
@@ -197,6 +229,7 @@ def get_order(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         elif days > tenant.return_window_days:
             refund_note = (f"订单已签收 {days} 天，已超过 {tenant.return_window_days} 天无理由退货期限，"
                            f"{tenant.quality_window_days} 天内仅质量问题可以退换，提交后需要人工核实")
+    refunds, waiting = _refund_progress(ctx, order.order_id)
     return {
         "order_id": order.order_id,
         "status": order.status,
@@ -210,6 +243,8 @@ def get_order(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         "region": order.region,
         "refundable": refundable,
         "refund_note": refund_note,
+        "refunds": refunds,  # newest first; a progress question is answered from these, never by filing one
+        "refund_awaiting_approval": waiting,
         "summary": f"订单 {order.order_id} 当前状态为“{status_text}”，订单金额 ¥{order.amount:.2f}",
     }
 
@@ -592,7 +627,8 @@ def build_registry() -> ToolRegistry:
     ))
     registry.register(ToolDef(
         name="get_order",
-        description="按订单号查询订单状态、金额、商品和是否可退款。顾客只能查询自己的订单。",
+        description=("按订单号查询订单状态、金额、商品、是否可退款，以及该订单已有的退款记录和等待审核的退款申请。"
+                     "顾客问退款进度时用它回答，不要再发起退款。顾客只能查询自己的订单。"),
         parameters={
             "type": "object",
             "properties": {"order_id": {"type": "string", "description": "订单号，如 SO20261008002"}},
@@ -612,7 +648,7 @@ def build_registry() -> ToolRegistry:
     ))
     registry.register(ToolDef(
         name="request_refund",
-        description="为订单发起退款。金额超过租户自动审批额度时会进入人工审批，审批结果出来前不要向用户承诺退款成功。",
+        description="为订单发起退款，只在顾客明确要求退款时调用（问退款进度、到账时间时不要调用）。金额超过租户自动审批额度时会进入人工审批，审批结果出来前不要向用户承诺退款成功。",
         parameters={
             "type": "object",
             "properties": {

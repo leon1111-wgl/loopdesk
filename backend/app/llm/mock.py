@@ -27,6 +27,11 @@ _NEGATED_HANDOFF = NEGATED_PERSON_RE
 _REFUND = re.compile(r"退款|退钱|退货|退掉|退我|refund", re.IGNORECASE)
 _SHIPMENT = re.compile(r"物流|快递|到哪|发货了吗|配送|运单|什么时候到|送到|where is|track|arrive|deliver|shipping",
                        re.IGNORECASE)
+# "退款到哪一步了", "退款进度查一下", "SO… 的退款多久到账": a question about a refund, read-only (N-056).
+# An explicit request in the same sentence ("我要退款，多久到账") still files one.
+_PROGRESS = re.compile(r"进度|到哪一?步|怎么样了|处理得?怎么样|到账了?(?:吗|没)|到没到账|退回来了?(?:吗|没)"
+                       r"|(?:多久|几天|什么时候|啥时候)(?:能|才能|可以)?到账|status|progress", re.IGNORECASE)
+_APPLY = re.compile(r"我要退|申请退|帮我退|给我退|退我|想退|要退|退一下|退掉")
 _TICKET = re.compile(r"报修|故障|坏了|工单|无法使用|打不开|不工作|失灵|连不上")
 # A ticket is for a problem being reported ("坏了", "打不开", "出故障了"), not for a question about how
 # problems are handled ("P1故障多久响应？", "怎么报修？"): the knowledge base answers those.
@@ -58,6 +63,10 @@ def split_intents(text: str) -> tuple[str, str | None]:
     if len(extra) < 2 or ORDER_ID_RE.search(extra):
         return text, None
     return text[:match.start()].strip(), extra
+
+
+def asks_refund_status(text: str) -> bool:
+    return bool(_REFUND.search(text) or "到账" in text) and bool(_PROGRESS.search(text)) and not _APPLY.search(text)
 
 
 def wants_human(text: str) -> bool:
@@ -160,6 +169,12 @@ class MockLLM(LLMProvider):
             order = (results.get("get_order") or [{}])[-1]
             if order.get("error"):
                 return None
+            if asks_refund_status(text):  # answer from the order's refunds; never file one
+                live = order.get("refund_awaiting_approval") or any(
+                    r.get("status") in ("pending", "processing") for r in order.get("refunds") or [])
+                if live and can("search_knowledge"):
+                    return "search_knowledge", {"query": "退款 到账 工作日"}
+                return None
             if _REFUND.search(text):
                 if not order.get("refundable", False):
                     return None
@@ -203,6 +218,10 @@ class MockLLM(LLMProvider):
 
         orders = results.get("get_order") or []
         refund = last("request_refund")
+        progress = len(orders) == 1 and not orders[0].get("error") and asks_refund_status(text)
+        if progress:
+            parts.append(self._refund_progress(orders[0]))
+            orders = []
         shipments = results.get("track_shipment") or []
         tracked = {s.get("order_id") for s in shipments if not s.get("error")}
         for order in orders:
@@ -242,9 +261,9 @@ class MockLLM(LLMProvider):
         ticket = last("create_ticket")
         knowledge = last("search_knowledge")
         if knowledge:
-            query = "退款 到账 工作日" if refund and not refund_failed else expand_query(text)
+            query = "退款 到账 工作日" if (refund and not refund_failed) or progress else expand_query(text)
             if not refund_failed:
-                limit = 1 if (refund or ticket) else 3
+                limit = 1 if (refund or ticket or progress) else 3
                 sentences = self._extract(query, knowledge.get("results") or [], limit)
                 if sentences:
                     parts.extend(sentences)
@@ -260,6 +279,22 @@ class MockLLM(LLMProvider):
         if not parts:
             parts.append(REFUSAL)
         return "".join(p for p in parts if p)
+
+    @staticmethod
+    def _refund_progress(order: dict[str, Any]) -> str:
+        oid = order["order_id"]
+        lines: list[str] = []
+        waiting = order.get("refund_awaiting_approval")
+        if waiting:
+            lines.append(f"订单 {oid} 有一笔 ¥{waiting['amount']:.2f} 的退款申请（{waiting['filed_on']} 提交）正在等待人工审核，"
+                         "审核通过后会按原支付方式退回。")
+        for r in (order.get("refunds") or [])[:3]:
+            lines.append(f"订单 {oid} 的退款单 #{r['refund_id']}（¥{r['amount']:.2f}，{r['filed_on']} 提交）{r['status_text']}。")
+        if not lines:
+            lines.append(f"订单 {oid} 当前状态为“{order['status_text']}”，没有查到在线提交的退款记录。")
+            if order.get("refundable"):
+                lines.append(f"如需退款，可以直接回复“{oid} 申请退款”。")
+        return "".join(lines)
 
     @staticmethod
     def _extract(query: str, hits: list[dict[str, Any]], limit: int) -> list[str]:

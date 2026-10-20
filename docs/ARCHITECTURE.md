@@ -32,7 +32,8 @@ POST /api/conversations/{id}/stream   (SSE)
  │      明确要求人工（“转人工”“我要人工客服”“我要投诉”，否定说法除外）→ 不调用模型，直接转人工
  ├─ 4. 模型路由：订单号 + 退款 = 涉及资金的动作 → 强模型；fast/strong 互为降级
  ├─ 5. Agent 循环
- │     LLM → get_order(SO20261008002)            风险 read，直接执行
+ │     LLM → get_order(SO20261008002)            风险 read，直接执行；结果带该订单的退款记录和等待审核的申请，
+ │                                               问“退款到哪一步了”用它回答，不再发起退款（N-056）
  │     LLM → search_knowledge("退款 到账 工作日")  证据编号 [2] 加入证据清单
  │     LLM → request_refund(amount=1299)         风险 high
  │            ├─ precheck：订单存在且属于本人、金额为有限正数且 ≤ 实付、状态可退、未超过售后期限、没有待审批的同单申请；
