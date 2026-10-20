@@ -567,3 +567,27 @@ def test_retrying_engines_keeps_the_loaded_asr(monkeypatch):
     assert engines.get_engines(s)[0] is None
     assert len(built) == 1  # the ASR models were loaded once, only the sidecar is tried again
     engines.set_engines(None, None)
+
+
+def test_a_newer_utterance_interrupts_the_answer_before_it(voice, monkeypatch):
+    # Round 3: three questions in a row while the first answer is still being written. The second
+    # answer is superseded by the third question: that is an interruption (the client is told to stop
+    # it), not an answer of unknown delivery the model would take as said.
+    from app.services import get_services
+
+    monkeypatch.setattr(get_services().provider, "stream_delay", 0.1)
+    voice.asr.transcripts += ["怎么取消自动续费", "会员退款多久能到账", "学生开会员有优惠吗"]
+    with voice.connect() as ws:
+        say(ws)
+        say(ws)
+        say(ws)
+        events = []
+        while sum(e["type"] == "turn_saved" for e in events) < 3:
+            events += until(ws, "turn_saved")
+    with new_session() as db:
+        answers = db.execute(select(Message).where(Message.conversation_id == voice.conversation,
+                                                   Message.role == "assistant").order_by(Message.id)).scalars().all()
+    assert len(answers) == 3
+    assert answers[1].meta["voice"]["interrupted"] is True and answers[1].meta["voice"]["delivery"] == "interrupted"
+    second_turn = next(e["turn"] for e in events if e["type"] == "turn_saved" and e["message_id"] == answers[1].id)
+    assert any(e["type"] == "barge_in" and e["turn"] == second_turn for e in events)

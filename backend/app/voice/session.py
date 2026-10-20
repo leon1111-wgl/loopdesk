@@ -271,11 +271,12 @@ class VoiceSession:
             if reply == "yes" or (unclear and not self._heard(pending.readback)):
                 if not self._heard(pending.readback):
                     # Cut off before the amount, or never played: the customer has not heard what they agree to.
-                    if pending.attempts >= MAX_READBACKS:  # TTS keeps failing: do not loop, do not move money
+                    silent = pending.readback is None or pending.readback.samples == 0
+                    if silent and pending.attempts >= MAX_READBACKS:  # TTS keeps failing: no loop, no money
                         self.confirmations.decline()
                         return self._prompt(READBACK_FAILED_TEXT.format(order=pending.order_id), transcript,
                                             "readback_failed", latency, ended)
-                    pending.attempts += 1
+                    pending.attempts += silent  # a customer who talks over the amount just hears it again
                     return self._prompt(readback_refund(pending.order_id, pending.amount), transcript, "readback_again",
                                         latency, ended, pending=pending)
                 pending = self.confirmations.accept()
@@ -502,9 +503,13 @@ class VoiceSession:
         if turn.all_played() and not turn.cancelled:
             self._finalize(turn)
 
-    def _settle_previous(self) -> None:
-        """Before the next utterance is answered: the last turn's message keeps what was heard."""
+    def _settle_previous(self, superseded: bool = True) -> None:
+        """Before the next utterance is answered: the last turn's message keeps what was heard. A newer
+        utterance supersedes an answer still playing: that is an interruption, and the client is told to
+        stop it. On close nothing supersedes it, and delivery stays unknown."""
         turn = self.turn
+        if superseded and turn is not None and not self.assume_played and self._speaking():
+            self._barge_in("superseded")
         if turn is not None and self.assume_played:
             turn.sent.wait(timeout=120)
         if turn is not None and not turn.finalized:
@@ -546,6 +551,8 @@ class VoiceSession:
         self.closed = True
         self.utterances.put(None)  # turns already queued are answered first; the run always completes
         self.turn_thread.join(timeout=self.settings.run_deadline_seconds + 30)
-        self._settle_previous()
+        if self.turn_thread.is_alive():
+            logger.warning("voice session %s closed with a turn still running", self.conversation_id)
+        self._settle_previous(superseded=False)
         self.tts_queue.put(None)
         self.tts_thread.join(timeout=10)

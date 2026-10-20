@@ -13,7 +13,9 @@ _SPELL = dict(zip("0123456789", "零幺二三四五六七八九"))
 _SPELL_PLAIN = dict(zip("0123456789", "零一二三四五六七八九"))
 _SENTENCE = re.compile(r"(?<=[。！？!?；;])|\n+")
 _CODE_WORDS = r"验证码|动态码|校验码|短信码|取件码|提货码|激活码|兑换码|口令|密码|PIN|pin"
-_CODE = re.compile(rf"({_CODE_WORDS})(?:\([^)]{{0,8}}\))?(?:是|为)?\s*[:：]?\s*[A-Za-z0-9](?:[A-Za-z0-9\s\-]{{2,22}}[A-Za-z0-9])?")
+# At least four characters, and not a duration or a length ("验证码5分钟内有效", "验证码 6 位").
+_CODE = re.compile(rf"({_CODE_WORDS})(?:\([^)]{{0,8}}\))?(?:是|为)?\s*[:：]?\s*[A-Za-z0-9][A-Za-z0-9\s\-]{{2,22}}[A-Za-z0-9]"
+                   rf"(?!\s*(?:分钟|秒|位|次|天|小时))")
 _PASSPORT = re.compile(r"护照(?:号码?)?\s*[:：]?\s*[A-Za-z]\d{8}")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Seven or more digits (or masking asterisks), possibly in groups: "138 1234 5678", "138-1234-5678",
@@ -23,7 +25,9 @@ _RUN = re.compile(r"(?<![\dA-Za-z])[\d*](?:[\s\-]{0,2}[\d*Xx]){6,}(?![\dA-Za-z])
 _HAN_RUN = re.compile(r"[零〇一二三四五六七八九幺]{7,}")
 _HAN_DIGIT = dict(zip("零〇一二三四五六七八九幺", "001234567891"))
 # Numbers the customer asked for and may need to hear: a tracking or ticket number is not personal data.
-_REFERENCE = re.compile(r"(?:单号|运单号|快递单号|流水号|工单号|订单号|编号|批次号|申请号)\s*[:：]?\s*(?:[A-Za-z]{1,4}\s*)?$")
+_REFERENCE_WORDS = r"单号|运单号|快递单号|物流单号|流水号|工单号|订单号|编号|批次号|申请号|快递|物流"
+_REFERENCE = re.compile(rf"(?:{_REFERENCE_WORDS})\s*(?:是|为)?\s*[:：]?\s*(?:[A-Za-z]{{1,4}}\s*)?$")
+_REFERENCE_AFTER = re.compile(rf"^\s*(?:这个|这笔|的)?(?:{_REFERENCE_WORDS})")
 _RUN_KINDS = [
     ("id_card", re.compile(r"\d{6}(?:19|20)\d{2}(?:0[1-9]|1[0-2])\d{5}[\dXx]"), lambda d: "您的身份证号"),
     ("phone", re.compile(r"(?:86)?1[3-9]\d[\d*]{4}\d{4}"), lambda d: f"尾号{_digits(d[-4:])}的手机号"),
@@ -41,7 +45,7 @@ def _sensitive(digits: str, redacted: list[str]) -> str | None:
 
 
 def _sensitive_run(m: re.Match[str], redacted: list[str]) -> str:
-    if _REFERENCE.search(m.string[max(0, m.start() - 12):m.start()]):
+    if _REFERENCE.search(m.string[max(0, m.start() - 12):m.start()]) or _REFERENCE_AFTER.match(m.string[m.end():m.end() + 8]):
         return m.group(0)
     return _sensitive(re.sub(r"[\s\-]", "", m.group(0)), redacted) or m.group(0)
 

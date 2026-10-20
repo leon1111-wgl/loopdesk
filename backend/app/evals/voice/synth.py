@@ -27,7 +27,7 @@ def _engine(args):
     if args.engine == "kokoro":
         return engines.KokoroTTS()
     if args.engine == "cosyvoice":
-        return engines.CosyVoiceTTS(args.url)
+        return engines.CosyVoiceTTS(args.url, timeout=900)  # on a CPU runner a sentence takes minutes
     if args.engine == "say":
         return engines.SayTTS(args.voices.split(",")[0])
     raise SystemExit(f"unknown engine {args.engine}")

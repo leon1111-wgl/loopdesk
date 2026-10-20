@@ -254,3 +254,25 @@ def test_two_order_numbers_after_dingdanhao():
 def test_refund_read_back_puts_the_amount_in_its_own_sentence():
     assert split_sentences(readback_refund("SO20261019101", 18.0)) == [
         "为了您的资金安全，跟您确认一下：订单号SO20261019101，退款金额18元。", "确认请说“确认”，不对请说“取消”。"]
+
+
+# ---------------------------------------------------------------- review round 3
+@pytest.mark.parametrize("reply", ["对吧", "可以吧", "是吧", "没错吧"])
+def test_question_tags_are_not_consent(reply):
+    assert classify_reply(reply) != "yes"
+
+
+@pytest.mark.parametrize("reply", ["好吧", "就退吧", "对啊", "是啊"])
+def test_particles_after_a_plain_yes(reply):
+    assert classify_reply(reply) == "yes"
+
+
+def test_a_question_with_shi_bu_shi_does_not_cancel():
+    assert classify_reply("是不是退到原来的卡上") is None
+
+
+@pytest.mark.parametrize("sentence", ["验证码5分钟内有效。", "验证码 6 位，请注意查收。", "快递：73120123456789。",
+                                      "物流单号为 73120123456789。", "2026101812345678 这个流水号可以查到。",
+                                      "客户编号是 0012345678。"])
+def test_speakable_round3_false_positives(sentence):
+    assert speakable(sentence).redacted == []

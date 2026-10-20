@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from ...voice import engines
 
-    engine = {"kokoro": lambda: engines.KokoroTTS(args.voice), "cosyvoice": lambda: engines.CosyVoiceTTS(args.url),
+    engine = {"kokoro": lambda: engines.KokoroTTS(args.voice), "cosyvoice": lambda: engines.CosyVoiceTTS(args.url, timeout=900),
               "say": lambda: engines.SayTTS(args.voice)}[args.engine]()
     for _ in engine.synthesize("您好，请问有什么可以帮您？"):  # warm-up, not measured
         pass
