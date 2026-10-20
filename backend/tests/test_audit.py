@@ -1,3 +1,6 @@
+import csv
+import io
+
 from tests.conftest import by_type
 
 CONFLICTING = {"title": "到账补充说明", "content": "## 到账\n- 微信支付、支付宝退款预计1-2个工作日到账。"}
@@ -255,3 +258,77 @@ def test_an_entry_rolled_back_with_its_change_is_not_anchored(client, login):
     from app.ops.audit_anchor_check import read_anchors
     assert [a["seq"] for a in read_anchors(stream.getvalue().splitlines())] == [1], \
         "the rolled-back number is reused, and only the committed entry is anchored"
+
+
+# Review round 3, N-022: only administrators' configuration changes were audited. Staff deciding
+# refunds, exporting customer data, replying as a person and closing tickets left no entry.
+
+def test_refund_decisions_are_recorded_with_the_amount_and_the_reason(client, ask, login):
+    customer, agent, admin = login("customer@leon.demo"), login("agent@leon.demo"), login("admin@leon.demo")
+    _, events = ask(customer, "SO20261012003 我要退款")  # ¥268: an agent may approve it
+    small = by_type(events, "approval_required")[0]["approval_id"]
+    r = client.post(f"/api/approvals/{small}/decide", json={"decision": "approve", "comment": "核实无误"}, headers=agent)
+    assert r.status_code == 200
+    entry = _audit(client, admin, action="approval.approve")[0]
+    assert entry["actor"]["email"] == "agent@leon.demo" and entry["target"] == f"approval:{small}"
+    assert entry["detail"]["amount"] == 268 and entry["detail"]["order_id"] == "SO20261012003"
+    assert entry["detail"]["comment"] == "核实无误" and entry["request_id"] == r.headers["X-Request-ID"]
+
+    _, events = ask(customer, "SO20261008002 我要退款")
+    big = by_type(events, "approval_required")[0]["approval_id"]
+    # A refused attempt (an agent approving above the threshold) changes nothing and is not a decision.
+    assert client.post(f"/api/approvals/{big}/decide", json={"decision": "approve"}, headers=agent).status_code == 403
+    assert len(_audit(client, admin, action="approval.approve")) == 1
+    client.post(f"/api/approvals/{big}/decide", json={"decision": "reject", "comment": "凭证不清晰"}, headers=agent)
+    entry = _audit(client, admin, action="approval.reject")[0]
+    assert entry["target"] == f"approval:{big}" and entry["detail"]["comment"] == "凭证不清晰"
+
+
+def test_a_decision_that_failed_and_went_back_to_pending_says_so(client, ask, login, monkeypatch):
+    from app.services import get_services
+
+    _, events = ask(login("customer@leon.demo"), "SO20261008002 我要退款")
+    approval_id = by_type(events, "approval_required")[0]["approval_id"]
+    admin = login("admin@leon.demo")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("connection reset by upstream")
+
+    monkeypatch.setattr(get_services().provider, "stream", broken)
+    assert client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "reject", "comment": "超期"},
+                       headers=admin).status_code == 503
+    monkeypatch.undo()
+    assert client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "approve"}, headers=admin).status_code == 200
+    trail = [e["action"] for e in _audit(client, admin) if e["target"] == f"approval:{approval_id}"]
+    assert trail == ["approval.approve", "approval.reopen", "approval.reject"], "newest first"
+
+
+def test_exports_handoffs_and_tickets_are_recorded(client, ask, login):
+    agent, admin = login("agent@leon.demo"), login("admin@leon.demo")
+    ask(login("customer@leon.demo"), "退款多久能到账？")
+    r = client.get("/api/export/runs.csv?days=7", headers=agent)
+    assert r.status_code == 200
+    export = _audit(client, admin, action="export.download")[0]
+    assert export["actor"]["email"] == "agent@leon.demo" and export["target"] == "export:runs"
+    assert export["detail"] == {"days": 7, "rows": len(list(csv.reader(io.StringIO(r.content.decode("utf-8-sig"))))) - 1}
+    assert export["detail"]["rows"] == 1
+
+    conversation_id, _ = ask(login("customer2@leon.demo"), "转人工")
+    handoff_id = client.get("/api/handoffs", headers=agent).json()[0]["ticket_id"]
+    message = client.post(f"/api/handoffs/{handoff_id}/reply", json={"content": "您好，我是 Mia"}, headers=agent).json()
+    client.post(f"/api/handoffs/{handoff_id}/close", headers=agent)
+    reply, close = _audit(client, admin, action="handoff.reply")[0], _audit(client, admin, action="handoff.close")[0]
+    assert reply["target"] == close["target"] == f"handoff:{handoff_id}"
+    assert reply["detail"] == {"conversation_id": conversation_id, "message_id": message["message"]["id"]}
+    assert "您好" not in str(reply["detail"]), "what was said stays in the conversation, under retention"
+
+    ask(login("customer@leon.demo"), "我买的扫地机器人坏了开不了机，马上给我处理！")
+    ticket_id = client.get("/api/tickets", headers=agent).json()[0]["id"]
+    client.post(f"/api/tickets/{ticket_id}/claim", headers=agent)
+    client.post(f"/api/tickets/{ticket_id}/close", json={"resolution": "已安排上门检修"}, headers=agent)
+    actions = [e["action"] for e in _audit(client, admin) if e["target"] == f"ticket:{ticket_id}"]
+    assert actions == ["ticket.close", "ticket.claim"]
+    assert _audit(client, admin, action="ticket.close")[0]["detail"] == {"overdue": False}
+    assert {e["action"] for e in _audit(client, admin, category="ticket")} == {"ticket.claim", "ticket.close"}
+    assert _audit(client, admin, category="ticke") == [], "a whole category, not a prefix of one"
+    assert client.get("/api/audit/verify", headers=admin).json()["ok"] is True

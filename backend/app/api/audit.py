@@ -20,11 +20,15 @@ def verify_audit(principal: Principal = Depends(require_admin), db: Session = De
 
 
 @router.get("")
-def list_audit(action: str | None = None, limit: int = Query(default=100, ge=1, le=500),
+def list_audit(action: str | None = None, category: str | None = None, limit: int = Query(default=100, ge=1, le=500),
                principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> list[dict]:
+    """Newest first. ``category`` is the part of the action before the dot (``approval``, ``export``...):
+    a day of handoff replies should not bury the one change to a risk limit."""
     query = select(AuditLog).where(AuditLog.tenant_id == principal.tenant.id)
     if action:
         query = query.where(AuditLog.action == action)
+    if category:
+        query = query.where(AuditLog.action.startswith(f"{category}.", autoescape=True))
     rows = db.execute(query.order_by(AuditLog.id.desc()).limit(limit)).scalars().all()
     actors = {u.id: u for u in db.execute(
         select(User).where(User.id.in_({r.actor_id for r in rows if r.actor_id}))).scalars()}

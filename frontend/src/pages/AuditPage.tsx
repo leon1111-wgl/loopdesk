@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { api } from "../api";
 import { Empty, ErrorBanner, time, useLoad } from "../components/ui";
 
@@ -36,12 +37,33 @@ const LABEL: Record<string, string> = {
   other_sentence: "另一句",
   note: "备注",
   erased: "抹除的记录",
+  approval_admin_threshold: "审批分级线（元）",
+  tool: "工具",
+  order_id: "订单号",
+  amount: "金额（元）",
+  comment: "意见",
+  decision: "原决定",
+  error: "错误类型",
+  days: "天数",
+  rows: "行数",
+  conversation_id: "会话",
+  message_id: "消息",
+  overdue: "超过承诺时限",
 };
 
-const VALUE: Record<string, string> = { public: "公开", internal: "仅内部", active: "生效", candidate: "候选", archived: "已归档" };
+const VALUE: Record<string, string> = {
+  public: "公开", internal: "仅内部", active: "生效", candidate: "候选", archived: "已归档",
+  approve: "通过", reject: "驳回", request_refund: "退款",
+};
+
+const CATEGORIES: [string, string][] = [
+  ["", "全部类别"], ["tenant", "租户配置"], ["kb", "知识库"], ["flywheel", "知识补丁"], ["eval", "评测用例"],
+  ["user", "个人数据"], ["approval", "审批"], ["export", "数据导出"], ["handoff", "人工接待"], ["ticket", "工单"],
+];
 
 function show(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "boolean") return value ? "是" : "否";
   if (typeof value === "string" && VALUE[value]) return VALUE[value];
   if (Array.isArray(value)) return value.map(show).join("、");
   if (typeof value === "object") return Object.entries(value).map(([k, v]) => `${k} ${show(v)}`).join("，");
@@ -101,13 +123,21 @@ function IntegrityNotice() {
 }
 
 export default function AuditPage() {
-  const { data, error } = useLoad(() => api.get<AuditEntry[]>("/api/audit?limit=200"));
+  const [category, setCategory] = useState("");
+  const { data, error } = useLoad(
+    () => api.get<AuditEntry[]>(`/api/audit?limit=200${category ? `&category=${category}` : ""}`), [category]);
   return (
     <div className="page stack" style={{ gap: 16 }}>
       <div className="page-head">
         <div>
           <h1>操作审计</h1>
-          <p>管理员对风控额度、知识文档、知识补丁、评测用例和个人数据的每一次修改：谁、什么时候、改了什么。Agent 的操作见链路追踪和审批记录。</p>
+          <p>管理员对风控额度、知识文档、知识补丁、评测用例和个人数据的修改，以及员工的审批决定、数据导出、人工接待和工单处理：谁、什么时候、做了什么。Agent 自己的操作见链路追踪。</p>
+        </div>
+        <div className="row">
+          <select className="select" style={{ width: 140 }} value={category} onChange={(e) => setCategory(e.target.value)}
+            aria-label="审计记录类别">
+            {CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
         </div>
       </div>
       <ErrorBanner error={error} />
@@ -118,16 +148,16 @@ export default function AuditPage() {
           <tbody>
             {data?.map((e) => (
               <tr key={e.id}>
-                <td className="faint" title={`请求 ID：${e.request_id}`}>{time(e.created_at)}</td>
+                <td className="faint nowrap" title={`请求 ID：${e.request_id}`}>{time(e.created_at)}</td>
                 <td>{e.actor ? <>{e.actor.name}<div className="faint small">{e.actor.email}</div></> : <span className="faint">—</span>}</td>
-                <td>{e.action_label}</td>
+                <td className="nowrap">{e.action_label}</td>
                 <td className="faint">{e.target}</td>
                 <td><Detail detail={e.detail} /></td>
               </tr>
             ))}
           </tbody>
         </table>
-        {data && data.length === 0 && <Empty>还没有管理操作记录</Empty>}
+        {data && data.length === 0 && <Empty>{category ? "这一类还没有记录" : "还没有审计记录"}</Empty>}
       </div>
     </div>
   );

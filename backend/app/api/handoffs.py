@@ -11,6 +11,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..agent import handoff
+from ..audit import record
 from ..channels.feishu import FeishuClient
 from ..db import get_db
 from ..models import Conversation, Message, Ticket, User
@@ -98,6 +99,9 @@ def reply(ticket_id: int, body: ReplyIn, principal: Principal = Depends(require_
                       content=body.content.strip(), meta={"agent": principal.user.name, "agent_id": principal.user.id})
     conversation.updated_at = datetime.now(timezone.utc)
     db.add(message)
+    db.flush()
+    record(db, principal, "handoff.reply", f"handoff:{ticket.id}", conversation_id=conversation.id,
+           message_id=message.id)
     db.commit()
     _deliver(conversation, f"人工客服 {principal.user.name}：{message.content}")
     return {"message": message_out(message), "handoff": handoff_out(db, ticket)}
@@ -111,6 +115,7 @@ def close(ticket_id: int, principal: Principal = Depends(require_staff), db: Ses
     conversation.status = "bot"
     conversation.updated_at = datetime.now(timezone.utc)
     db.add(Message(tenant_id=ticket.tenant_id, conversation_id=conversation.id, role="system", content=HANDBACK_TEXT))
+    record(db, principal, "handoff.close", f"handoff:{ticket.id}", conversation_id=conversation.id)
     db.commit()
     _deliver(conversation, HANDBACK_TEXT)
     return {"ticket_id": ticket.id, "status": ticket.status, "conversation_id": conversation.id}

@@ -1,4 +1,5 @@
-"""Administrator audit log: who changed a risk limit, a policy document, the regression gate.
+"""Audit log: who changed a risk limit, a policy document, the regression gate, and what staff did
+with customers' money and data (refund decisions, exports, handoff replies, tickets).
 
 Entries are added to the caller's transaction. An operation that commits once (tenant
 settings, resolving a conflict, editing an eval case) therefore records its entry
@@ -44,6 +45,15 @@ ACTIONS = {
     "flywheel.patch.apply": "发布知识补丁",
     "flywheel.patch.reject": "驳回知识补丁",
     "eval.case.update": "修改评测用例",
+    # Staff work on customers' money and data (review round 3, N-022).
+    "approval.approve": "通过审批",
+    "approval.reject": "驳回审批",
+    "approval.reopen": "审批执行失败，退回待审批",
+    "export.download": "导出数据",
+    "handoff.reply": "人工接待回复",
+    "handoff.close": "结束人工服务",
+    "ticket.claim": "接手工单",
+    "ticket.close": "处理完成工单",
 }
 MAX_DIFF_CHARS = 4000
 anchor_logger = logging.getLogger("loopdesk.audit")

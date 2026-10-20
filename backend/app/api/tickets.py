@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from ..audit import record
 from ..db import get_db
 from ..models import Conversation, Message, Tenant, Ticket, User
 from ..security import Principal, require_staff
@@ -86,6 +87,8 @@ def _move(db: Session, principal: Principal, ticket_id: int, allowed: tuple[str,
 @router.post("/{ticket_id}/claim")
 def claim(ticket_id: int, principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
     ticket = _move(db, principal, ticket_id, ("open",), status="in_progress", assignee_id=principal.user.id)
+    record(db, principal, "ticket.claim", f"ticket:{ticket.id}",
+           overdue=datetime.now(timezone.utc) > due_at(ticket, principal.tenant))
     db.commit()
     db.refresh(ticket)
     return ticket_out(db, ticket, principal.tenant, datetime.now(timezone.utc))
@@ -108,6 +111,8 @@ def close(ticket_id: int, body: CloseIn, principal: Principal = Depends(require_
         db.add(Message(tenant_id=ticket.tenant_id, conversation_id=conversation.id, role="agent", content=text,
                        meta={"agent": principal.user.name, "agent_id": principal.user.id, "ticket_id": ticket.id}))
         conversation.updated_at = now
+    # Whether the promise was kept; the resolution itself stays on the ticket, under retention.
+    record(db, principal, "ticket.close", f"ticket:{ticket.id}", overdue=now > due_at(ticket, principal.tenant))
     db.commit()
     db.refresh(ticket)
     if conversation is not None:

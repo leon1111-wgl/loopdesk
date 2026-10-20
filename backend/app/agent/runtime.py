@@ -26,6 +26,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from .. import audit
 from ..channels.wecom import notify_approval
 from ..config import Settings
 from ..guardrails.injection import detect_injection
@@ -36,6 +37,7 @@ from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
 from .rewrite import Frame, frame_of, is_followup, next_frame, rewrite_followup
 from ..observability import request_id_var
+from ..security import Principal
 from .. import telemetry
 from ..textutil import normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
@@ -232,10 +234,16 @@ class AgentRuntime:
             raise ValueError("该审批单已处理")
         run = self.db.get(Run, approval.run_id)
         run.status = "running"
+        tenant = self.db.get(Tenant, run.tenant_id)
+        # The decision and its audit entry commit together (the approval row first, then the
+        # tenant's audit counter: the order every audited change to a row uses).
+        args = approval.arguments or {}
+        audit.record(self.db, Principal(reviewer, tenant), f"approval.{decision}", f"approval:{approval.id}",
+                     tool=approval.tool_name, order_id=args.get("order_id"), amount=args.get("amount"),
+                     comment=comment)
         self.db.commit()
 
         state = dict(run.state or {})
-        tenant = self.db.get(Tenant, run.tenant_id)
         user = self.db.get(User, run.user_id)
         conversation = self.db.get(Conversation, run.conversation_id) if run.conversation_id else None
         evidence = [Evidence(**e) for e in state.get("evidence", [])]
@@ -273,7 +281,7 @@ class AgentRuntime:
         except Exception as exc:
             self._mark_failed(run, exc, tracer)
             if executed is None:
-                self._reopen(approval, run)
+                self._reopen(approval, run, Principal(reviewer, tenant), decision, exc)
                 raise ResumeError(f"审批执行失败，审批单 #{approval.id} 已退回待处理，可以重新审批。"
                                   f"错误：{type(exc).__name__}") from exc
             # The decision already took effect: keep it and tell the customer what happened.
@@ -303,12 +311,16 @@ class AgentRuntime:
         self.db.commit()
         telemetry.export_run(self.db, run, self.settings)
 
-    def _reopen(self, approval: Approval, run: Run) -> None:
+    def _reopen(self, approval: Approval, run: Run, reviewer: Principal, decision: str, exc: Exception) -> None:
         approval.status = "pending"
         approval.reviewer_id = None
         approval.comment = ""
         approval.decided_at = None
         run.finished_at = None
+        # The entry for the decision stays; this one says it did not take effect. Only the error's
+        # type: its message can quote data (SQL parameters, a customer's words).
+        audit.record(self.db, reviewer, "approval.reopen", f"approval:{approval.id}", decision=decision,
+                     error=type(exc).__name__)
         self.db.commit()
         with Tracer(self.db, run, self.settings, buffered=False).span(
                 "approval", "reopened", {"approval_id": approval.id}) as span:
