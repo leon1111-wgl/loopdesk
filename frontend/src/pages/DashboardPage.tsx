@@ -15,6 +15,7 @@ interface Overview {
   pending_approvals: number;
   handoff_queue: { waiting: number; in_progress: number; longest_wait_s: number; handoffs: number; avg_first_response_s: number | null };
   knowledge_conflicts: { open: number; oldest_open_s: number; handoffs: number };
+  unsafe_answers: { answers: number; without_source: number; documents: { id: number; title: string; answers: number }[] };
   tickets: { open: number; overdue: number };
   failures: { runs: number; rate: number | null; last_15m: number; kinds: Record<string, number>; last_error: string | null; last_kind: string | null };
   latency_p50_ms: number;
@@ -127,6 +128,18 @@ export default function DashboardPage() {
             <div className="error-banner" role="alert">
               {`有 ${data.tickets.overdue} 张工单已超过对顾客承诺的响应时限（待处理共 ${data.tickets.open} 张）。`}
               <Link to="/tickets">去处理 →</Link>
+            </div>
+          )}
+          {data.unsafe_answers.answers > 0 && (
+            <div className="error-banner" role="alert">
+              {`近 ${data.window_days} 天有 ${data.unsafe_answers.answers} 条回答因为索要验证码、银行卡号、密码，或给出私人联系方式、要求转账，没有发给顾客，已转人工。`
+                + (data.unsafe_answers.documents.length
+                  ? `知识库里说了同样内容的文档：${data.unsafe_answers.documents.map((d) => `《${d.title}》（${d.answers} 次）`).join("、")}，请检查。`
+                  : "")
+                + (data.unsafe_answers.without_source
+                  ? `${data.unsafe_answers.without_source} 条在知识库里找不到来源（模型生成或顾客诱导），请在链路里查看。`
+                  : "")}
+              <Link to="/knowledge">去知识库 →</Link>
             </div>
           )}
           {data.knowledge_conflicts.open > 0 && (

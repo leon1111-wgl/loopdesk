@@ -1,19 +1,21 @@
 """Prompt-injection and fraud heuristics.
 
-Two places use this:
+Three places use this:
 - ingestion (``scan_knowledge``): a knowledge chunk that tries to instruct the model, or that
   tells customers to hand over a card number or a verification code, to add a private WeChat or
   QQ, or to pay a deposit, is held back until an administrator has reviewed it. Indirect
   injection is the more dangerous kind for RAG: knowledge comes from suppliers, old wikis and
   manuals that nobody reads word by word;
 - user input (``detect_injection``): suspicious messages are annotated in the trace. They are
-  not blocked, because the real defence is that tools enforce permissions server-side.
+  not blocked, because the real defence is that tools enforce permissions server-side;
+- answers (``unsafe_answer``): the fraud checks run again on what the customer is about to read,
+  so a chunk that got past ingestion still cannot make the agent ask for a verification code.
 
 Matching runs on normalised text (NFKC, lower case, no whitespace or invisible characters), so
 "忽 略 之 前", full-width letters and zero-width joiners match like plain text (review round 5,
 N-038: those wordings, "以前" and "上面" all got through before). This is a first layer that a
-determined attacker can word around, so held-back chunks go to a person rather than being
-silently dropped, and server-side permissions stay the backstop.
+determined attacker can word around; the output check and server-side permissions are the
+backstop, and held-back chunks go to a person rather than being silently dropped.
 """
 
 from __future__ import annotations
@@ -119,12 +121,14 @@ def _clause_before(norm: str, start: int) -> str:
     return norm[cut + 1:start]
 
 
-def _fraud(norm: str) -> list[str]:
+def _fraud(norm: str, trusted: str = "") -> list[str]:
     found = []
     for name, pattern in _FRAUD_PATTERNS:
         for match in pattern.finditer(norm):
             if _WARNING.search(_clause_before(norm, match.start())):
                 continue  # a warning about the trick, not the trick
+            if trusted and match.group(0) in trusted:
+                continue  # quoted from knowledge an administrator reviewed and released
             found.append(name)
             break
     return found
@@ -137,6 +141,15 @@ def scan_knowledge(text: str, public: bool = True) -> list[str]:
     if public and _AGENT_DIRECTIVE.search(norm):
         reasons.append("agent_directive")
     return reasons
+
+
+def unsafe_answer(text: str, reviewed: list[str] | None = None) -> list[str]:
+    """Why an answer must not reach the customer: it asks for a card number, a verification code
+    or a password, moves the customer to a private WeChat or QQ, or asks for a transfer. A match
+    quoted verbatim from a chunk an administrator released after review (``reviewed``) is allowed:
+    a supplier FAQ may really say that suppliers pay a deposit."""
+    trusted = "\n".join(normalize(t) for t in reviewed or [])
+    return _fraud(normalize(text), trusted)
 
 
 REASON_TEXT = {

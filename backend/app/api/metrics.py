@@ -83,6 +83,23 @@ def _conflict_backlog(db: Session, tenant_id: int, run_ids: list[int]) -> dict:
     }
 
 
+def _unsafe_answers(db: Session, run_ids: list) -> dict:
+    """Answers the output check stopped (N-038), and the documents that say the same thing: what
+    an administrator should read. One with no such document came from the model or from the
+    customer's prompt, not from the knowledge base."""
+    rows = db.execute(select(Span.output).where(
+        Span.run_id.in_(run_ids), Span.kind == "guardrail", Span.name == "unsafe_answer")).scalars().all() \
+        if run_ids else []
+    documents: dict[int, dict] = {}
+    for output in rows:
+        for source in {s["document_id"]: s for s in (output or {}).get("sources", [])}.values():
+            entry = documents.setdefault(source["document_id"],
+                                         {"id": source["document_id"], "title": source["title"], "answers": 0})
+            entry["answers"] += 1
+    return {"answers": len(rows), "without_source": sum(1 for o in rows if not (o or {}).get("sources")),
+            "documents": sorted(documents.values(), key=lambda d: -d["answers"])}
+
+
 def _conversation_outcomes(db: Session, runs: list[Run], tenant_id: int, since: datetime) -> dict:
     """Rates per conversation, not per run: three questions in one conversation are one customer.
 
@@ -177,6 +194,7 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         "pending_approvals": pending,
         "handoff_queue": _handoff_stats(db, tenant_id, since),
         "knowledge_conflicts": _conflict_backlog(db, tenant_id, run_ids),
+        "unsafe_answers": _unsafe_answers(db, run_ids),
         "tickets": open_ticket_stats(db, principal.tenant),
         "failures": _failures(runs, datetime.now(timezone.utc)),
         "latency_p50_ms": _pct(latencies, 0.5),

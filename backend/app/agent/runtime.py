@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from .. import audit
 from ..channels.wecom import notify_approval
 from ..config import Settings
-from ..guardrails.injection import detect_injection
+from ..guardrails.injection import detect_injection, unsafe_answer
 from ..guardrails.pii import PIIReport, mask_pii
 from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.breaker import CircuitBreaker
@@ -58,6 +58,11 @@ DEGRADED_ANSWER = "智能客服暂时无法生成回答，以下是相关规定�
 DEGRADED_QUOTES = 2  # the best chunk is not always the one that answers; two cover most FAQ questions
 DEGRADED_HANDOFF_TEXT = "抱歉，智能客服暂时无法处理您的问题。"
 CONFLICT_TEXT = "抱歉，这个问题涉及的规定正在核对中。"
+# The answer asked for a card number, a verification code or a password, sent the customer to a
+# private WeChat or QQ, or asked for money (N-038). Said instead, before handing over.
+UNSAFE_TEXT = ("抱歉，这条回复涉及您的账户和资金安全，没有发出。请不要向任何人提供验证码、银行卡号或密码，"
+               "也不要添加私人联系方式或转账。")
+UNSAFE_REASON = "回答里有索要验证码、银行卡号、密码，或私人联系方式、转账的内容，已拦截并转人工"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 REWRITE_BUDGET_SECONDS = 5.0
 TOOL_LABEL = {"request_refund": "退款"}
@@ -91,6 +96,48 @@ class ToolOutcome:
 def _plain(chunk: str) -> str:
     """A knowledge chunk as one quotable passage: list markers and line breaks removed."""
     return "".join(re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", line).strip() for line in chunk.splitlines())
+
+
+def _reviewed(ctx: ToolContext) -> list[str]:
+    """Knowledge an administrator released after review: an answer may quote it word for word."""
+    return [e.text for e in ctx.evidence if e.kind == "kb" and e.meta.get("reviewed")]
+
+
+def _unsafe_sources(ctx: ToolContext) -> list[dict[str, Any]]:
+    """The knowledge in this run that says such things itself: what an administrator should read.
+    Empty when the answer did not come from the knowledge base (the model, or the customer's prompt)."""
+    return [{"document_id": e.meta.get("document_id"), "chunk_id": e.meta.get("chunk_id"), "title": e.title,
+             "reviewed": bool(e.meta.get("reviewed"))}
+            for e in ctx.evidence if e.kind == "kb" and unsafe_answer(e.text)]
+
+
+class _StreamGate:
+    """Streamed text reaches the customer a sentence at a time, each one checked (N-038): a phishing
+    sentence is never on screen, not even for the moment before the finished answer is replaced,
+    and nothing after it is shown either. The rules match within a clause, so a sentence can be
+    checked on its own."""
+
+    def __init__(self, ctx: ToolContext):
+        self.ctx, self.pending, self.stopped = ctx, "", False
+
+    def feed(self, text: str) -> str:
+        self.pending += text
+        cut = max(self.pending.rfind(mark) for mark in "。！？；!?;\n")
+        if cut < 0:
+            return ""
+        ready, self.pending = self.pending[:cut + 1], self.pending[cut + 1:]
+        return self._release(ready)
+
+    def flush(self) -> str:
+        ready, self.pending = self.pending, ""
+        return self._release(ready) if ready else ""
+
+    def _release(self, ready: str) -> str:
+        if self.stopped or unsafe_answer(ready, _reviewed(self.ctx)):
+            self.stopped = True
+            return ""
+        return ready
+
 
 class AgentRuntime:
     def __init__(self, db: Session, settings: Settings, provider: LLMProvider, embedder: Embedder,
@@ -218,15 +265,19 @@ class AgentRuntime:
         age = (datetime.now(timezone.utc) - answer_cache_created(entry)).total_seconds()
         with tracer.span("cache", "answer_cache_hit", {"question": entry.question}) as span:
             span.set(cache_id=entry.id, hits=entry.hits, age_seconds=int(age), kb_signature=entry.kb_signature)
+        evidence = [Evidence(**e) for e in (entry.meta or {}).get("evidence", [])]
+        ctx = self._context(tenant, user, run, conversation, False, evidence)
+        gate = _StreamGate(ctx)  # an answer cached before the output check existed is checked too
         for start in range(0, len(entry.answer), 8):
-            yield {"type": "token", "step": 1, "text": entry.answer[start : start + 8]}
+            if shown := gate.feed(entry.answer[start : start + 8]):
+                yield {"type": "token", "step": 1, "text": shown}
+        if shown := gate.flush():
+            yield {"type": "token", "step": 1, "text": shown}
         verification = (entry.meta or {}).get("verification")
         if verification:
             run.evidence_coverage = verification.get("coverage")
             run.verdict = verification.get("verdict")
             yield {"type": "verification", **verification}
-        evidence = [Evidence(**e) for e in (entry.meta or {}).get("evidence", [])]
-        ctx = self._context(tenant, user, run, conversation, False, evidence)
         state = {"user_text": user_text, "steps": 0, "models": [], "options": {}, "elapsed_ms": 0}
         yield from self._finish(run, tracer, ctx, state, entry.answer, started, status="completed",
                                 extra_meta={"verification": verification, "cached": True})
@@ -387,10 +438,11 @@ class AgentRuntime:
             state["steps"] += 1
             try:
                 result = None
+                gate = _StreamGate(ctx) if stream_tokens else None
                 for event in self._call_llm(tracer, messages, specs, state):
                     if event.type == "delta":
-                        if stream_tokens:
-                            yield {"type": "token", "step": state["steps"], "text": event.text}
+                        if gate and (shown := gate.feed(event.text)):
+                            yield {"type": "token", "step": state["steps"], "text": shown}
                     else:
                         result = event.result
             except LLMError as exc:
@@ -401,6 +453,8 @@ class AgentRuntime:
                 yield from self._degraded(run, tracer, ctx, state, started)
                 return
 
+            if gate and (shown := gate.flush()):
+                yield {"type": "token", "step": state["steps"], "text": shown}
             if result.finish_reason == "refusal":
                 text = REFUSAL_TEXT + self._fallback_handoff(tracer, ctx, "模型拒绝回答")
                 yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
@@ -643,6 +697,15 @@ class AgentRuntime:
                 started: float, status: str | None = None, verify: bool = False,
                 extra_meta: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
         final_text = text or MODEL_ERROR_TEXT
+        reasons = unsafe_answer(final_text, _reviewed(ctx))
+        if reasons:  # never sent (N-038): a person takes over, and the dashboard names the sources
+            with tracer.span("guardrail", "unsafe_answer", {"answer": final_text}) as span:
+                span.status = "error"
+                span.set(reasons=reasons, sources=_unsafe_sources(ctx))
+            final_text = UNSAFE_TEXT + self._fallback_handoff(tracer, ctx, "回答涉及索要验证码、银行卡号、私人联系方式或转账，已拦截")
+            status, verify = "handoff", False  # no evidence verdict: the answer was never sent
+            extra_meta = {**(extra_meta or {}), "citations": []}
+            yield {"type": "answer_replaced", "text": final_text, "reason": UNSAFE_REASON}
         verification = None
         if verify:
             judge = self.provider if (self.settings.verifier == "llm" and self.provider.name != "mock") else None

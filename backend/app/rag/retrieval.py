@@ -47,6 +47,7 @@ class IndexedChunk:
     page: int | None
     visibility: str
     flagged: bool
+    reviewed: bool  # an administrator released it after the scan held it back
     tf: Counter
     length: int
 
@@ -66,6 +67,7 @@ class Hit:
     cosine: float
     bm25_rank: int | None
     vector_rank: int | None
+    reviewed: bool = False
 
     def as_dict(self) -> dict:
         return {k: (round(v, 4) if isinstance(v, float) else v) for k, v in self.__dict__.items()}
@@ -245,6 +247,7 @@ class IndexManager:
                     page=chunk.page,
                     visibility=visibility,
                     flagged=chunk.flagged_injection,
+                    reviewed=chunk.reviewed_at is not None,
                     tf=tf,
                     length=length,
                 )
@@ -391,6 +394,7 @@ def hybrid_search(
                 cosine=cos,
                 bm25_rank=bm25_rank.get(i),
                 vector_rank=vec_rank.get(i),
+                reviewed=c.reviewed,
             )
         )
         if len(hits) == top_k:

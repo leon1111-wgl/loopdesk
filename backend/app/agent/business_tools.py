@@ -86,7 +86,7 @@ def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         evidence = ctx.add_evidence(
             "kb", hit.doc_title, hit.text,
             heading=hit.heading, chunk_id=hit.chunk_id, document_id=hit.document_id,
-            page=hit.page, relevance=round(hit.relevance, 3),
+            page=hit.page, relevance=round(hit.relevance, 3), reviewed=hit.reviewed,
         )
         results.append({
             "ref": evidence.ref, "doc": hit.doc_title, "heading": hit.heading,
