@@ -92,7 +92,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///./loopdesk.db` | 也支持 `postgresql+psycopg://...` |
 | `JWT_SECRET` | 开发用默认值 | 生产环境必须修改，至少 32 字节；`SEED_DEMO=0` 时使用公开默认值或过短的密钥会拒绝启动 |
-| `SEED_DEMO` / `SEED_DEMO_TRAFFIC` | `1` / `1` | 演示租户、账号和预置对话 |
+| `SEED_DEMO` / `SEED_DEMO_TRAFFIC` | `1` / 离线模型 `1`、真实模型 `0` | 演示租户、账号和预置对话。预置对话会调用十几次模型，所以接真实模型时默认关闭；显式打开也在后台执行，不会拖住启动 |
 | `LOG_FORMAT` / `LOG_LEVEL` | `json` / `INFO` | 结构化日志：每行一个 JSON，包含 request_id、tenant_id、user_id，可直接接入 ELK 或 Loki；本地调试可设为 `text` |
 | `AUTO_MIGRATE` | `1` | 启动时执行 Alembic 迁移；多副本部署时建议设为 0，改由发布任务执行 |
 | `LLM_PROVIDER` | `mock` | `mock` / `openai_compat` / `anthropic` |
@@ -131,6 +131,14 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 | 腾讯 · 混元 | `hunyuan` | `https://api.hunyuan.cloud.tencent.com/v1` | 混元控制台的模型列表 |
 | DeepSeek | `deepseek` | `https://api.deepseek.com/v1` | 官方文档 |
 | 阿里 · 通义 | `qwen` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼控制台 |
+
+上线前先跑一次模型自检：
+
+```bash
+python -m app.ops.llm_check
+```
+
+它给快、强两档模型各发一个最小请求，成功显示耗时；失败时给出原因和处理建议：401/403 是密钥或权限，404 是模型名或地址，400/422 是参数不被支持（例如 `stream_options`，可设 `LOOPDESK_LLM_STREAM_USAGE=0`），5xx 和 429 是对方不可用或限流，超时是网络或地址。任何一档失败时退出码为 1，可以放进部署流水线。服务本身启动和就绪都不依赖模型（模型不可用时会转人工或引用政策原文），所以自检是单独的一步。
 
 模型 ID 经常更新，所以代码里没有写死，请从控制台复制最新值。快模型和强模型可以用同一家厂商的不同规格，也可以只配置一个（`MODEL_FAST` 默认等于 `MODEL_STRONG`）。
 

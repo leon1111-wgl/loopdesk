@@ -147,13 +147,16 @@ class Settings:
         if origins:
             s.cors_origins = [o.strip() for o in origins.split(",") if o.strip()]
         s.seed_demo = _env_bool("SEED_DEMO", s.seed_demo)
-        s.seed_demo_traffic = _env_bool("SEED_DEMO_TRAFFIC", s.seed_demo_traffic)
         s.auto_migrate = _env_bool("AUTO_MIGRATE", s.auto_migrate)
         s.prewarm_index = _env_bool("PREWARM_INDEX", s.prewarm_index)
         s.log_format = _env("LOG_FORMAT", s.log_format)
         s.log_level = _env("LOG_LEVEL", s.log_level)
 
         s.llm_provider = _env("LLM_PROVIDER", s.llm_provider)
+        # Demo traffic asks the model a dozen questions on a fresh database: free and instant offline,
+        # but with a real model it costs calls and a wrong key or a hanging endpoint used to hold up
+        # startup for minutes. Default on only for the offline model (N-032).
+        s.seed_demo_traffic = _env_bool("SEED_DEMO_TRAFFIC", s.llm_provider == "mock")
         s.otlp_endpoint = _env("OTLP_ENDPOINT") or None
         s.otlp_service_name = _env("OTLP_SERVICE_NAME", s.otlp_service_name)
         s.llm_preset = _env("LLM_PRESET")

@@ -9,6 +9,7 @@ process, so a single container is enough for a demo deployment.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, status
@@ -30,6 +31,14 @@ from .rag.retrieval import prewarm
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 logger = logging.getLogger(__name__)
+
+
+def _demo_traffic(services: Services) -> None:
+    try:
+        with new_session() as db:
+            seed_demo_traffic(db, services)
+    except Exception:  # demo data only: the service is up either way
+        logger.exception("demo traffic failed")
 
 
 def check_jwt_secret(settings: Settings) -> None:
@@ -67,8 +76,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     telemetry.configure(settings)
     if settings.seed_demo:
         with new_session() as db:
-            if seed_demo(db, services.embedder) and settings.seed_demo_traffic:
-                seed_demo_traffic(db, services)
+            seeded = seed_demo(db, services.embedder)
+        if seeded and settings.seed_demo_traffic:
+            if services.provider.name == "mock":  # milliseconds offline, and the console has data at once
+                with new_session() as db:
+                    seed_demo_traffic(db, services)
+            else:  # never hold up startup on a real model (N-032)
+                threading.Thread(target=_demo_traffic, args=(services,), name="demo-traffic", daemon=True).start()
 
     app = FastAPI(
         title="LoopDesk API",
