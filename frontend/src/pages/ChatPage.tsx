@@ -386,22 +386,28 @@ export default function ChatPage() {
         setLive({ steps: {}, events: [], done: false });
         break;
       }
-      case "prompt": // the voice channel asks itself: a read-back, a cancellation
-        voiceRun.current = { steps: { 1: event.text }, events: [], done: false };
-        setLive({ steps: { 1: event.text }, events: [], done: false });
+      case "prompt": // the voice channel asks itself (a read-back, a cancellation); its "say" fills the bubble
+        voiceRun.current = { steps: {}, events: [], done: false };
+        setLive({ steps: {}, events: [], done: false });
         break;
       case "agent": {
+        // The bubble shows what is being said (the "say" events), not the model's tokens: after the
+        // confirmation gate stops a refund, the model's words are replaced by the read-back.
         const run = voiceRun.current;
-        if (!run) break;
-        const e = event.event;
-        if (e.type === "token") run.steps[e.step] = (run.steps[e.step] ?? "") + e.text;
-        else run.events.push(e);
+        if (!run || event.event.type === "token") break;
+        run.events.push(event.event);
         setLive({ steps: { ...run.steps }, events: [...run.events], done: false });
         break;
       }
-      case "say":
+      case "say": {
         setTalking(true);
+        const run = voiceRun.current;
+        if (run && !(run.steps[1] ?? "").endsWith(event.written)) {
+          run.steps[1] = (run.steps[1] ?? "") + event.written;
+          setLive({ steps: { ...run.steps }, events: [...run.events], done: false });
+        }
         break;
+      }
       case "barge_in":
         setTalking(false);
         break;
