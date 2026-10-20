@@ -8,7 +8,7 @@
 |---|---|
 | `expected_tools` | 这些工具都被调用了 |
 | `forbidden_tools` | 这些工具没有被调用（例如已退款订单不应再调用 `request_refund`） |
-| `must_include` / `must_not_include` | 回答必须包含 / 不能包含的关键事实 |
+| `must_include` / `must_not_include` | 回答必须包含 / 不能包含的关键事实。比较前去掉空格和 Markdown 加粗、统一全角半角（“7 天”就是“7天”）；可以用 `\|` 列出等价说法（`还未发货\|尚未发货`） |
 | `expect_refusal` | 是否应该拒答 |
 | `expect_approval` | 是否应该触发人工审批 |
 | `expected_doc` | 检索结果中必须出现的文档（检索命中率） |
