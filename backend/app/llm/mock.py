@@ -28,6 +28,10 @@ _REFUND = re.compile(r"退款|退钱|退货|退掉|退我|refund", re.IGNORECASE
 _SHIPMENT = re.compile(r"物流|快递|到哪|发货了吗|配送|运单|什么时候到|送到|where is|track|arrive|deliver|shipping",
                        re.IGNORECASE)
 _TICKET = re.compile(r"报修|故障|坏了|工单|无法使用|打不开|不工作|失灵|连不上")
+# A ticket is for a problem being reported ("坏了", "打不开", "出故障了"), not for a question about how
+# problems are handled ("P1故障多久响应？", "怎么报修？"): the knowledge base answers those.
+_REPORTED = re.compile(r"坏了|无法使用|打不开|不工作|失灵|连不上|开不了|没反应|出故障|故障了")
+_ASKING = re.compile(r"多久|多长时间|怎么|如何|什么|哪些|是否|能不能|可以吗|吗[？?]?$|[？?]$")
 _URGENT = re.compile(r"紧急|严重|马上|立刻")
 _AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*(?:元|块)")
 
@@ -170,7 +174,7 @@ class MockLLM(LLMProvider):
                 return "track_shipment", {"order_id": order_id}
             return None
 
-        if _TICKET.search(text):
+        if _TICKET.search(text) and (_REPORTED.search(text) or not _ASKING.search(text.strip())):
             if can("search_knowledge"):
                 return "search_knowledge", {"query": text}
             if can("create_ticket"):

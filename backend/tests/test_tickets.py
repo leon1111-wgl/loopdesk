@@ -91,3 +91,16 @@ def test_the_full_list_keeps_open_tickets_ahead_of_a_long_closed_history(client,
     closed = [r for r in rows if r["status"] == "closed"]
     assert closed[0]["title"] == "历史工单 599", "the most recently closed history follows"
     assert len(closed) == 100
+
+
+def test_a_question_about_the_fault_policy_is_answered_not_ticketed(ask, login):
+    # Found while recording the static demo: "P1故障多久响应？" asks how fast faults are handled, and
+    # the offline model opened a ticket for it because the message contains 故障.
+    iris = login("customer@iris.demo")
+    for question in ("P1故障多久响应？", "怎么报修？"):
+        _, events = ask(iris, question)
+        assert [e["name"] for e in by_type(events, "tool_call")] == ["search_knowledge"], question
+        assert "工单" not in by_type(events, "final")[0]["text"], question
+    for report in ("我们的同步功能出故障了，一直转圈", "我要报修", "打不开怎么办？"):
+        _, events = ask(iris, report)
+        assert "create_ticket" in [e["name"] for e in by_type(events, "tool_call")], report
