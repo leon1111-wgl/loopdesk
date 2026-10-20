@@ -45,7 +45,7 @@ from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
 from .tools import ApprovalNeed, Evidence, ToolContext, ToolError, ToolRegistry
 from .tracing import Tracer
-from .verifier import verify_answer
+from .verifier import Verification, verify_answer
 
 STRICT_FALLBACK = "抱歉，我暂时无法给出有可靠依据的答复。为避免误导，建议您转人工客服确认。"
 MAX_STEPS_TEXT = "抱歉，这个问题需要的处理步骤较多。"
@@ -601,20 +601,29 @@ class AgentRuntime:
             reason=outcome.reason, evidence=[e.to_dict() for e in ctx.evidence],
         )
         self.db.add(approval)
-        tracer.flush()
-        self.db.commit()
-        with tracer.span("notify", "wecom_approval", {"approval_id": approval.id}) as span:
-            span.set(**notify_approval(self.settings, approval, ctx.tenant))
+        self.db.flush()  # its id goes into the run state and the paused message
         state["pending"] = {
             "approval_id": approval.id,
             "call": {"id": call.id, "name": call.name, "arguments": args},
             "queue": [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in queue],
         }
         state["messages"] = [m.to_dict() for m in messages]
+        # One commit for the approval and everything a resume needs (pending call, messages,
+        # "waiting_approval"), before anything announces the approval. It is in the review queue
+        # from that commit on: a reviewer may decide during the WeCom call below, and a reader
+        # may stop at approval_required. A run saved after either had no pending call to resume.
+        events = self._save(run, tracer, ctx, state, text, started, status="waiting_approval",
+                            extra_meta={"approval_id": approval.id})
+        with tracer.span("notify", "wecom_approval", {"approval_id": approval.id}) as span:
+            span.set(**notify_approval(self.settings, approval, ctx.tenant))
+        tracer.flush()  # buffered trace writes: this span came after the run's commit
+        self.db.commit()
+        # No transaction is open while the events below are read, so a reader that stops at one
+        # leaves the run alone: _mark_failed sees it as saved above, paused, even if a reviewer's
+        # resume has already set its row back to "running".
         yield {"type": "approval_required", "approval_id": approval.id, "tool": call.name, "arguments": args,
                "reason": shown}
-        yield from self._finish(run, tracer, ctx, state, text, started, status="waiting_approval",
-                                extra_meta={"approval_id": approval.id})
+        yield from events
 
     def _finish(self, run: Run, tracer: Tracer, ctx: ToolContext, state: dict[str, Any], text: str,
                 started: float, status: str | None = None, verify: bool = False,
@@ -633,7 +642,13 @@ class AgentRuntime:
             if self.settings.evidence_mode == "strict" and verification.verdict == "blocked":
                 final_text = STRICT_FALLBACK
                 yield {"type": "answer_replaced", "text": final_text, "reason": "证据校验未通过（严格模式）"}
+        yield from self._save(run, tracer, ctx, state, final_text, started, status, verification, extra_meta)
 
+    def _save(self, run: Run, tracer: Tracer, ctx: ToolContext, state: dict[str, Any], final_text: str,
+              started: float, status: str | None = None, verification: Verification | None = None,
+              extra_meta: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """Save the answer and the run's outcome in one commit. The "final" and "done" events are
+        returned, not yielded, so a caller can commit first and send its own events before them."""
         # The tools this run used decide its status and whether the answer may be cached. They
         # are tracked in memory (not read back from span rows, which buffered trace writes have
         # not written yet), plus those from before an approval pause, kept in the run state.
@@ -679,13 +694,13 @@ class AgentRuntime:
         self.db.commit()
         if status != "waiting_approval":  # a paused run is exported once, when it ends
             telemetry.export_run(self.db, run, self.settings)
-        yield {"type": "final", "run_id": run.id, "message_id": message_id, "text": final_text,
-               "status": status, "meta": meta}
+        final = {"type": "final", "run_id": run.id, "message_id": message_id, "text": final_text,
+                 "status": status, "meta": meta}
         done = {"type": "done", "run_id": run.id, "status": status, "latency_ms": run.latency_ms}
         if ctx.is_staff:  # tokens, cost, model and routing are operational data, not for customers
             done.update(prompt_tokens=run.prompt_tokens, completion_tokens=run.completion_tokens,
                         cost=run.cost, model=run.model, route_tier=run.route_tier)
-        yield done
+        return [final, done]
 
     # ================================================================ helpers
     def _context(self, tenant, user, run, conversation, dry_run, evidence) -> ToolContext:

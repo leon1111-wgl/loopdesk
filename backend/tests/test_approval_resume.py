@@ -3,6 +3,8 @@
 import pytest
 from sqlalchemy import func, select
 
+from app.agent import runtime as agent_runtime
+from app.agent.runtime import ResumeError
 from app.agent.tools import ToolContext
 from app.db import new_session
 from app.models import Approval, Message, Order, Refund, Run, Tenant, User
@@ -92,6 +94,37 @@ def test_two_reviewers_deciding_at_once_run_the_tool_once(client, ask, login):
         answers = db.execute(select(Message).where(
             Message.conversation_id == conversation_id, Message.role == "assistant")).scalars().all()
         assert len(answers) == 2, "the paused answer plus exactly one resumed answer"
+
+
+def test_a_reviewer_who_decides_during_the_wecom_notice_succeeds_first_time(client, ask, login, monkeypatch):
+    # The approval is in the queue once it is committed, and the WeCom call after that can take
+    # seconds. The pending call used to be saved only after the notice: a reviewer who decided
+    # in between got an error (KeyError 'pending') and the approval went back to pending.
+    services = get_services()
+    decisions = []
+
+    def notice_while_a_reviewer_decides(settings, approval, tenant, transport=None):
+        with new_session() as db:
+            admin = db.execute(select(User).where(User.email == "admin@leon.demo")).scalar_one()
+            try:
+                decisions.append(services.runtime(db).resume(db.get(Approval, approval.id), "approve", admin))
+            except ResumeError as exc:
+                decisions.append(exc)
+        return {"sent": True, "mode": "test"}
+
+    monkeypatch.setattr(agent_runtime, "notify_approval", notice_while_a_reviewer_decides)
+    customer = login("customer@leon.demo")
+    conversation_id, events = ask(customer, "SO20261008002 我要退款")
+    assert len(decisions) == 1 and not isinstance(decisions[0], ResumeError), decisions
+    assert "已受理" in by_type(decisions[0], "final")[0]["text"]
+    assert [e["type"] for e in events][-3:] == ["approval_required", "final", "done"]
+    with new_session() as db:
+        approval = db.get(Approval, by_type(events, "approval_required")[0]["approval_id"])
+        run = db.get(Run, approval.run_id)
+        assert approval.status == "approved" and run.status == "completed" and run.error is None
+        assert _refund_count(db) == 1
+    messages = client.get(f"/api/conversations/{conversation_id}/messages", headers=customer).json()["messages"]
+    assert [m["meta"]["status"] for m in messages if m["role"] == "assistant"] == ["waiting_approval", "completed"]
 
 
 def test_refund_execution_is_idempotent_per_approval(client, ask, login):

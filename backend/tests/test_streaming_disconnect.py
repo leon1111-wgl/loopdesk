@@ -3,16 +3,17 @@
 import json
 import threading
 import time
+from contextlib import closing
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.agent import answer_cache
 from app.api.chat import detached
 from app.db import new_session
 from app.evals.load_bench import _prepare_database, _start_server
-from app.models import Conversation, Run, Tenant, User
+from app.models import Approval, Conversation, Refund, Run, Tenant, User
 from app.services import get_services
 from tests.conftest import by_type
 
@@ -104,6 +105,61 @@ def test_a_reader_that_stops_after_the_answer_leaves_the_run_completed(client):
     with new_session() as db:
         run = db.get(Run, run_id)
         assert run.status == "completed" and run.error is None
+
+
+def _read_until_approval_required(events) -> tuple[str, int]:
+    run_id = next(events)["run_id"]
+    while (event := next(events))["type"] != "approval_required":
+        pass
+    return run_id, event["approval_id"]
+
+
+def test_a_reader_that_stops_at_approval_required_leaves_an_approval_that_can_be_approved(client, login):
+    # A reader may stop once it knows a person has to decide. The run used to be saved only
+    # after this event, so it was marked failed with no pending call to resume: every approve
+    # then failed (KeyError 'pending') and put the approval back to pending, for good.
+    with new_session() as db:
+        events = _start_run(db, "SO20261008002 我要退款")
+        run_id, approval_id = _read_until_approval_required(events)
+        events.close()
+    r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "approve"},
+                    headers=login("admin@leon.demo"))
+    assert r.status_code == 200, r.text
+    with new_session() as db:
+        run = db.get(Run, run_id)
+        assert run.status == "completed" and run.error is None
+        assert db.execute(select(func.count(Refund.id)).where(Refund.order_id == "SO20261008002")).scalar_one() == 1
+        conversation_id = run.conversation_id
+    messages = client.get(f"/api/conversations/{conversation_id}/messages",
+                          headers=login("customer@leon.demo")).json()["messages"]
+    answers = [m for m in messages if m["role"] == "assistant"]
+    assert [m["meta"]["status"] for m in answers] == ["waiting_approval", "completed"]
+    assert "已受理" in answers[-1]["content"], "the customer gets the resumed answer"
+
+
+def test_a_reader_that_stops_while_a_reviewer_resumes_leaves_the_run_to_the_reviewer(client, monkeypatch):
+    # Once paused, the run is the reviewer's. A reader that stops while a reviewer resumes it
+    # (the row says "running" again) must not mark it failed, or the completed run keeps the
+    # error "client disconnected". This holds because no transaction is open while the pause's
+    # events are read, so _mark_failed's rollback reloads nothing: it sees the run as paused.
+    services = get_services()
+    refund = services.registry.get("request_refund")
+    pay = refund.handler
+    with new_session() as db, closing(_start_run(db, "SO20261008002 我要退款")) as events:
+        run_id, approval_id = _read_until_approval_required(events)
+
+        def reader_stops_mid_resume(ctx, args):
+            events.close()
+            return pay(ctx, args)
+
+        monkeypatch.setattr(refund, "handler", reader_stops_mid_resume)
+        with new_session() as reviewer_db:
+            admin = reviewer_db.execute(select(User).where(User.email == "admin@leon.demo")).scalar_one()
+            resumed = services.runtime(reviewer_db).resume(reviewer_db.get(Approval, approval_id), "approve", admin)
+    assert "已受理" in by_type(resumed, "final")[0]["text"]
+    with new_session() as db:
+        run = db.get(Run, run_id)
+        assert run.status == "completed" and run.error is None, (run.status, run.error)
 
 
 def test_a_crash_before_the_agent_loop_still_ends_the_run(ask, login, monkeypatch):
