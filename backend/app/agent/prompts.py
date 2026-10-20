@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import date
 
+from ..config import prompt_version_name
 from ..models import Tenant, User
 
 ROLE_TEXT = {"admin": "企业管理员（测试）", "agent": "客服坐席（内部员工）", "customer": "顾客"}
@@ -40,12 +41,14 @@ SYSTEM_PROMPT_V2 = """你是企业的智能客服助手。规则：
 
 当前会话：企业「{tenant}」，对话对象是{role}，今天是 {today}。"""
 
-PROMPT_VERSIONS: dict[str, str] = {"v1": SYSTEM_PROMPT, "v2": SYSTEM_PROMPT_V2}
-DEFAULT_PROMPT_VERSION = "v1"
+# Written 1.00, 2.00, 1.05 (config.prompt_version_name also accepts the earlier v1, v2).
+PROMPT_VERSIONS: dict[str, str] = {"1.00": SYSTEM_PROMPT, "2.00": SYSTEM_PROMPT_V2}
+DEFAULT_PROMPT_VERSION = "1.00"
 
 
 def choose_prompt_version(default: str, canary: str | None, canary_percent: float, bucket_key: str) -> str:
     """Stable canary split: the same conversation always gets the same version."""
+    default, canary = prompt_version_name(default), prompt_version_name(canary)
     default = default if default in PROMPT_VERSIONS else DEFAULT_PROMPT_VERSION
     if not canary or canary not in PROMPT_VERSIONS or canary_percent <= 0:
         return default

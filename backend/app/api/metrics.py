@@ -8,8 +8,10 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..config import prompt_version_name
 from ..db import get_db
 from ..agent.outcome import is_refusal
+from ..agent.prompts import DEFAULT_PROMPT_VERSION
 from ..models import Approval, EvalRun, Feedback, KnowledgeConflict, Message, Run, Span, Ticket
 from ..security import Principal, require_staff
 from ..localtime import start_of_day, zone_of
@@ -32,7 +34,9 @@ def _by_prompt_version(runs) -> dict:
     """Canary read-out: compare outcomes of each prompt version on live traffic."""
     groups: dict[str, list] = {}
     for r in runs:
-        groups.setdefault((r.state or {}).get("prompt_version") or "v1", []).append(r)
+        # Runs from before versioning used the first prompt; older runs name it v1.
+        version = prompt_version_name((r.state or {}).get("prompt_version")) or DEFAULT_PROMPT_VERSION
+        groups.setdefault(version, []).append(r)
     out = {}
     for version, items in sorted(groups.items()):
         coverages = [r.evidence_coverage for r in items if r.evidence_coverage is not None]

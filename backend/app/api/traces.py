@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import prompt_version_name
 from ..db import get_db
 from ..models import Approval, Run, Span, User
 from ..security import Principal, require_staff
@@ -44,7 +45,7 @@ def get_run(run_id: str, principal: Principal = Depends(require_staff), db: Sess
         **run_out(run, db.get(User, run.user_id)),
         "evidence": (run.state or {}).get("evidence", []),
         "request_id": (run.state or {}).get("request_id"),
-        "prompt_version": (run.state or {}).get("prompt_version"),
+        "prompt_version": prompt_version_name((run.state or {}).get("prompt_version")),
         "spans": [
             {"id": s.id, "kind": s.kind, "name": s.name, "input": s.input, "output": s.output, "status": s.status,
              "latency_ms": s.latency_ms, "prompt_tokens": s.prompt_tokens, "completion_tokens": s.completion_tokens,

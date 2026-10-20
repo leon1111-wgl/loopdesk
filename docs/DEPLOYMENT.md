@@ -135,8 +135,8 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowl
 | `RATE_LIMIT_PER_MINUTE` | `30` | 每个用户每分钟最多发起的对话请求数 |
 | `LOGIN_ATTEMPTS_PER_EMAIL` / `LOGIN_ATTEMPTS_PER_IP` | `10` / `30` | 登录限流：同一账号（邮箱忽略大小写和首尾空格）、同一客户端 IP 每分钟最多尝试次数，两者同时生效 |
 | `RATE_LIMIT_BACKEND` | `auto` | 登录限流的计数放在哪里：`auto`（PostgreSQL 上存数据库，所有 worker 共享；SQLite 上存进程内存）/ `database` / `memory`。在 SQLite 上跑多个 worker 时设为 `database` |
-| `PROMPT_VERSION` | `v1` | 默认的系统提示词版本（见 `agent/prompts.py` 中的 `PROMPT_VERSIONS`） |
-| `PROMPT_CANARY_VERSION` / `PROMPT_CANARY_PERCENT` | — / `0` | 灰度：按会话哈希把指定比例的对话稳定地分给候选版本；比例改回 0 即回滚 |
+| `PROMPT_VERSION` | `1.00` | 默认的系统提示词版本（见 `agent/prompts.py` 中的 `PROMPT_VERSIONS`），写作 1.00、2.00；旧的写法 v1、v2 仍然有效 |
+| `PROMPT_CANARY_VERSION` / `PROMPT_CANARY_PERCENT` | — / `0` | 灰度：按会话哈希把指定比例的对话稳定地分给候选版本（例如 `2.00`）；比例改回 0 即回滚 |
 | `ANSWER_CACHE_TTL_HOURS` | `24` | 答案缓存的有效期，设为 0 即关闭；知识或配置变化时缓存会自动失效 |
 | `REFUND_WINDOW_DAYS` / `REFUND_WINDOW_MAX_COUNT` / `REFUND_WINDOW_MAX_AMOUNT` | `30` / `3` / `200` | 累计退款风控：窗口天数内同一顾客的退款笔数或累计金额超过上限时，小额退款也转人工审核 |
 | `RUN_DEADLINE_SECONDS` | `45` | 整次运行的时间预算（所有步骤、两档模型、所有重试加起来），也是模型挂起时顾客最长的等待时间。每一步开始前检查；模型调用的超时被压到剩余时间，过了期限不再重试。超时后转人工（建工单、告知排队位次），链路里记录 `run_deadline`。设为 0 关闭。中断运行的收尾时限也由它推算（见上文） |

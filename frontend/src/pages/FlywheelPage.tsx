@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Check, X } from "lucide-react";
 import { ApiError, api } from "../api";
 import { useAuth } from "../auth";
-import { Empty, ErrorBanner, Kpi, StatusBadge, pct, time, useLoad } from "../components/ui";
+import { Empty, ErrorBanner, Kpi, StatusBadge, docVersion, pct, time, useLoad } from "../components/ui";
 
 interface FeedbackRow {
   id: number;
@@ -83,11 +83,12 @@ export default function FlywheelPage() {
         `/api/flywheel/patches/${patch.id}/${action}`, action === "apply" ? { acknowledge_conflicts: acknowledge } : {},
       );
       setDisputed(null);
+      const published = r.document_version ? `（版本 ${docVersion(r.document_version)}）` : "";
       setMessage(action === "reject"
         ? `补丁 #${patch.id} 已驳回`
         : r.eval_case_activated === false
-          ? `补丁 #${patch.id} 已发布（版本 v${r.document_version}）。因为它与原文档冲突，对应评测用例保持候选状态：请先修改原文档，再到评测中心激活。`
-          : `补丁 #${patch.id} 已发布到知识库（版本 v${r.document_version}），对应评测用例已激活。` +
+          ? `补丁 #${patch.id} 已发布${published}。因为它与原文档冲突，对应评测用例保持候选状态：请先修改原文档，再到评测中心激活。`
+          : `补丁 #${patch.id} 已发布到知识库${published}，对应评测用例已激活。` +
             (r.conflicts ? `注意：补丁与现有知识存在 ${r.conflicts} 处数字冲突，请到「知识库」核对。` : "去评测中心运行回归，确认它从失败变为通过。"));
       setError(null);
       patches.reload();

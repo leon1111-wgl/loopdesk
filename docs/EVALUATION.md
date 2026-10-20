@@ -204,17 +204,17 @@ python -m app.evals.cache_bench --report cache.json
 ## Prompt A/B
 
 ```bash
-python -m app.evals.cli --fresh --compare v1,v2 --gate 0.95
+python -m app.evals.cli --fresh --compare 1.00,2.00 --gate 0.95
 ```
 
 两个版本跑同一套用例。候选版本只要有一条用例从通过变成失败，或者通过率低于门禁，命令就失败（退出码 1）。
 
 | 版本 | 通过率 | Token（离线估算） | 说明 |
 |---|---|---|---|
-| v1 | 22/22 | 24,613 | 当前默认 |
-| v2 | 22/22 | 16,926（−31.2%） | 同样 8 条规则的精简写法 |
+| 1.00 | 22/22 | 24,613 | 当前默认 |
+| 2.00 | 22/22 | 16,926（−31.2%） | 同样 8 条规则的精简写法 |
 
-离线模型不读提示词的措辞，所以这个结果只能说明“精简版更省 token，而且流程没有被破坏”，**不能**说明回答质量不变。上线流程：真实模型离线 A/B → 设置 `LOOPDESK_PROMPT_CANARY_VERSION=v2` 和 `LOOPDESK_PROMPT_CANARY_PERCENT=5` 做灰度 → 在看板的“Prompt 版本对比”中观察转人工率、证据冲突和覆盖率 → 逐步放量，或改回 0 回滚。
+离线模型不读提示词的措辞，所以这个结果只能说明“精简版更省 token，而且流程没有被破坏”，**不能**说明回答质量不变。上线流程：真实模型离线 A/B → 设置 `LOOPDESK_PROMPT_CANARY_VERSION=2.00` 和 `LOOPDESK_PROMPT_CANARY_PERCENT=5` 做灰度 → 在看板的“Prompt 版本对比”中观察转人工率、证据冲突和覆盖率 → 逐步放量，或改回 0 回滚。
 
 ## 用真实模型评测
 

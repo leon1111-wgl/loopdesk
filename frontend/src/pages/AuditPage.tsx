@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Empty, ErrorBanner, time, useLoad } from "../components/ui";
+import { Empty, ErrorBanner, docVersion, time, useLoad } from "../components/ui";
 
 interface AuditEntry {
   id: number;
@@ -74,6 +74,9 @@ function show(value: unknown): string {
   return String(value);
 }
 
+// Document versions are stored as 1, 2, 3… and shown the way the knowledge page shows them.
+const DOCUMENT_VERSION = new Set(["version", "from_version", "to_version", "document_version"]);
+
 function Detail({ detail }: { detail: Record<string, unknown> }) {
   const { changes, diff, ...rest } = detail as { changes?: Record<string, [unknown, unknown]>; diff?: string };
   return (
@@ -82,7 +85,8 @@ function Detail({ detail }: { detail: Record<string, unknown> }) {
         <div key={field}>{LABEL[field] ?? field}：<span className="faint">{show(before)}</span> → <b>{show(after)}</b></div>
       ))}
       {Object.entries(rest).map(([key, value]) => (
-        <div key={key} className="small"><span className="faint">{LABEL[key] ?? key}：</span>{show(value)}</div>
+        <div key={key} className="small"><span className="faint">{LABEL[key] ?? key}：</span>
+          {DOCUMENT_VERSION.has(key) && typeof value === "number" ? docVersion(value) : show(value)}</div>
       ))}
       {diff && (
         <details>

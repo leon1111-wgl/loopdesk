@@ -71,7 +71,7 @@ export default function EvalsPage() {
             <label className="row small muted">
               Prompt 版本
               <select className="select" style={{ width: 150 }} value={promptVersion} onChange={(e) => setPromptVersion(e.target.value)} aria-label="评测使用的 Prompt 版本">
-                <option value="">默认（{prompts.data?.default ?? "v1"}）</option>
+                <option value="">默认（{prompts.data?.default ?? "1.00"}）</option>
                 {prompts.data?.versions.map((v) => <option key={v.version} value={v.version}>{v.version} · {v.characters} 字</option>)}
               </select>
             </label>
@@ -116,7 +116,7 @@ export default function EvalsPage() {
         {tab === "results" && runs.data && runs.data.length > 0 && (
           <select className="select" style={{ width: 260 }} value={detail?.id ?? ""} onChange={(e) => setSelected(Number(e.target.value))}>
             {runs.data.map((r) => (
-              <option key={r.id} value={r.id}>#{r.id} · {pct(r.metrics.pass_rate)} · Prompt {r.metrics.prompt_version ?? "v1"} · {r.triggered_by} · {time(r.created_at)}</option>
+              <option key={r.id} value={r.id}>#{r.id} · {pct(r.metrics.pass_rate)} · Prompt {r.metrics.prompt_version ?? "1.00"} · {r.triggered_by} · {time(r.created_at)}</option>
             ))}
           </select>
         )}

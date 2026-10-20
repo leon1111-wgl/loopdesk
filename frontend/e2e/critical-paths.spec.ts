@@ -117,3 +117,22 @@ test("the agent opens a ticket; staff claim and close it; the customer reads the
   await emma.reload();
   await expect(emma.locator(".msg.agent").last()).toContainText("已安排上门检修，明天上午 10 点前到达。");
 });
+
+test("an administrator edits a document; the knowledge page and the audit log show 1.00 → 1.01", async ({ browser }) => {
+  const leon = await signIn(browser, "admin@leon.demo");
+  await leon.goto("/knowledge");
+  const row = leon.getByRole("row").filter({ hasText: "发票开具指南" });
+  await expect(row.getByRole("cell", { name: "1.00", exact: true })).toBeVisible();
+  await row.click();
+  await leon.getByRole("dialog").getByRole("button", { name: "编辑" }).click();
+  const content = leon.getByRole("textbox", { name: /内容/ });
+  await content.fill(`${await content.inputValue()}\n\n纸质发票寄出后，可在订单详情查看物流单号。`);
+  await leon.getByRole("button", { name: "保存为 1.01" }).click();
+  await expect(row.getByRole("cell", { name: "1.01", exact: true })).toBeVisible();
+
+  // Stored as 1 and 2 (the edit lock compares them); shown the way the knowledge page shows them.
+  await leon.goto("/audit");
+  const entry = leon.getByRole("row").filter({ hasText: "原版本" }).first();
+  await expect(entry).toContainText("原版本：1.00");
+  await expect(entry).toContainText("新版本：1.01");
+});

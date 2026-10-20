@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..audit import changes, record
 from ..db import get_db
 from ..agent.prompts import PROMPT_VERSIONS
+from ..config import prompt_version_name
 from ..evals.runner import run_suite
 from ..models import EvalCase, EvalResult, EvalRun
 from ..security import Principal, rate_limiter, require_admin, require_staff
@@ -40,8 +41,11 @@ def case_out(c: EvalCase) -> dict:
 
 
 def eval_run_out(r: EvalRun) -> dict:
+    metrics = r.metrics
+    if metrics and metrics.get("prompt_version"):  # runs recorded before the rename say v1, v2
+        metrics = {**metrics, "prompt_version": prompt_version_name(metrics["prompt_version"])}
     return {"id": r.id, "suite": r.suite, "status": r.status, "total": r.total, "passed": r.passed,
-            "metrics": r.metrics, "model": r.model, "triggered_by": r.triggered_by,
+            "metrics": metrics, "model": r.model, "triggered_by": r.triggered_by,
             "created_at": iso(r.created_at), "finished_at": iso(r.finished_at)}
 
 
@@ -69,10 +73,11 @@ def update_case(case_id: int, body: CasePatch, principal: Principal = Depends(re
 @router.post("/runs")
 def start_run(body: RunIn, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     rate_limiter.check(f"eval:{principal.tenant.id}", 6)
-    if body.prompt_version and body.prompt_version not in PROMPT_VERSIONS:
+    version = prompt_version_name(body.prompt_version)
+    if version and version not in PROMPT_VERSIONS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"未知的 Prompt 版本：{body.prompt_version}")
     run = run_suite(db, get_services(), principal.tenant, body.suite, triggered_by=principal.user.name,
-                    prompt_version=body.prompt_version)
+                    prompt_version=version or None)
     return eval_run_out(run)
 
 

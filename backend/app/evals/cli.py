@@ -2,7 +2,7 @@
 
     python -m app.evals.cli --tenant leon --gate 0.9            # against LOOPDESK_DATABASE_URL
     python -m app.evals.cli --fresh --gate 0.9 --report out.json  # throwaway DB seeded from scratch
-    python -m app.evals.cli --fresh --compare v1,v2               # offline A/B of two prompt versions
+    python -m app.evals.cli --fresh --compare 1.00,2.00           # offline A/B of two prompt versions
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compare", help="baseline,candidate prompt versions; fails on any regression")
     args = parser.parse_args(argv)
 
-    from ..config import get_settings
+    from ..config import get_settings, prompt_version_name
     from ..db import create_all, init_engine, new_session
     from ..models import EvalResult, Tenant
     from ..seed import seed_demo
@@ -46,7 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         tenant = db.execute(select(Tenant).where(Tenant.slug == args.tenant)).scalar_one()
         if args.compare:
             return compare(db, services, tenant, args.suite, args.compare.split(","), args.gate)
-        run = run_suite(db, services, tenant, args.suite, triggered_by="cli", prompt_version=args.prompt_version)
+        run = run_suite(db, services, tenant, args.suite, triggered_by="cli",
+                        prompt_version=prompt_version_name(args.prompt_version))
         results = db.execute(select(EvalResult).where(EvalResult.eval_run_id == run.id)).scalars().all()
 
         print(f"\nLoopDesk eval · tenant={args.tenant} suite={args.suite} model={run.model}")
@@ -78,10 +79,11 @@ def main(argv: list[str] | None = None) -> int:
 def compare(db, services, tenant, suite: str, versions: list[str], gate: float) -> int:
     """Run the same suite under two prompt versions and report flips and cost."""
     from ..agent.prompts import PROMPT_VERSIONS
+    from ..config import prompt_version_name
     from ..models import EvalResult
     from .runner import run_suite
 
-    baseline, candidate = (v.strip() for v in versions[:2])
+    baseline, candidate = (prompt_version_name(v) for v in versions[:2])
     unknown = [v for v in (baseline, candidate) if v not in PROMPT_VERSIONS]
     if unknown:
         print(f"unknown prompt version(s): {', '.join(unknown)}; known: {', '.join(PROMPT_VERSIONS)}")

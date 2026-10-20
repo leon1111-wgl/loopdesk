@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { AlertTriangle, Check, FilePlus2, Pencil, Search, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import { Drawer, Empty, ErrorBanner, Modal, pressable, time, useLoad } from "../components/ui";
+import { Drawer, Empty, ErrorBanner, Modal, docVersion, pressable, time, useLoad } from "../components/ui";
 import type { DocumentRow } from "../types";
 
 interface DocChunk {
@@ -180,7 +180,7 @@ function EditDocModal({ doc, onClose, onDone }: { doc: DocDetail; onClose: () =>
   }
   return (
     <Modal title={`编辑《${doc.title}》`} onClose={onClose}
-      footer={<><button className="btn" onClick={onClose}>取消</button><button className="btn btn-primary" disabled={busy || !title.trim() || !content.trim()} onClick={submit}>保存为 v{doc.version + 1}</button></>}>
+      footer={<><button className="btn" onClick={onClose}>取消</button><button className="btn btn-primary" disabled={busy || !title.trim() || !content.trim()} onClick={submit}>保存为 {docVersion(doc.version + 1)}</button></>}>
       <label className="field">标题<input className="input" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
       <label className="field">内容（保存后重新切分、索引，并重新检查知识冲突）
         <textarea className="textarea" style={{ minHeight: 280 }} value={content} onChange={(e) => setContent(e.target.value)} />
@@ -399,7 +399,7 @@ export default function KnowledgePage() {
                 <td>{d.chunk_count}</td>
                 <td>{d.flagged_chunks ? <span className="badge badge-danger"><AlertTriangle size={12} /> {d.flagged_chunks} 个片段待复核</span> : <span className="faint">无</span>}</td>
                 <td>{d.conflicts ? <span className="badge badge-warning">{d.conflicts} 处待核对</span> : <span className="faint">无</span>}</td>
-                <td>v{d.version}</td>
+                <td>{docVersion(d.version)}</td>
                 <td className="faint">{time(d.updated_at)}</td>
               </tr>
             ))}
@@ -413,7 +413,7 @@ export default function KnowledgePage() {
       {editing && detail && <EditDocModal doc={detail} onClose={() => setEditing(false)}
         onDone={() => { setEditing(false); changed(); open(detail.id); }} />}
       {detail && (
-        <Drawer title={<div><h2>{detail.title}</h2><div className="faint">{detail.chunk_count} 个片段 · v{detail.version}</div></div>} onClose={() => setDetail(null)}>
+        <Drawer title={<div><h2>{detail.title}</h2><div className="faint">{detail.chunk_count} 个片段 · 版本 {docVersion(detail.version)}</div></div>} onClose={() => setDetail(null)}>
           <div className="stack">
             {admin && (
               <div className="row">

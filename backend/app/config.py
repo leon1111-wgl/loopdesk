@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 # Base URLs of OpenAI-compatible chat endpoints. Model IDs change often, so they are
 # never hard-coded here: copy them from each vendor's console into LOOPDESK_LLM_MODEL_*.
@@ -70,6 +72,19 @@ def _env_float(name: str, default: float) -> float:
 def _env_int(name: str, default: int) -> int:
     value = _env(name)
     return int(value) if value is not None else default
+
+
+_VERSION_NAME = re.compile(r"[vV]?(\d{1,3}(?:\.\d{1,2})?)")
+
+
+def prompt_version_name(value: str | None) -> str | None:
+    """Prompt versions are written 1.00, 2.00, 1.05: a rewrite takes the next whole number, a
+    wording change adds 0.01. The earlier names (v1, v2) and short forms (2, 2.0) still name the
+    same version, because existing PROMPT_VERSION settings and stored runs use them."""
+    if value is None:
+        return None
+    match = _VERSION_NAME.fullmatch(value.strip())
+    return f"{Decimal(match.group(1)):.2f}" if match else value.strip()
 
 
 @dataclass
@@ -143,7 +158,7 @@ class Settings:
     refund_window_max_count: int = 3
     refund_window_max_amount: float = 200.0
     answer_cache_ttl_hours: float = 24.0  # 0 disables the answer cache
-    prompt_version: str = "v1"
+    prompt_version: str = "1.00"
     prompt_canary_version: str | None = None
     prompt_canary_percent: float = 0.0
 
@@ -226,8 +241,8 @@ class Settings:
         s.refund_window_max_count = _env_int("REFUND_WINDOW_MAX_COUNT", s.refund_window_max_count)
         s.refund_window_max_amount = _env_float("REFUND_WINDOW_MAX_AMOUNT", s.refund_window_max_amount)
         s.answer_cache_ttl_hours = _env_float("ANSWER_CACHE_TTL_HOURS", s.answer_cache_ttl_hours)
-        s.prompt_version = _env("PROMPT_VERSION", s.prompt_version)
-        s.prompt_canary_version = _env("PROMPT_CANARY_VERSION", s.prompt_canary_version)
+        s.prompt_version = prompt_version_name(_env("PROMPT_VERSION", s.prompt_version))
+        s.prompt_canary_version = prompt_version_name(_env("PROMPT_CANARY_VERSION", s.prompt_canary_version))
         s.prompt_canary_percent = _env_float("PROMPT_CANARY_PERCENT", s.prompt_canary_percent)
 
         s.feishu_apps = _feishu_apps()

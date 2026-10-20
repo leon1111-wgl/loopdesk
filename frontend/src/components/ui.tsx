@@ -126,6 +126,10 @@ export const ms = (v: number | null | undefined) => (v == null ? "—" : v >= 10
 export const yuan = (v: unknown) => `¥${Number(v ?? 0).toFixed(2)}`;
 const pad = (n: number) => String(n).padStart(2, "0");
 
+/** Documents are numbered 1, 2, 3… (an edit names the one it was made on, so a save in between
+ *  is refused) and shown as 1.00, 1.01, 1.02…: each save adds 0.01. */
+export const docVersion = (n: number) => `${1 + Math.floor((n - 1) / 100)}.${pad((n - 1) % 100)}`;
+
 /** Friendly timestamps: 刚刚 / 5 分钟前 / 今天 14:05 / 昨天 09:12 / 10-08 14:05. */
 export function time(iso?: string | null) {
   if (!iso) return "—";
