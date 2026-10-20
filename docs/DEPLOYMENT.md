@@ -129,14 +129,14 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowl
 | `EMBEDDING_PROVIDER` | `hashing` | `hashing`（离线）/ `openai_compat` |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | — / `512` | 向量模型；远程模型返回的维度必须等于 `EMBEDDING_DIM`，否则建索引时报错 |
 | `EVIDENCE_MODE` | `annotate` | `annotate`：流式输出并标注；`strict`：缓冲输出，校验不通过就拦截 |
-| `VERIFIER` | `lexical` | `lexical` / `llm` |
+| `VERIFIER` | `lexical` | `lexical` / `llm`：`llm` 时由快模型判定措辞是否有依据（数字仍按规则核对）；带思考过程的模型（如 DeepSeek V4.1 Flash）会让 p95 从约 13 秒升到约 40 秒，门禁没有提高，见 EVALUATION |
 | `MIN_RELEVANCE` | `0.3` | 检索相关度阈值（IDF 加权词覆盖率） |
 | `MIN_COSINE` | 未设置 | 向量这一路的门槛。接入语义向量模型后用 `python -m app.evals.gate_probe --calibrate` 标定再设；未设置时，语义模型的余弦不能单独放行（只看覆盖率），离线哈希向量沿用 `MIN_RELEVANCE` |
 | `MAX_AGENT_STEPS` | `6` | 单次运行最多调用模型的次数 |
 | `RATE_LIMIT_PER_MINUTE` | `30` | 每个用户每分钟最多发起的对话请求数 |
 | `LOGIN_ATTEMPTS_PER_EMAIL` / `LOGIN_ATTEMPTS_PER_IP` | `10` / `30` | 登录限流：同一账号（邮箱忽略大小写和首尾空格）、同一客户端 IP 每分钟最多尝试次数，两者同时生效 |
 | `RATE_LIMIT_BACKEND` | `auto` | 登录限流的计数放在哪里：`auto`（PostgreSQL 上存数据库，所有 worker 共享；SQLite 上存进程内存）/ `database` / `memory`。在 SQLite 上跑多个 worker 时设为 `database` |
-| `PROMPT_VERSION` | `1.00` | 默认的系统提示词版本（见 `agent/prompts.py` 中的 `PROMPT_VERSIONS`），写作 1.00、2.00；旧的写法 v1、v2 仍然有效 |
+| `PROMPT_VERSION` | `1.02` | 默认的系统提示词版本（见 `agent/prompts.py` 中的 `PROMPT_VERSIONS`），写作 1.00、1.02、2.00；旧的写法 v1、v2 仍然有效 |
 | `PROMPT_CANARY_VERSION` / `PROMPT_CANARY_PERCENT` | — / `0` | 灰度：按会话哈希把指定比例的对话稳定地分给候选版本（例如 `2.00`）；比例改回 0 即回滚 |
 | `ANSWER_CACHE_TTL_HOURS` | `24` | 答案缓存的有效期，设为 0 即关闭；知识或配置变化时缓存会自动失效 |
 | `REFUND_WINDOW_DAYS` / `REFUND_WINDOW_MAX_COUNT` / `REFUND_WINDOW_MAX_AMOUNT` | `30` / `3` / `200` | 累计退款风控：窗口天数内同一顾客的退款笔数或累计金额超过上限时，小额退款也转人工审核 |

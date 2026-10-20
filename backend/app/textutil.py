@@ -38,7 +38,7 @@ _WORD_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
 _SENT_RE = re.compile(r"(?<=[。！？!?；;])|\n+")
 _NUM_RE = re.compile(r"(?<![A-Za-z\d.])\d+(?:\.\d+)?(?![\d])")
 _THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3})")
-CITE_RE = re.compile(r"\[(\d{1,2})\]")
+CITE_RE = re.compile(r"[\[［](\d{1,2})[\]］]")  # models also write full-width ［1］
 # No \b: Python treats CJK characters as word characters, so "订单SO2026…" has no word
 # boundary before "S" and \b silently fails. Explicit look-arounds work next to Chinese.
 ORDER_ID_RE = re.compile(r"(?<![A-Za-z0-9])SO\d{8,14}(?!\d)", re.IGNORECASE)

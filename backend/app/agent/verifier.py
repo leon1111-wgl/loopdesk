@@ -41,8 +41,9 @@ _LIST_NUMBER = re.compile(r"^(\d{1,2}[.、．)）]|[（(]\d{1,2}[)）])\s*")
 # it did: "帮您创建了工单" is a claim), a closing, the agent declining.
 _CLAIMLESS_CLAUSE = re.compile(
     r"^(如|若|如果|假如|要是|为了|为便于|为方便|以便)"
-    r"|^(请|麻烦|烦请|方便|劳烦|还请|可提供|可以提供|建议您)"
-    r"|^(我们?|这边)?(可以|能|来|会|很乐意|乐意)?(帮|给)您(?!.*[了已])|^(我们?|这边)(可以|能|来|会|很乐意|乐意)?为您(?!.*[了已])"
+    r"|^(请|麻烦|烦请|方便|劳烦|还请|可提供|可以提供|建议)"
+    r"|^(我们?|这边)?(可以|能|来|会|很乐意|乐意)?(先|再|马上|立即|这就)?(帮|给)您(?!.*[了已])"
+    r"|^(我们?|这边)(可以|能|来|会|很乐意|乐意)?(先|再|马上|立即|这就)?为您(?!.*[了已])"
     r"|^(有其他问题|如有其他|还有什么|欢迎|期待|祝您)"
     r"|^(我们?|这类要求我?|该要求我?)(暂时)?(不能|无法|不会|不可以)"
 )
@@ -83,6 +84,8 @@ def _claim(text: str) -> str:
 
 def _claims_nothing(text: str) -> bool:
     if _NON_FACTUAL.match(text) or REFUSAL_RE.search(text):  # saying there is no basis claims nothing
+        return True
+    if re.search(r"如下[:：]$", text):  # "物流信息如下：" introduces the facts that follow
         return True
     clauses = [c.strip() for c in _CLAUSE_SPLIT.split(text) if c.strip()]
     return bool(clauses) and all(_CLAIMLESS_CLAUSE.match(c) for c in clauses)

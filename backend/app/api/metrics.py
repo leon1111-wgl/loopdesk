@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..config import prompt_version_name
 from ..db import get_db
 from ..agent.outcome import is_refusal
-from ..agent.prompts import DEFAULT_PROMPT_VERSION
+from ..agent.prompts import FIRST_PROMPT_VERSION
 from ..models import Approval, EvalRun, Feedback, KnowledgeConflict, Message, Run, Span, Ticket
 from ..security import Principal, require_staff
 from ..localtime import start_of_day, zone_of
@@ -35,7 +35,7 @@ def _by_prompt_version(runs) -> dict:
     groups: dict[str, list] = {}
     for r in runs:
         # Runs from before versioning used the first prompt; older runs name it v1.
-        version = prompt_version_name((r.state or {}).get("prompt_version")) or DEFAULT_PROMPT_VERSION
+        version = prompt_version_name((r.state or {}).get("prompt_version")) or FIRST_PROMPT_VERSION
         groups.setdefault(version, []).append(r)
     out = {}
     for version, items in sorted(groups.items()):

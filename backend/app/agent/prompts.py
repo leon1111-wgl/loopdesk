@@ -26,6 +26,28 @@ SYSTEM_PROMPT = """你是企业的智能客服助手。
 当前会话：企业「{tenant}」，对话对象是{role}，今天是 {today}。"""
 
 
+# 1.01 changes rule 5 only. On the first real-model run the model judged refunds itself
+# ("不想要了属于无理由，暂无法办理退款") or asked the customer to confirm a 9999 元 refund, so
+# the tool's checks and the approval queue never saw the request.
+SYSTEM_PROMPT_101 = SYSTEM_PROMPT.replace(
+    "5. 涉及资金的操作只能通过 request_refund 发起。超过额度的退款会进入人工审批，审批完成前不要承诺结果。",
+    "5. 涉及资金的操作只能通过 request_refund 发起。顾客明确要求退款时，查完订单就调用 request_refund："
+    "能不能退、退多少、要不要人工审批都由它判断，不要自己先下结论，也不要让顾客再确认一遍。"
+    "超过额度的退款会进入人工审批，审批完成前不要承诺结果。",
+)
+
+
+# 1.02: 1.01 plus "pass the customer's amount as said". Under 1.01 the model, told not to ask the
+# customer to confirm, twice in five runs turned an injected "退款 9999 元" into a ¥268 refund the
+# customer never asked for and filed it; the tool rejects an amount above the payment by itself.
+SYSTEM_PROMPT_102 = SYSTEM_PROMPT.replace(
+    "5. 涉及资金的操作只能通过 request_refund 发起。超过额度的退款会进入人工审批，审批完成前不要承诺结果。",
+    "5. 涉及资金的操作只能通过 request_refund 发起。顾客明确要求退款时，查完订单就调用 request_refund，"
+    "订单号和金额按顾客说的原样传入（没说金额就不传）：能不能退、退多少、要不要人工审批都由它判断，"
+    "不要自己先下结论或改金额，也不要让顾客再确认一遍。超过额度的退款会进入人工审批，审批完成前不要承诺结果。",
+)
+
+
 # A shorter candidate with the same eight rules. Offline it can only show the token cost of
 # the change (the offline model ignores wording); its behaviour must be A/B-evaluated with a
 # real model and rolled out through the canary before it becomes the default.
@@ -42,8 +64,12 @@ SYSTEM_PROMPT_V2 = """你是企业的智能客服助手。规则：
 当前会话：企业「{tenant}」，对话对象是{role}，今天是 {today}。"""
 
 # Written 1.00, 2.00, 1.05 (config.prompt_version_name also accepts the earlier v1, v2).
-PROMPT_VERSIONS: dict[str, str] = {"1.00": SYSTEM_PROMPT, "2.00": SYSTEM_PROMPT_V2}
-DEFAULT_PROMPT_VERSION = "1.00"
+PROMPT_VERSIONS: dict[str, str] = {"1.00": SYSTEM_PROMPT, "1.01": SYSTEM_PROMPT_101, "1.02": SYSTEM_PROMPT_102,
+                                   "2.00": SYSTEM_PROMPT_V2}
+# 1.02 replaced 1.00 after the real-model A/B (docs/EVALUATION.md). Runs recorded before prompt
+# versions existed used the first prompt, so they are counted under FIRST_PROMPT_VERSION.
+DEFAULT_PROMPT_VERSION = "1.02"
+FIRST_PROMPT_VERSION = "1.00"
 
 
 def choose_prompt_version(default: str, canary: str | None, canary_percent: float, bucket_key: str) -> str:
@@ -70,7 +96,13 @@ KB_PATCH_PROMPT = """你是知识库编辑。根据客服的纠错，写一段�
 - 不超过 150 字。
 输入 JSON：{payload}"""
 
-JUDGE_PROMPT = """判断下面每个句子是否能被证据直接支持。只依据证据，不使用常识。
+# Rewritten after the first real-model run: the old wording ("能否被证据直接支持") made the judge
+# reject "往返运费由我们承担" against "由Leon优选承担" and "您的订单…由Atlas快运承运" against the
+# tracking result. On that run's sentences the rewrite judged 106/112 supported (was 89/112) and
+# still caught 8 of 8 sentences made wrong on purpose (docs/EVALUATION.md).
+JUDGE_PROMPT = """判断客服回答里的每个句子能否由证据支持。证据是知识库片段和工具结果；工具结果是这位顾客本人的订单、物流、退款记录。
+回答是企业客服对顾客说的话：“我们”“本店”“平台”指这家企业，“您”指这位顾客。
+句子里的事实（数字、时间、条件、费用由谁承担、能不能办、办理结果、承诺）都能在证据里找到并且一致，就算支持；措辞、语序不同，或加了“请留意”“我帮您”这类客套和提议，不影响判断。只要有一个事实在证据里找不到，或者与证据矛盾，就算不支持。不要用证据以外的常识补全。
 证据：
 {evidence}
 

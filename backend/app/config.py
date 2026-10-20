@@ -195,7 +195,7 @@ class Settings:
     refund_window_max_count: int = 3
     refund_window_max_amount: float = 200.0
     answer_cache_ttl_hours: float = 24.0  # 0 disables the answer cache
-    prompt_version: str = "1.00"
+    prompt_version: str = "1.02"
     prompt_canary_version: str | None = None
     prompt_canary_percent: float = 0.0
 
