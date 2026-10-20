@@ -294,34 +294,42 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             "status": status, "refund_id": None, "order_id": checked["order_id"], "amount": amount,
             "message": f"（演练）退款申请已受理，退款金额 ¥{amount:.2f} 将按原支付方式退回。",
         }
-    # Refunds for one customer run one at a time from here: the velocity limit below must count
-    # the refunds of requests that passed the same policy read concurrently (N-039). PostgreSQL
-    # locks the customer's row FOR NO KEY UPDATE, which queues refunds for that customer but not
-    # inserts that merely reference them (a ticket, a message); SQLite has one writer at a time,
-    # from the UPDATE below on.
     customer_id = ctx.db.get(Order, checked["order_id"]).customer_id
-    ctx.db.execute(select(User.id).where(User.id == customer_id).with_for_update(key_share=True))
-    # Claim the order in one conditional UPDATE. The precheck above is a read: two requests
-    # for the same order (a double click, a retry) can both pass it, and both used to pay
-    # out. Only one UPDATE can move the order out of a refundable state; SQLite serialises
-    # writers and PostgreSQL re-checks the condition after the row lock.
-    claimed = ctx.db.execute(
-        update(Order).where(Order.id == checked["order_id"], Order.status.in_(REFUNDABLE))
-        .values(status="refunding").execution_options(synchronize_session="fetch")
-    ).rowcount
-    if claimed != 1:
-        ctx.db.rollback()
-        raise ToolError("该订单已有一笔退款正在处理，请勿重复提交")
-    if ctx.approval_id is None:  # an automatic refund: the velocity limit again, now under the lock
-        velocity = _velocity_reason(ctx, customer_id, amount)
-        if velocity:
-            ctx.db.rollback()  # releases the order and the lock; a person decides instead
-            raise ApprovalRequired(ApprovalNeed(velocity))
-    refund = Refund(
-        tenant_id=ctx.tenant.id, order_id=checked["order_id"], amount=amount,
-        reason=str(args.get("reason") or "")[:500], approval_id=ctx.approval_id,
-    )
-    ctx.db.add(refund)
+    # The lock, the claim and the re-check run in a savepoint: undoing them must not undo what the
+    # run has not committed yet (its model and route; with buffered trace writes nothing is
+    # committed until the run's own commit points). Reviewed after N-039.
+    try:
+        with ctx.db.begin_nested():
+            # Claim the order in one conditional UPDATE. The precheck above is a read: two requests
+            # for the same order (a double click, a retry) can both pass it, and both used to pay
+            # out. Only one UPDATE can move the order out of a refundable state; SQLite serialises
+            # writers and PostgreSQL re-checks the condition after the row lock. It is the first
+            # write, so on SQLite it also takes the database's write lock with a fresh snapshot (a
+            # read before it, in the same transaction, could not be upgraded to a write).
+            claimed = ctx.db.execute(
+                update(Order).where(Order.id == checked["order_id"], Order.status.in_(REFUNDABLE))
+                .values(status="refunding").execution_options(synchronize_session="fetch")
+            ).rowcount
+            if claimed != 1:
+                raise ToolError("该订单已有一笔退款正在处理，请勿重复提交")
+            # Refunds for one customer run one at a time from here: the velocity limit below must
+            # count the refunds of requests that passed the same policy read concurrently (N-039).
+            # PostgreSQL locks the customer's row FOR NO KEY UPDATE, which queues refunds for that
+            # customer but not inserts that merely reference them (a ticket, a message); SQLite
+            # already has one writer at a time. Every refund takes the order, then the customer.
+            ctx.db.execute(select(User.id).where(User.id == customer_id).with_for_update(key_share=True))
+            if ctx.approval_id is None:  # an automatic refund: the velocity limit again, under the lock
+                velocity = _velocity_reason(ctx, customer_id, amount)
+                if velocity:  # the savepoint's rollback releases the order and the lock
+                    raise ApprovalRequired(ApprovalNeed(velocity))
+            refund = Refund(
+                tenant_id=ctx.tenant.id, order_id=checked["order_id"], amount=amount,
+                reason=str(args.get("reason") or "")[:500], approval_id=ctx.approval_id,
+            )
+            ctx.db.add(refund)
+    except (ToolError, ApprovalRequired):
+        ctx.db.commit()  # keep what the run had pending, and end the transaction (SQLite's write lock)
+        raise
     ctx.db.commit()
     return {
         "status": status, "refund_id": refund.id, "order_id": checked["order_id"], "amount": amount,

@@ -179,3 +179,29 @@ def test_on_postgresql_the_customer_lock_queues_refunds_but_not_the_customers_ch
         holder.join(15)
     assert results[first]["status"] == "auto_approved", results
     assert "lock timeout" in results[second].get("error", ""), results
+
+
+def test_a_refund_escalated_under_the_lock_keeps_what_the_run_has_not_saved(settings, client, login, ask, monkeypatch):
+    # Review of N-039: undoing the claim rolled the whole session back. With buffered trace writes
+    # (the PostgreSQL default) the run's model and route were not committed yet, so the run row
+    # lost them; the per-span mode had committed them with an earlier span.
+    from app.models import Run
+
+    from tests.conftest import by_type
+
+    settings.trace_writes = "buffered"
+    real = business_tools._refund_history
+    calls: list[int] = []
+
+    def history(ctx, customer_id):
+        calls.append(1)
+        return real(ctx, customer_id) if len(calls) == 1 else (3, 90.0)  # three refunds landed meanwhile
+
+    monkeypatch.setattr(business_tools, "_refund_history", history)
+    _, events = ask(login("customer@leon.demo"), "SO20260918001 不想要了 退款")
+    assert by_type(events, "approval_required"), [e["type"] for e in events]
+    with new_session() as db:
+        run = db.get(Run, by_type(events, "done")[0]["run_id"])
+        assert run.status == "waiting_approval"
+        assert run.model and run.route_tier, (run.model, run.route_tier)
+        assert db.get(Order, "SO20260918001").status == "delivered", "the escalated order is not left claimed"
