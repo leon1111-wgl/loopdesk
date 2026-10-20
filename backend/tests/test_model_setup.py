@@ -23,7 +23,11 @@ def test_demo_traffic_is_on_by_default_only_for_the_offline_model(monkeypatch):
 
 def test_demo_traffic_against_a_real_model_does_not_hold_up_startup(settings, monkeypatch):
     from app import main
+    from tests.conftest import _reset_database
 
+    # Demo traffic only follows a first seeding. On PostgreSQL the test database outlives each test
+    # (SQLite gets a new file), so start from an empty one, as the client fixture does.
+    _reset_database(settings.database_url)
     started, release = threading.Event(), threading.Event()
 
     def hanging_model(db, services):
