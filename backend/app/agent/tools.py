@@ -65,6 +65,7 @@ class ToolContext:
     orders: OrderGateway | None = None
     refunds: RefundGateway | None = None
     deadline: float | None = None  # the run's, time.monotonic(): gateway calls make no attempts past it
+    customer_text: str = ""  # what the customer wrote this turn, PII-masked (the handoff ticket quotes it)
 
     def __post_init__(self) -> None:
         if self.orders is None:

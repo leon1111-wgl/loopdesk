@@ -845,7 +845,7 @@ class AgentRuntime:
         return ToolContext(
             db=self.db, settings=self.settings, tenant=tenant, user=user, embedder=self.embedder,
             run_id=run.id, conversation_id=conversation.id if conversation else None,
-            dry_run=dry_run, evidence=evidence,
+            dry_run=dry_run, evidence=evidence, customer_text=run.input_text or "",
             orders=self.commerce.orders(tenant, self.db), refunds=self.commerce.refunds(tenant, self.db),
         )
 

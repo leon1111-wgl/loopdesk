@@ -645,6 +645,7 @@ def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             # with a person; this covers the agent being called anyway.)
             return _already_queued(ctx, existing)
     waiting = handoff.waiting_ahead(ctx.db, ctx.tenant.id)  # the new ticket is not in it yet
+    title, description = handoff.brief(reason, ctx.customer_text, handoff.earlier_orders(ctx.db, ctx.conversation_id))
     if not ctx.dry_run:
         if ctx.conversation_id:
             conversation = ctx.db.get(Conversation, ctx.conversation_id)
@@ -652,7 +653,7 @@ def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
                 conversation.status = "handoff"
         ctx.db.add(Ticket(
             tenant_id=ctx.tenant.id, conversation_id=ctx.conversation_id, customer_id=ctx.user.id,
-            kind="handoff", title=f"转人工：{reason[:40]}", description=reason, priority="high",
+            kind="handoff", title=title, description=description, priority="high",
         ))
         try:
             ctx.db.commit()

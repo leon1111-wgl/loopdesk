@@ -40,7 +40,7 @@ def handoff_out(db: Session, ticket: Ticket) -> dict:
     return {
         **handoff.ticket_state(db, ticket),
         "conversation_id": ticket.conversation_id, "channel": conversation.channel if conversation else None,
-        "customer": customer.name if customer else None, "reason": ticket.description, "priority": ticket.priority,
+        "customer": customer.name if customer else None, "summary": ticket.title.removeprefix("转人工："), "reason": ticket.description, "priority": ticket.priority,
         "created_at": iso(ticket.created_at),
         "waiting_seconds": int((datetime.now(timezone.utc) - as_utc(ticket.created_at)).total_seconds()),
         "last_message": last.content[:120] if last else "",

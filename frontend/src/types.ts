@@ -76,6 +76,7 @@ export interface Handoff extends HandoffState {
   conversation_id: number;
   channel: string | null;
   customer: string | null;
+  summary: string;
   reason: string;
   priority: string;
   created_at: string;

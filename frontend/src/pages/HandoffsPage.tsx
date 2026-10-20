@@ -58,6 +58,11 @@ function HandoffPanel({ handoff, onChanged }: { handoff: Handoff; onChanged: () 
           <Undo2 size={14} /> 结束人工服务
         </button>
       </div>
+      {handoff.reason && (
+        <div className="card-pad handoff-brief small" aria-label="转人工摘要">
+          {handoff.reason.split("\n").map((line, i) => <div key={i}>{line}</div>)}
+        </div>
+      )}
       <div className="card-pad handoff-transcript" aria-live="polite">
         {messages.map((m) => (
           <div key={m.id} className={`transcript-line ${m.role}`}>
@@ -113,7 +118,8 @@ export default function HandoffsPage() {
                   <span className="spacer" />
                   {h.position ? <span className="badge badge-warning">排队第 {h.position} 位</span> : <span className="badge badge-info">{h.assignee}</span>}
                 </div>
-                <div className="faint small ellipsis">{h.last_message || h.reason}</div>
+                <div className="small ellipsis">{h.summary}</div>
+                {h.last_message && <div className="faint small ellipsis">最新留言：{h.last_message}</div>}
                 <div className="faint small">已等待 {waited(h.waiting_seconds)}</div>
               </button>
             ))}

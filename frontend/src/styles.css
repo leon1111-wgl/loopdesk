@@ -308,6 +308,7 @@ fieldset.choices legend { padding: 0; margin-bottom: 6px; }
 .handoff-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
 .handoff-item { text-align: left; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; cursor: pointer; font: inherit; color: inherit; width: 100%; }
 .handoff-item.active { border-color: var(--primary); box-shadow: inset 3px 0 0 var(--primary); }
+.handoff-brief { display: flex; flex-direction: column; gap: 2px; border-bottom: 1px solid var(--border); color: var(--text-2); }
 .handoff-transcript { display: flex; flex-direction: column; gap: 10px; max-height: 440px; overflow-y: auto; }
 .transcript-line { padding: 8px 12px; border-radius: 6px; background: var(--surface-2, var(--border-2)); max-width: 85%; }
 .transcript-line.user { align-self: flex-start; }
