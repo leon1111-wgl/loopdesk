@@ -1,11 +1,12 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { demoQuestions, isDemo } from "../demo/replay";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { FlaskConical, History, PencilLine, Plus, Send, ShieldAlert, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { FlaskConical, History, Mic, MicOff, PencilLine, Plus, Send, ShieldAlert, Square, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
 import { CHANNEL_TEXT, CUSTOMER_GREETING, Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
 import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, HandoffState, Verification } from "../types";
+import { VoiceClient, type VoiceConfig, type VoiceEvent, type VoiceMode } from "../voice";
 
 // Each suggestion carries a tag naming the scenario it exercises. Customers see the questions
 // only: the tags (and the attack samples in STAFF_EXTRA) are test-bench vocabulary.
@@ -255,6 +256,16 @@ export default function ChatPage() {
   const historyToggle = useRef<HTMLButtonElement>(null);
   const historyClose = useRef<HTMLButtonElement>(null);
   const restoreFocus = useRef(false);
+  // Voice channel: only when the server has speech engines (GET /api/voice/config); never in the static demo.
+  const [voiceConfig, setVoiceConfig] = useState<VoiceConfig | null>(null);
+  const [voice, setVoice] = useState<"off" | "connecting" | "on">("off");
+  const [voiceMode, setVoiceMode] = useState<VoiceMode>("ptt");
+  const [hearing, setHearing] = useState(false);
+  const [talking, setTalking] = useState(false);
+  const [partial, setPartial] = useState("");
+  const voiceRef = useRef<VoiceClient | null>(null);
+  const voiceRun = useRef<LiveRun | null>(null);
+  const voiceConversation = useRef<number | null>(null);
 
   const loadConversations = useCallback(() => {
     api.get<Conversation[]>("/api/conversations").then(setConversations).catch((e) => setError(e.message));
@@ -269,6 +280,15 @@ export default function ChatPage() {
   }, []);
 
   useEffect(loadConversations, [loadConversations]);
+  useEffect(() => {
+    if (isDemo) return;
+    api.get<VoiceConfig>("/api/voice/config").then(setVoiceConfig).catch(() => setVoiceConfig(null));
+  }, []);
+  useEffect(() => () => voiceRef.current?.close(), []);
+  useEffect(() => {
+    if (voiceConversation.current !== null && voiceConversation.current !== conversationId) stopVoice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
   useEffect(() => {
     setLive(null);
     setNotice(null);
@@ -345,6 +365,97 @@ export default function ChatPage() {
       await loadMessages(id).catch(() => undefined);
       loadConversations();
     }
+  }
+
+  function onVoiceEvent(event: VoiceEvent) {
+    const id = voiceConversation.current;
+    switch (event.type) {
+      case "ready":
+        setVoice("on");
+        break;
+      case "vad":
+        setHearing(event.speech);
+        break;
+      case "partial":
+        setPartial(event.text);
+        break;
+      case "transcript": {
+        setPartial("");
+        setPendingUser(event.text);
+        voiceRun.current = { steps: {}, events: [], done: false };
+        setLive({ steps: {}, events: [], done: false });
+        break;
+      }
+      case "prompt": // the voice channel asks itself: a read-back, a cancellation
+        voiceRun.current = { steps: { 1: event.text }, events: [], done: false };
+        setLive({ steps: { 1: event.text }, events: [], done: false });
+        break;
+      case "agent": {
+        const run = voiceRun.current;
+        if (!run) break;
+        const e = event.event;
+        if (e.type === "token") run.steps[e.step] = (run.steps[e.step] ?? "") + e.text;
+        else run.events.push(e);
+        setLive({ steps: { ...run.steps }, events: [...run.events], done: false });
+        break;
+      }
+      case "say":
+        setTalking(true);
+        break;
+      case "barge_in":
+        setTalking(false);
+        break;
+      case "turn_saved":
+        setTalking(false);
+        if (voiceRun.current) setLive({ ...voiceRun.current, done: true });
+        voiceRun.current = null;
+        setPendingUser(null);
+        if (id) void loadMessages(id).then(loadConversations).catch(() => undefined);
+        break;
+      case "error":
+        setError(event.message);
+        break;
+      case "closed":
+        if (event.code === 4503) setError("语音通道未启用：服务器没有安装语音模型。");
+        else if (event.code >= 4400) setError(`语音连接被拒绝（${event.code}）`);
+        stopVoice();
+        break;
+    }
+  }
+
+  async function startVoice() {
+    setError(null);
+    let id = conversationId;
+    if (!id) {
+      const c = await api.post<Conversation>("/api/conversations", {});
+      id = c.id;
+      navigate(`/chat/${id}`, { replace: true });
+    }
+    voiceConversation.current = id;
+    const client = new VoiceClient(onVoiceEvent);
+    voiceRef.current = client;
+    setVoice("connecting");
+    try {
+      await client.open(id, voiceMode);
+    } catch (e) {
+      setError(`无法使用麦克风：${e instanceof Error ? e.message : String(e)}`);
+      stopVoice();
+    }
+  }
+
+  function stopVoice() {
+    voiceRef.current?.close();
+    voiceRef.current = null;
+    voiceConversation.current = null;
+    setVoice("off");
+    setHearing(false);
+    setTalking(false);
+    setPartial("");
+  }
+
+  function changeMode(mode: VoiceMode) {
+    setVoiceMode(mode);
+    voiceRef.current?.setMode(mode);
   }
 
   async function rate(message: ChatMessage, rating: "up" | "down") {
@@ -449,6 +560,10 @@ export default function ChatPage() {
                   <div className="bubble-meta">
                     {staff && m.meta.verification && <VerdictBadge verdict={m.meta.verification.verdict} coverage={m.meta.verification.coverage} />}
                     {m.meta.status && m.meta.status !== "completed" && <StatusBadge status={m.meta.status} />}
+                    {m.meta.voice?.interrupted && <span className="badge" title="顾客打断了播报，对话里只保留已播放的部分">播报被打断</span>}
+                    {staff && m.meta.voice?.latency?.first_audio_after_endpoint_ms !== undefined && (
+                      <span className="faint small">语音首包 {Math.round(m.meta.voice.latency.first_audio_after_endpoint_ms)}ms</span>
+                    )}
                     {staff && (m.meta.tools ?? []).filter((t, i, a) => a.indexOf(t) === i).map((t) => (
                       <span key={t} className="badge">{TOOL_TEXT[t] ?? t}</span>
                     ))}
@@ -506,6 +621,31 @@ export default function ChatPage() {
                   : "该对话已转人工，人工客服会尽快接入。"}
             </div>
           )}
+          {voice !== "off" && (
+            <div className="voice-bar" role="group" aria-label="语音对话">
+              {voiceMode === "ptt" ? (
+                <button className={`btn ptt ${hearing ? "active" : ""}`} disabled={voice !== "on"}
+                  onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); voiceRef.current?.press(); }}
+                  onPointerUp={() => voiceRef.current?.release()} onPointerCancel={() => voiceRef.current?.release()}
+                  onKeyDown={(e) => { if (e.key === " " && !e.repeat) { e.preventDefault(); voiceRef.current?.press(); } }}
+                  onKeyUp={(e) => { if (e.key === " ") voiceRef.current?.release(); }}>
+                  <Mic size={16} /> {hearing ? "松开结束" : "按住说话"}
+                </button>
+              ) : (
+                <span className={`voice-state ${hearing ? "active" : ""}`} role="status">
+                  <span className="dot" /> {voice !== "on" ? "连接中" : hearing ? "正在听" : talking ? "正在播报，直接说话即可打断" : "请说话"}
+                </span>
+              )}
+              <label className="row small muted" style={{ cursor: "pointer" }}>
+                <input type="checkbox" checked={voiceMode === "continuous"} onChange={(e) => changeMode(e.target.checked ? "continuous" : "ptt")} />
+                连续对话（停顿 {voiceConfig?.end_silence_ms ?? 600}ms 自动结束一句）
+              </label>
+              <span className="spacer" />
+              {talking && <button className="btn btn-sm" onClick={() => voiceRef.current?.stop()}><Square size={13} /> 停止播报</button>}
+              <button className="btn btn-sm" onClick={stopVoice}><MicOff size={14} /> 退出语音</button>
+            </div>
+          )}
+          {voice !== "off" && partial && <div className="voice-partial small muted" aria-live="polite">{partial}</div>}
           <div className="composer-box">
             <textarea className="textarea" value={input} placeholder="输入问题，Enter 发送，Shift+Enter 换行" disabled={busy}
               maxLength={MAX_MESSAGE} aria-describedby={input.length > MAX_MESSAGE * 0.9 ? "message-count" : undefined}
@@ -516,6 +656,11 @@ export default function ChatPage() {
                   void send(input);
                 }
               }} />
+            {voiceConfig?.enabled && voice === "off" && (
+              <button className="btn" disabled={busy} title="语音对话：语音识别后交给同一个客服 Agent，回答会朗读出来" onClick={() => void startVoice()}>
+                <Mic size={16} /> 语音
+              </button>
+            )}
             <button className="btn btn-primary" disabled={busy || !input.trim()} onClick={() => send(input)}>
               <Send size={16} /> 发送
             </button>

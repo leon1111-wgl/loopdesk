@@ -35,6 +35,10 @@ export default defineConfig({
       LOOPDESK_LOG_LEVEL: "WARNING",
       // No pre-seeded conversations: every queue and approval in the walkthrough is created by it.
       LOOPDESK_SEED_DEMO_TRAFFIC: "0",
+      // The voice channel with its test engines (demo mode only): no speech models in CI.
+      LOOPDESK_VOICE_ASR: "scripted",
+      LOOPDESK_VOICE_TTS: "tone",
+      LOOPDESK_VOICE_SCRIPTED_TEXT: "怎么取消自动续费",
     },
   },
 });

@@ -9,8 +9,22 @@ import { expect, test, type Browser, type Page } from "@playwright/test";
 
 const problems = new Map<Page, string[]>();
 
-async function signIn(browser: Browser, email: string): Promise<Page> {
+async function signIn(browser: Browser, email: string, options: { fakeMicrophone?: boolean } = {}): Promise<Page> {
   const context = await browser.newContext();
+  if (options.fakeMicrophone) {
+    // A tone instead of a microphone: no device, no permission prompt, the same on every platform.
+    await context.addInitScript(() => {
+      navigator.mediaDevices.getUserMedia = async () => {
+        const ctx = new AudioContext();
+        const tone = ctx.createOscillator();
+        const destination = ctx.createMediaStreamDestination();
+        tone.frequency.value = 220;
+        tone.connect(destination);
+        tone.start();
+        return destination.stream;
+      };
+    });
+  }
   const page = await context.newPage();
   const seen: string[] = [];
   problems.set(page, seen);
@@ -225,4 +239,26 @@ test("a refund the payment system never answered: the admin checks it and settle
   const entry = leon.getByRole("row").filter({ hasText: "人工确认退款结果" });
   await expect(entry).toContainText("结果：已退款");
   await expect(entry).toContainText("支付后台查到已原路退回");
+});
+
+test("Echo音乐 by voice: push to talk, the answer is spoken and kept in the conversation", async ({ browser }) => {
+  // Test engines (see playwright.config.ts): the microphone is a tone, the ASR returns a fixed
+  // transcript, the TTS plays a tone. What is exercised is the real channel: the WebSocket,
+  // push-to-talk, the agent run, playback and the played-position reports.
+  const lily = await signIn(browser, "customer@echo.demo", { fakeMicrophone: true });
+  await lily.getByRole("button", { name: "语音", exact: true }).click();
+  const ptt = lily.getByRole("button", { name: "按住说话" });
+  await expect(ptt).toBeEnabled();
+  const box = (await ptt.boundingBox())!;
+  await lily.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await lily.mouse.down();
+  await lily.waitForTimeout(800);
+  await lily.mouse.up();
+  await expect(lily.locator(".msg.user .bubble-text").filter({ hasText: "怎么取消自动续费" })).toBeVisible();
+  // Saved once played (the client reports each sentence's end): the saved message has the feedback
+  // buttons, the live bubble does not.
+  const saved = lily.locator(".msg.assistant").filter({ hasText: "管理自动续费" }).getByRole("button", { name: "有帮助" });
+  await expect(saved).toBeVisible({ timeout: 40_000 });
+  await lily.getByRole("button", { name: "退出语音" }).click();
+  await expect(lily.getByRole("button", { name: "语音", exact: true })).toBeVisible();
 });

@@ -109,3 +109,16 @@ def test_agent_eval_scores_voice_against_text_and_attributes_failures(tmp_path, 
     stats = report["summary"]["by_condition"]["clean"]
     assert stats["n"] == 3 and stats["voice_passed"] == 2 and stats["text_passed"] == 3
     assert stats["money_calls_stopped_for_confirmation"] == 1
+
+
+def test_tts_bench_times_answer_like_sentences(tmp_path, monkeypatch):
+    from app.evals.voice import tts_bench
+    from app.voice import engines
+
+    picked = tts_bench.sentences(30)
+    assert len(picked) == 30 and all(12 <= len(s) <= 48 for s in picked)
+    monkeypatch.setattr(engines, "KokoroTTS", lambda voice=None: engines.ToneTTS())
+    out = tmp_path / "nested" / "tts.jsonl"  # the runner's output folder does not exist yet
+    tts_bench.main(["--engine", "kokoro", "--n", "3", "--out", str(out)])
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 3 and all(r["first_chunk_ms"] >= 0 and r["audio_seconds"] > 0 for r in rows)

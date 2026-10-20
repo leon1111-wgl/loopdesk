@@ -97,10 +97,11 @@ jobs:
         run: |
           say -v '?' | grep -E 'zh_CN|zh_TW' || true
           echo "name=$(say -v '?' | awk '/zh_CN/ {print $1; exit}')" >> $GITHUB_OUTPUT
+          echo "all=$(say -v '?' | awk '/zh_CN|zh_TW/ {print $1}' | paste -sd, -)" >> $GITHUB_OUTPUT
       - if: steps.voice.outputs.name != ''
         run: |
           python -m app.evals.voice.tts_bench --engine say --voice ${{ steps.voice.outputs.name }} --out ../out/tts/tts-say.jsonl
-          python -m app.evals.voice.synth --engine say --voices ${{ steps.voice.outputs.name }} --limit ${{ inputs.limit }} --out ../out/synth-say
+          python -m app.evals.voice.synth --engine say --voices ${{ steps.voice.outputs.all }} --limit ${{ inputs.limit }} --out ../out/synth-say
       - if: steps.voice.outputs.name != ''
         uses: actions/upload-artifact@v4
         with: {name: synth-say, path: out/synth-say, retention-days: 14}

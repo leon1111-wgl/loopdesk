@@ -50,6 +50,8 @@ export interface MessageMeta {
   status?: string;
   approval_id?: number;
   agent?: string; // name of the person who wrote an "agent" message
+  // Voice channel: what was played, whether the customer cut it short, the latency breakdown.
+  voice?: { kind?: string; spoken?: string; interrupted?: boolean; generated?: string; latency?: Record<string, number> };
 }
 
 export interface ChatMessage {

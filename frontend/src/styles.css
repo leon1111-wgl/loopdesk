@@ -331,6 +331,14 @@ fieldset.choices legend { padding: 0; margin-bottom: 6px; }
 .composer-box { display: flex; gap: 8px; align-items: flex-end; }
 .composer textarea { flex: 1; min-height: 40px; max-height: 160px; resize: none; }
 .composer .btn { height: 40px; }
+.voice-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 8px; }
+.voice-bar .btn-sm { height: 30px; }
+.voice-bar .ptt { min-width: 132px; touch-action: none; user-select: none; }
+.voice-bar .ptt.active { background: var(--primary-soft); border-color: var(--primary-line); color: var(--primary); }
+.voice-state { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); }
+.voice-state .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
+.voice-state.active .dot { background: var(--primary); }
+.voice-partial { margin: -2px 0 8px; font-variant-numeric: tabular-nums; }
 .welcome { width: 100%; max-width: 560px; margin: 48px auto 0; }
 .welcome h2 { font-size: 16px; }
 .suggestion-list { display: flex; flex-direction: column; margin-top: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); overflow: hidden; }

@@ -324,12 +324,14 @@ class ScriptedASR:
 
     name = "scripted"
 
-    def __init__(self, transcripts: list[str | dict] | None = None):
-        self.transcripts = list(transcripts or [])
+    def __init__(self, transcripts: list[str | dict] | None = None, cycle: bool = False):
+        self.transcripts, self.cycle = list(transcripts or []), cycle
 
     def stream(self, hotwords: list[str]) -> _BufferedStream:
         def decode(audio: np.ndarray) -> ASRResult:
             item = self.transcripts.pop(0) if self.transcripts else ""
+            if self.cycle and item:
+                self.transcripts.append(item)
             if isinstance(item, dict):
                 return ASRResult(item["final"], {k: v for k, v in item.items()})
             return ASRResult(item, {"final": item})
@@ -371,9 +373,13 @@ _lock = threading.Lock()
 def build_engines(settings: Settings) -> tuple[VoiceEngines | None, str | None]:
     if settings.voice_asr == "off" or settings.voice_tts == "off":
         return None, "语音通道未启用（LOOPDESK_VOICE_ASR / LOOPDESK_VOICE_TTS）"
+    if (settings.voice_asr == "scripted" or settings.voice_tts == "tone") and not settings.seed_demo:
+        return None, "测试用语音引擎只能在演示模式下使用"
     try:
         asr: ASREngine
-        if settings.voice_asr == "paraformer":
+        if settings.voice_asr == "scripted":
+            asr = ScriptedASR([t for t in settings.voice_scripted_text.split("|") if t], cycle=True)
+        elif settings.voice_asr == "paraformer":
             asr = ParaformerASR(settings.voice_device)
         elif settings.voice_asr == "sensevoice":
             asr = SenseVoiceASR(settings.voice_device)
@@ -382,7 +388,9 @@ def build_engines(settings: Settings) -> tuple[VoiceEngines | None, str | None]:
         else:
             raise ValueError(f"unknown LOOPDESK_VOICE_ASR {settings.voice_asr!r}")
         tts: TTSEngine
-        if settings.voice_tts == "cosyvoice":
+        if settings.voice_tts == "tone":
+            tts = ToneTTS()
+        elif settings.voice_tts == "cosyvoice":
             tts = CosyVoiceTTS(settings.voice_cosyvoice_url, settings.voice_tts_voice)
         elif settings.voice_tts == "kokoro":
             tts = KokoroTTS(settings.voice_tts_voice)

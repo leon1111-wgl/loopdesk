@@ -42,12 +42,13 @@ def identify(tenant_id: int, user_id: int) -> None:
 
 # Baseline browser hardening for the API and the bundled console. The CSP allows only
 # same-origin scripts, styles (inline style attributes are used by React), images (plus
-# data: for the inline favicon) and XHR/fetch. HSTS belongs at the TLS terminator.
+# data: for the inline favicon) and XHR/fetch. The microphone is this origin's only (the voice
+# channel's push-to-talk); camera and location stay off. HSTS belongs at the TLS terminator.
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Permissions-Policy": "camera=(), microphone=(self), geolocation=()",
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
         "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; "

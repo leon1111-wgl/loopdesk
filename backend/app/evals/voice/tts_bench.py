@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
                      "total_ms": round(total * 1000, 1), "audio_seconds": round(audio, 3),
                      "rtf": round(total / audio, 3) if audio else None})
         print(json.dumps(rows[-1], ensure_ascii=False), flush=True)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     return 0
 

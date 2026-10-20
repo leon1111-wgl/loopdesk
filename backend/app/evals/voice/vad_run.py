@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
             for r in read_jsonl(Path(d) / "manifest.jsonl")]
     pool = [read_wav(root / r["path"])[0] for root, r in rows[:: max(1, len(rows) // 60)]]
     factories = {"energy": EnergyVAD, "silero": SileroVAD}
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with Path(args.out).open("w", encoding="utf-8") as fh:
         for root, row in rows:
             clean, _ = read_wav(root / row["path"])

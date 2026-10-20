@@ -219,6 +219,9 @@ class Settings:
     voice_max_utterance_seconds: float = 20.0
     voice_cosyvoice_url: str = "http://127.0.0.1:50000"  # the CosyVoice sidecar (backend/sidecars)
     voice_tts_voice: str | None = None  # engine voice: a Kokoro voice id, a `say` voice, a CosyVoice speaker
+    # Test engines, demo mode only (end-to-end tests of the voice UI without speech models): ASR
+    # "scripted" returns these transcripts in turn, "|"-separated; TTS "tone" plays a tone.
+    voice_scripted_text: str = ""
 
     prices: dict[str, tuple[float, float]] = field(default_factory=lambda: dict(DEFAULT_PRICES))
 
@@ -314,6 +317,7 @@ class Settings:
         s.voice_max_utterance_seconds = _env_float("VOICE_MAX_UTTERANCE_SECONDS", s.voice_max_utterance_seconds)
         s.voice_cosyvoice_url = _env("VOICE_COSYVOICE_URL", s.voice_cosyvoice_url)
         s.voice_tts_voice = _env("VOICE_TTS_VOICE") or None
+        s.voice_scripted_text = _env("VOICE_SCRIPTED_TEXT", s.voice_scripted_text)
 
         extra_prices = _env("PRICES")
         if extra_prices:
