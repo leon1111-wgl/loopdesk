@@ -729,10 +729,13 @@ class AgentRuntime:
                 extra_meta: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
         final_text = text or MODEL_ERROR_TEXT
         reasons = unsafe_answer(final_text, _reviewed(ctx), _channels(ctx))
-        if not reasons and verify and self._judging() and worth_judging(final_text):
-            judgement = self._judge(tracer, ctx, final_text)
-            if judgement is not None and judgement.unsafe:
-                reasons = [f"judge_{judgement.category or 'unsafe'}"]
+        if not reasons and verify and self._judging():
+            if detect_injection(final_text).suspicious:  # an answer that instructs a model: the judge's own reader
+                reasons = ["judge_D"]
+            elif worth_judging(final_text):
+                judgement = self._judge(tracer, ctx, final_text)
+                if judgement is not None and judgement.unsafe:
+                    reasons = [f"judge_{judgement.category or 'unsafe'}"]
         if reasons:  # never sent (N-038): a person takes over, and the dashboard names the sources
             with tracer.span("guardrail", "unsafe_answer", {"answer": final_text}) as span:
                 span.status = "error"

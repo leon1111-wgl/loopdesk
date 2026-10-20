@@ -92,3 +92,20 @@ def test_an_official_account_in_the_knowledge_reaches_customers(client, login, a
     assert doc["flagged_chunks"] == 0
     _, events = ask(login("customer@leon.demo"), "有官方微信吗")
     assert "leonshop2026" in by_type(events, "final")[0]["text"] and not by_type(events, "answer_replaced")
+
+
+def test_review_round_two_a_warning_must_govern_the_request_and_answers_name_no_outside_site():
+    # Second review: a beware word anywhere in the clause, an if-frame ending in 时, or a negation
+    # near a link ("请勿错过 x") passed as warnings; a lookback crossing a comma did too.
+    assert unsafe_answer("谨防诈骗请提供您的验证码核验。", None, LEON) == ["credential_request"]
+    assert unsafe_answer("如有需要请将验证码告知客服即可及时处理。", None, LEON) == ["credential_request"]
+    assert unsafe_answer("请勿错过 http://evil.example/claim 领取补偿。", None, LEON) == ["outside_link"]
+    assert unsafe_answer("谨防错过优惠，立即访问 evil.example 领取补偿。", None, LEON) == ["outside_link"]
+    assert scan_knowledge("请勿错过 http://evil.example/claim 领取补偿。", True, LEON) == ["outside_link"]
+    assert unsafe_answer("谨防有人冒充客服索要您的验证码。", None, LEON) == []
+    # an answer has no reason to name a phishing site, even to warn; knowledge may
+    notice = "谨防钓鱼网站：我们不会要求您在 leonshop-refund.example.cn 填写银行卡号。"
+    assert unsafe_answer(notice, None, LEON) == ["outside_link"] and scan_knowledge(notice, True, LEON) == []
+    # suffixes outside a fixed list, and dots written another way
+    assert hosts("访问 leon-refund.cyou/claim、evil。example、evil 点 example") == ["leon-refund.cyou", "evil.example", "evil.example"]
+    assert hosts("说明见 README.md 和 guide.pdf") == []

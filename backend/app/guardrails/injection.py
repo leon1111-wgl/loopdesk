@@ -78,9 +78,16 @@ def clean_domain(value: str) -> str:
 
 
 # ---------------------------------------------------------------- links
-_TLDS = ("com|cn|net|org|top|xyz|cc|vip|shop|info|io|co|me|link|club|site|online|store|tech|app|ltd|work|wang|"
-         "hk|tw|mo|us|uk|jp|kr|sg|biz|pro|live|fun|icu|ru|de|fr|in|ly|gl|gd|to|tk|ml|ga|cf|gq|ws|su|example|test")
-_DOT_TRICKS = re.compile(r"\s*(?:\[\.\]|\(\.\)|【\.】|\[dot\]|\(dot\)|\{dot\}|\[点\]|（点）)\s*")
+# Any suffix of letters counts (abused ones such as .cyou or .sbs come and go), except what is
+# usually a file or a library rather than a site: "Node.js", "README.md", "report.pdf".
+_NOT_TLD = ("js|ts|jsx|tsx|py|md|txt|json|yaml|yml|html|htm|css|png|jpg|jpeg|gif|svg|webp|pdf|doc|docx|xls|xlsx|"
+            "ppt|pptx|zip|rar|gz|tar|exe|dmg|apk|ipa|mp3|mp4|mov|csv|log|sh|bat|ini|cfg|conf|lock|java|go|rs|rb|php|"
+            "vue|net|dll|so|bin|db|sql")
+_TLDS = rf"(?!(?:{_NOT_TLD})(?![a-z]))[a-z]{{2,24}}"
+# Obfuscated dots: "evil[.]example", "evil(.)example", "evil。example", "evil 点 example", "evil . example".
+_DOT_TRICKS = re.compile(
+    r"\s*(?:\[\.\]|\(\.\)|【\.】|\[dot\]|\(dot\)|\{dot\}|\[点\]|（点）)\s*"
+    r"|(?<=[a-z0-9])(?:\s*[。．点]\s*|\s+\.\s*|\s*\.\s+)(?=[a-z0-9])")
 _URL = re.compile(r"(?:https?|hxxps?)://[^\s<>\"'()（）\[\]{}，。、；！？]+")
 _HOST = rf"(?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\.)+(?:{_TLDS})"
 _BARE = re.compile(rf"(?<![a-z0-9@._/-])({_HOST})(?![a-z0-9-])")
@@ -221,11 +228,17 @@ _NEGATED = re.compile(
     r"(?:不会|不要|请勿|切勿|勿|不得|禁止|绝不|决不|从不|无需|无须|不需要|不用|拒绝|没有人会|任何人都不会)"
     r"(?:向(?:您|你|任何人|他人)|主动|以任何(?:理由|方式|名义)|通过任何(?:渠道|方式)|在任何情况下|要求(?:您|你)|让(?:您|你))*$"
     r"|(?:never|donot|don't|dont|willnot|won't|wont|shallnot|doesnot|doesn't|noone|nobody)[a-z']{0,12}$")
-# Before a link: "不会要求您在 x 填写", "请勿访问 x", "谨防假冒网站 x".
-_NEGATED_LINK = re.compile(r"(?:不会|不要|请勿|切勿|勿|不得|禁止|绝不|决不|从不|并非|不是|非)[^。!?;,:]{0,8}$")
-_BEWARE = re.compile(r"谨防|警惕|小心|当心|提防|防范|假冒|仿冒|钓鱼|beware|fake|phishing")
-_IF_MET = re.compile(r"如遇|遇到|若有|如有|如果有|凡是|一旦有")
-_SCENARIO = re.compile(r"^[^。!?;,:]{0,12}?(?:的情况|的人|的电话|的短信|的链接|的网站|时)")
+# Before a link in knowledge: "不会要求您在 x 填写", "请勿访问 x", "谨防假冒网站：x". The negation
+# must govern going there; "请勿错过 x 领取补偿" is an invitation (found in review).
+_NEGATED_LINK = re.compile(
+    r"(?:不会|不要|请勿|切勿|勿|不得|禁止|绝不|决不|从不)(?:要求您|让您|向您|随意|轻易)?"
+    r"(?:在|访问|点击|登录|打开|进入|扫描|扫码|相信|轻信|添加|前往)[^。!?;,:]{0,4}$"
+    r"|(?:钓鱼|假冒|仿冒|冒充|山寨|虚假|非官方)(?:的)?(?:网站|链接|网址|域名)(?:如|例如|比如|：|:)?[^。!?;,]{0,4}$")
+# "谨防有人冒充客服索要验证码" warns about someone else asking; "谨防诈骗请提供您的验证码" asks.
+_BEWARE = re.compile(r"(?:谨防|警惕|小心|当心|提防|防范|beware)[^。!?;,:]{0,12}"
+                     r"(?:有人|他人|骗子|不法分子|陌生人|任何人|冒充|假冒|自称|仿冒|scammer|anyone)")
+_IF_MET = re.compile(r"如遇|遇到|若有人|如有人|如果有人|凡是有人|一旦有人|收到")
+_SCENARIO = re.compile(r"^[^。!?;,:]{0,12}?(?:的情况|的人|的电话|的短信|的链接|的网站|的要求|的消息)")
 _BOUNDARY = "。!?;,:."
 _SENTENCE = "。!?;"
 _CITATION = re.compile(r"\[\d+(?:[,，]\d+)*\]")
@@ -305,18 +318,19 @@ def _private_contact(norm: str, channels: Channels) -> bool:
     return False
 
 
-def _outside_links(text: str, channels: Channels) -> list[tuple[str, int]]:
-    """Links to hosts outside the official channels that are not named as a warning."""
+def _outside_links(text: str, channels: Channels, warnings: bool = False) -> list[tuple[str, int]]:
+    """Links to hosts outside the official channels. With ``warnings`` (knowledge only), a link
+    named in an anti-fraud notice is left out; an answer has no reason to name one at all."""
     folded = _DOT_TRICKS.sub(".", _folded(text))
     outside = []
     for host, position in links(text):
         if channels.official_host(host):
             continue
-        before = normalize(folded[max(0, position - 40):position])
-        cut = max(before.rfind(mark) for mark in "。!?;,:")
-        clause_before = before[cut + 1:]
-        if _NEGATED_LINK.search(clause_before) or _BEWARE.search(before[max(0, cut - 20):]):
-            continue  # "谨防假冒网站 x", "不会要求您在 x 填写"
+        if warnings:
+            before = normalize(folded[max(0, position - 40):position])
+            cut = max(before.rfind(mark) for mark in "。!?;,")
+            if _NEGATED_LINK.search(before[cut + 1:]):
+                continue  # "不会要求您在 x 填写", "请勿访问 x", "谨防钓鱼网站：x"
         outside.append((host, position))
     return outside
 
@@ -328,7 +342,7 @@ def scan_knowledge(text: str, public: bool = True, channels: Channels = NO_CHANN
     reasons += _fraud(norm, channels)
     # A link outside the official channels in a chunk that asks for something anywhere in it: the
     # request and the link are often two sentences ("点击下方链接完成验证。\nhttp://…").
-    if _outside_links(text, channels) and _LINK_ASK.search(norm):
+    if _outside_links(text, channels, warnings=True) and _LINK_ASK.search(norm):
         reasons.append("outside_link")
     if public and _AGENT_DIRECTIVE.search(norm):
         reasons.append("agent_directive")

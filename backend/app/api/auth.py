@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -37,6 +38,7 @@ class TenantPatch(BaseModel):
     official_contacts: list[str] | None = Field(default=None, max_length=50)
 
 
+logger = logging.getLogger(__name__)
 CONTACT_RE = re.compile(r"^(?:[a-z][a-z0-9_-]{4,63}|\d{5,15})$")
 
 
@@ -175,8 +177,14 @@ def patch_tenant(body: TenantPatch, principal: Principal = Depends(require_admin
     db.commit()
     if any(key in diff for key in ("official_domains", "official_contacts")):
         # What is outside the official channels changed: the knowledge is scanned again with them.
+        # The change is saved already; a failed re-scan is reported, and every start re-scans anyway.
         from ..ops.rescan_knowledge import rescan
-        after["rescan"] = rescan(db, tenant.id)
+        try:
+            after["rescan"] = rescan(db, tenant.id)
+        except Exception:
+            logger.exception("re-scanning tenant %s after a channel change failed", tenant.id)
+            db.rollback()
+            after["rescan"] = {"error": "已保存，但重新扫描知识库失败；服务下次启动时会再扫描一次"}
     return after
 
 

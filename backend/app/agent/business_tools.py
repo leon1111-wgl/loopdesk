@@ -303,9 +303,10 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             # Claim the order in one conditional UPDATE. The precheck above is a read: two requests
             # for the same order (a double click, a retry) can both pass it, and both used to pay
             # out. Only one UPDATE can move the order out of a refundable state; SQLite serialises
-            # writers and PostgreSQL re-checks the condition after the row lock. It is the first
-            # write, so on SQLite it also takes the database's write lock with a fresh snapshot (a
-            # read before it, in the same transaction, could not be upgraded to a write).
+            # writers and PostgreSQL re-checks the condition after the row lock. No read comes
+            # before it inside the savepoint, so on SQLite the write lock is taken with a fresh
+            # snapshot (by this UPDATE, or by the flush of the run's pending changes that opening
+            # the savepoint triggers); a read first could not have been upgraded to a write.
             claimed = ctx.db.execute(
                 update(Order).where(Order.id == checked["order_id"], Order.status.in_(REFUNDABLE))
                 .values(status="refunding").execution_options(synchronize_session="fetch")
