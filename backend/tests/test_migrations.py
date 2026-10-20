@@ -122,8 +122,9 @@ def test_upgrade_turns_refunds_into_a_ledger_that_needs_no_local_order(tmp_path)
                              "VALUES (7, 1, 'c@t', 'C', 'customer', 'x', CURRENT_TIMESTAMP)")
         conn.exec_driver_sql("INSERT INTO orders (id, tenant_id, customer_id, items, amount, status, region, paid_at, "
                              "shipment) VALUES ('SO1', 1, 7, '[]', 10, 'refunding', 'domestic', CURRENT_TIMESTAMP, '{}')")
-        conn.exec_driver_sql("INSERT INTO refunds (id, tenant_id, order_id, amount, reason, status, created_at) "
-                             "VALUES (1, 1, 'SO1', 10, '', 'processing', CURRENT_TIMESTAMP)")
+        # No explicit id: on PostgreSQL that would leave the sequence behind for the inserts below.
+        conn.exec_driver_sql("INSERT INTO refunds (tenant_id, order_id, amount, reason, status, created_at) "
+                             "VALUES (1, 'SO1', 10, '', 'processing', CURRENT_TIMESTAMP)")
     command.upgrade(config, "head")
 
     def refund(order_id: str, key: str | None, status: str) -> None:
@@ -134,8 +135,8 @@ def test_upgrade_turns_refunds_into_a_ledger_that_needs_no_local_order(tmp_path)
                 f"{'NULL' if key is None else repr(key)}, '', CURRENT_TIMESTAMP)")
 
     with get_engine().connect() as conn:
-        assert tuple(conn.exec_driver_sql("SELECT customer_id, idempotency_key FROM refunds WHERE id = 1").one()) == (
-            7, None), "the customer comes from the order"
+        assert tuple(conn.exec_driver_sql("SELECT customer_id, idempotency_key FROM refunds WHERE order_id = 'SO1'")
+                     .one()) == (7, None), "the customer comes from the order"
     refund("SO-REMOTE", "k-1", "pending")  # no row in orders: the merchant's system has it
     with pytest.raises(IntegrityError):
         refund("SO-REMOTE", "k-2", "pending")  # one live refund per order
