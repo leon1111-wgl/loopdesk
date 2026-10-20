@@ -9,8 +9,8 @@ from ..config import get_settings
 from ..audit import changes, record
 from ..db import get_db
 from ..models import Tenant, User
-from ..security import (Principal, create_token, get_principal, rate_limiter, require_admin, require_staff,
-                        shared_rate_limiter, verify_password)
+from ..security import (DUMMY_PASSWORD_HASH, Principal, create_token, get_principal, rate_limiter, require_admin,
+                        require_staff, shared_rate_limiter, verify_password)
 from ..seed import DEMO_PASSWORD, TENANTS
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -66,7 +66,10 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)) -> dic
     ip_hit = check(ip_key, settings.login_attempts_per_ip)
     email_hit = check(email_key, settings.login_attempts_per_email)
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
-    if user is None or not verify_password(body.password, user.password_hash):
+    # An unknown e-mail is checked against a stand-in hash: refused before PBKDF2 (tens of
+    # ms), it would answer faster than a wrong password and timing would list the accounts.
+    password_ok = verify_password(body.password, user.password_hash if user else DUMMY_PASSWORD_HASH)
+    if user is None or not password_ok:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "邮箱或密码错误")
     # Only failures use up the budget, so an office behind one NAT or a user on several
     # devices is not locked out. Every attempt still holds its slot while the (slow)

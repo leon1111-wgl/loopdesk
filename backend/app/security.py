@@ -25,6 +25,9 @@ from .observability import identify
 ROLES = ("admin", "agent", "customer")
 STAFF_ROLES = ("admin", "agent")
 _PBKDF2_ITERATIONS = 200_000
+# Checked when a login names an account that does not exist, so that answer costs the same
+# PBKDF2 work (iterations, salt length) as a wrong password. No password hashes to all zeros.
+DUMMY_PASSWORD_HASH = f"pbkdf2_sha256${_PBKDF2_ITERATIONS}${'00' * 16}${'00' * 32}"
 
 
 def hash_password(password: str) -> str:

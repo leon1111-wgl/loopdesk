@@ -82,6 +82,29 @@ def test_successful_logins_do_not_use_up_the_guessing_budget(client):
     assert bad == [401] * 10 + [429], "failures still count"
 
 
+def test_an_unknown_email_costs_the_same_password_work_as_a_wrong_password(client, monkeypatch):
+    # If an unknown e-mail is refused before any hashing, the response time tells which
+    # accounts exist. Counted rather than timed, so the test cannot flake.
+    import hashlib
+
+    real, work = hashlib.pbkdf2_hmac, []
+
+    def counted(name, password, salt, iterations, *rest):
+        work.append((len(salt), iterations))
+        return real(name, password, salt, iterations, *rest)
+
+    monkeypatch.setattr(hashlib, "pbkdf2_hmac", counted)
+
+    def failed_login(email: str) -> list:
+        work.clear()
+        assert client.post("/api/auth/login", json={"email": email, "password": "guess"}).status_code == 401
+        return list(work)
+
+    wrong_password, unknown_email = failed_login("customer@leon.demo"), failed_login("nobody@leon.demo")
+    assert len(wrong_password) == 1, "a wrong password is checked with one PBKDF2 run"
+    assert unknown_email == wrong_password, "an unknown e-mail must do the same work (salt length, iterations)"
+
+
 def test_rate_limiter_holds_under_a_parallel_burst():
     import threading
 
