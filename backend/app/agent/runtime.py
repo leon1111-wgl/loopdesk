@@ -44,7 +44,7 @@ from .. import telemetry
 from ..textutil import ORDER_ID_RE, asks_for_person, normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
-from .tools import ApprovalNeed, Evidence, ToolContext, ToolError, ToolRegistry
+from .tools import ApprovalNeed, ApprovalRequired, Evidence, ToolContext, ToolError, ToolRegistry
 from .tracing import Tracer
 from .verifier import Verification, verify_answer
 
@@ -480,7 +480,13 @@ class AgentRuntime:
                                  arguments=args)
                         return ToolOutcome("approval", reason=need.reason, customer_note=need.customer_note,
                                            arguments=args)
-                    output = tool.handler(ctx, args)
+                    try:
+                        output = tool.handler(ctx, args)
+                    except ApprovalRequired as exc:  # a re-check under the handler's locks (N-039)
+                        span.set(approval_required=True, reason=exc.need.reason,
+                                 customer_note=exc.need.customer_note, arguments=args, rechecked=True)
+                        return ToolOutcome("approval", reason=exc.need.reason, customer_note=exc.need.customer_note,
+                                           arguments=args)
                     outcome = ToolOutcome("result", output)
                 except ToolError as exc:
                     span.status = "rejected"

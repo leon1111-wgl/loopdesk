@@ -75,6 +75,15 @@ class ApprovalNeed:
     customer_note: str = ""
 
 
+class ApprovalRequired(Exception):
+    """Raised by a handler that finds, while holding its locks, a reason for a person to decide
+    after all. The runtime turns it into the same approval pause as a policy decision would."""
+
+    def __init__(self, need: ApprovalNeed):
+        super().__init__(need.reason)
+        self.need = need
+
+
 Handler = Callable[[ToolContext, dict[str, Any]], dict[str, Any]]
 Policy = Callable[[ToolContext, dict[str, Any]], "ApprovalNeed | str | None"]
 
