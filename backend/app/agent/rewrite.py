@@ -122,13 +122,16 @@ def next_frame(previous: str | Frame, text: str, standalone: str) -> Frame:
 
 
 def rewrite_followup(provider: LLMProvider, model: str, history: list[LLMMessage], text: str,
-                     previous: str | Frame) -> tuple[Rewrite, int, int]:
-    """Returns the rewrite plus (prompt_tokens, completion_tokens) spent on it."""
-    if provider.name != "mock":
+                     previous: str | Frame, use_model: bool = True,
+                     deadline: float | None = None) -> tuple[Rewrite, int, int]:
+    """Returns the rewrite plus (prompt_tokens, completion_tokens) spent on it. ``deadline`` (a
+    monotonic time) caps the model call; without the model the rule rewrite is used."""
+    if use_model and provider.name != "mock":
         transcript = "\n".join(f"{'用户' if m.role == 'user' else '客服'}：{m.content}" for m in history[-4:])
         try:
             result = provider.chat([LLMMessage(role="user", content=REWRITE_PROMPT.format(history=transcript, question=text))],
-                                   [], model, {"task": "rewrite", "temperature": 0})
+                                   [], model, {"task": "rewrite", "temperature": 0,
+                                               **({"deadline": deadline} if deadline is not None else {})})
             standalone = result.content.strip().splitlines()[0][:120] if result.content.strip() else ""
             if standalone:
                 return Rewrite(standalone, "llm"), result.usage.prompt_tokens, result.usage.completion_tokens

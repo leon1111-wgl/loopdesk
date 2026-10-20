@@ -40,6 +40,27 @@ CITE_RE = re.compile(r"\[(\d{1,2})\]")
 # boundary before "S" and \b silently fails. Explicit look-arounds work next to Chinese.
 ORDER_ID_RE = re.compile(r"(?<![A-Za-z0-9])SO\d{8,14}(?!\d)", re.IGNORECASE)
 
+# "不用转人工，帮我查下物流" mentions 人工 but asks for the opposite: negated mentions are cut out
+# before any matching (the offline model and the explicit-request rule below share this).
+_NEG = r"(?:不用|不要|别|无需|不需要|不必|甭)(?:帮我|给我)?"
+NEGATED_PERSON_RE = re.compile(rf"{_NEG}(?:转接|转到|转|找|接)?(?:人工客服|人工|真人)|{_NEG}转接|不是要?投诉")
+# An explicit request for a person: a verb aimed at 人工 / 真人 ("转人工", "我要人工客服", "能帮我转接人工吗"),
+# the bare words as the whole message ("人工！"), or "我要投诉". A question about the service
+# ("人工客服几点上班？") is not a request and goes to the model.
+_PERSON = r"(?:人工(?!智能)|真人)"
+_EXPLICIT_PERSON_RE = re.compile(
+    rf"(?:转|接|找|要|换|叫|联系)(?:到|个|一个|一下)?{_PERSON}"
+    rf"|^(?:请|麻烦|我要|我想|给我|帮我)?{_PERSON}(?:客服|服务)?(?:吧|啊|呢|谢谢)?$"
+    r"|(?:我要|我想|要)投诉"
+)
+
+
+def asks_for_person(text: str) -> bool:
+    """True for an explicit request to talk to a person, which is honoured without the model
+    (it cannot be talked out of it, and it still works when the model service is down)."""
+    stripped = re.sub(r"[\s，,。.！!？?~～]+", "", NEGATED_PERSON_RE.sub("，", normalize_width(text)))
+    return bool(stripped) and bool(_EXPLICIT_PERSON_RE.search(stripped))
+
 # Full-width digits and Latin letters (and ＋ －, which appear in phone numbers) become ASCII:
 # "ＳＯ２０２６…" is the same order number. Chinese full-width punctuation (，？！) is left alone,
 # so what the customer typed still reads the same in the transcript.

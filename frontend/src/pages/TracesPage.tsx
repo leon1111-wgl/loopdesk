@@ -123,7 +123,7 @@ export default function TracesPage() {
                 <td className="nowrap">{r.user?.name}</td>
                 <td style={{ maxWidth: 380 }}><div className="ellipsis">{r.input_text}</div></td>
                 <td><StatusBadge status={r.status} /></td>
-                <td className="nowrap"><span className={`badge ${r.route_tier === "strong" ? "badge-info" : r.route_tier === "cache" ? "badge-success" : ""}`}>{r.route_tier === "strong" ? "强" : r.route_tier === "cache" ? "缓存" : "快"}</span> <span className="faint">{r.model}</span></td>
+                <td className="nowrap"><span className={`badge ${r.route_tier === "strong" ? "badge-info" : r.route_tier === "cache" ? "badge-success" : ""}`}>{r.route_tier === "strong" ? "强" : r.route_tier === "cache" ? "缓存" : r.route_tier === "rule" ? "规则" : "快"}</span> <span className="faint">{r.model}</span></td>
                 <td className="mono">{ms(r.latency_ms)}</td>
                 <td className="mono">{r.prompt_tokens + r.completion_tokens}</td>
                 <td><VerdictBadge verdict={r.verdict} coverage={r.evidence_coverage} /></td>

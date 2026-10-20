@@ -17,17 +17,13 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..textutil import ORDER_ID_RE, estimate_tokens, expand_query, split_sentences, token_set
+from ..textutil import NEGATED_PERSON_RE, ORDER_ID_RE, estimate_tokens, expand_query, split_sentences, token_set
 from .base import ChatResult, LLMMessage, LLMProvider, StreamEvent, ToolCall, ToolSpec, Usage
 
 _HANDOFF = re.compile(r"人工|真人|投诉|转接")
-# "不用转人工，帮我查下物流" mentions 人工 but asks for the opposite. Negated requests are cut
-# out before matching, the way a real model reads them; otherwise the offline model (the
-# demo path and the eval baseline) inflates the handoff rate.
-_NEG = r"(?:不用|不要|别|无需|不需要|不必|甭)(?:帮我|给我)?"
-_NEGATED_HANDOFF = re.compile(
-    rf"{_NEG}(?:转接|转到|转|找|接)?(?:人工客服|人工|真人)|{_NEG}转接|不是要?投诉"
-)
+# Negated requests ("不用转人工") are cut out before matching, the way a real model reads them;
+# otherwise the offline model (the demo path and the eval baseline) inflates the handoff rate.
+_NEGATED_HANDOFF = NEGATED_PERSON_RE
 _REFUND = re.compile(r"退款|退钱|退货|退掉|退我|refund", re.IGNORECASE)
 _SHIPMENT = re.compile(r"物流|快递|到哪|发货了吗|配送|运单|什么时候到|送到|where is|track|arrive|deliver|shipping",
                        re.IGNORECASE)

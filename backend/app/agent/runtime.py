@@ -32,6 +32,7 @@ from ..config import Settings
 from ..guardrails.injection import detect_injection
 from ..guardrails.pii import PIIReport, mask_pii
 from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
+from ..llm.breaker import CircuitBreaker
 from ..llm.router import ModelRouter
 from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
@@ -39,7 +40,7 @@ from .rewrite import Frame, frame_of, is_followup, next_frame, rewrite_followup
 from ..observability import request_id_var
 from ..security import Principal
 from .. import telemetry
-from ..textutil import normalize_width
+from ..textutil import ORDER_ID_RE, asks_for_person, normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
 from .tools import ApprovalNeed, Evidence, ToolContext, ToolError, ToolRegistry
@@ -51,8 +52,12 @@ MAX_STEPS_TEXT = "抱歉，这个问题需要的处理步骤较多。"
 MODEL_ERROR_TEXT = "抱歉，智能客服暂时繁忙，请稍后再试或转人工客服。"
 REFUSAL_TEXT = "抱歉，这个问题我无法处理。"
 DEADLINE_TEXT = "抱歉，这个问题处理时间过长。"
+# The model service failed or its breaker is open (N-031): quote the policy, or hand over.
+DEGRADED_ANSWER = "智能客服暂时无法生成回答，以下是相关规定的原文：\n「{text}」[{ref}]\n如果没有解决您的问题，请回复“转人工”，人工客服会接手。"
+DEGRADED_HANDOFF_TEXT = "抱歉，智能客服暂时无法处理您的问题。"
 CONFLICT_TEXT = "抱歉，这个问题涉及的规定正在核对中。"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
+REWRITE_BUDGET_SECONDS = 5.0
 TOOL_LABEL = {"request_refund": "退款"}
 
 logger = logging.getLogger(__name__)
@@ -82,13 +87,14 @@ class ToolOutcome:
 
 class AgentRuntime:
     def __init__(self, db: Session, settings: Settings, provider: LLMProvider, embedder: Embedder,
-                 registry: ToolRegistry):
+                 registry: ToolRegistry, breaker: CircuitBreaker | None = None):
         self.db = db
         self.settings = settings
         self.provider = provider
         self.embedder = embedder
         self.registry = registry
         self.router = ModelRouter(settings)
+        self.breaker = breaker or CircuitBreaker(settings)
 
     # ================================================================ entry points
     def start(self, *, tenant: Tenant, user: User, text: str, conversation: Conversation | None = None,
@@ -132,14 +138,22 @@ class AgentRuntime:
                 # Staff see which rules matched; telling an attacker that would help them rephrase.
                 yield {"type": "guardrail", "name": "prompt_injection",
                        **({"matches": injection.matches} if user.role in ("admin", "agent") else {})}
+            if asks_for_person(text):
+                yield from self._explicit_handoff(run, tracer, tenant, user, conversation, options, pii.masked)
+                return
 
             # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
             question = pii.masked
             if is_followup(text, previous):
                 with tracer.span("rewrite", "followup_rewrite", {"question": pii.masked, "previous": previous}) as span:
                     span.model = self.settings.llm_model_fast
+                    # Rewriting is an optimisation with a rule fallback: a failing model is not asked,
+                    # and a hanging one gets seconds, not the whole run (N-031).
+                    fast = self.settings.llm_model_fast
                     result, span.prompt_tokens, span.completion_tokens = rewrite_followup(
-                        self.provider, self.settings.llm_model_fast, history, pii.masked, frame)
+                        self.provider, fast, history, pii.masked, frame,
+                        use_model=self.breaker.state(fast) == "closed",
+                        deadline=time.monotonic() + REWRITE_BUDGET_SECONDS)
                     span.set(standalone=result.standalone, method=result.method)
                 question = result.standalone
                 if user_message is not None:  # the next follow-up builds on this, not on what was typed
@@ -173,6 +187,7 @@ class AgentRuntime:
 
             state: dict[str, Any] = {
                 "user_text": pii.masked,
+                "question": question,  # what a degraded answer searches for if the model fails
                 "steps": 0,
                 "models": self.router.candidates(decision),
                 "options": {"dry_run": options.dry_run, "inject_hallucination": options.inject_hallucination},
@@ -266,6 +281,8 @@ class AgentRuntime:
                 ctx.approval_id = None
                 if not outcome.is_error:
                     executed = outcome
+                    # If the model then fails, the degraded reply is what was done, not a guess.
+                    state["executed_message"] = str(outcome.output.get("message") or APPROVED_FALLBACK_TEXT)
             else:
                 outcome = ToolOutcome("result", {
                     "status": "rejected",
@@ -374,7 +391,7 @@ class AgentRuntime:
                 if self._past_deadline(state):  # the model ran out the clock: a person takes over
                     yield from self._deadline_handoff(run, tracer, ctx, state, started)
                     return
-                yield from self._finish(run, tracer, ctx, state, MODEL_ERROR_TEXT, started, status="failed")
+                yield from self._degraded(run, tracer, ctx, state, started)
                 return
 
             if result.finish_reason == "refusal":
@@ -397,6 +414,12 @@ class AgentRuntime:
                    "deadline": state.get("deadline")}  # providers cap timeouts and stop retrying at it
         last_error: LLMError | None = None
         for model in state["models"]:
+            if not self.breaker.allow(model):  # failing lately: do not make this customer wait for it
+                with tracer.span("llm", f"chat:{model}", {"step": state["steps"], "breaker": "open"}) as span:
+                    span.model = model
+                    span.status = "skipped"
+                last_error = LLMError(f"circuit open: {model} failed repeatedly, not called")
+                continue
             emitted = False
             try:
                 with tracer.span("llm", f"chat:{model}", {"step": state["steps"], "messages": len(messages)}) as span:
@@ -416,8 +439,10 @@ class AgentRuntime:
                             )
                             tracer.run.model = model
                         yield event
+                self.breaker.record(model, ok=True)
                 return
             except LLMError as exc:
+                self.breaker.record(model, ok=False)
                 last_error = exc
                 if emitted:  # tokens already reached the user; switching models would duplicate text
                     raise
@@ -477,6 +502,55 @@ class AgentRuntime:
             span.set(steps=state["steps"])
         text = DEADLINE_TEXT + self._fallback_handoff(tracer, ctx, "处理超时")
         yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
+
+    def _explicit_handoff(self, run, tracer, tenant, user, conversation, options, user_text) -> Iterator[dict[str, Any]]:
+        """"转人工" is honoured at once, without the model (N-031): there is nothing to talk the
+        customer out of, it costs no tokens, and it still works while the model service is down."""
+        run.route_tier = "rule"
+        with tracer.span("router", "explicit_handoff", {"text": user_text}) as span:
+            span.set(rule="asks_for_person")
+        ctx = self._context(tenant, user, run, conversation, options.dry_run, [])
+        state = {"user_text": user_text, "steps": 0, "models": [], "options": {"dry_run": options.dry_run},
+                 "elapsed_ms": 0}
+        started = time.perf_counter()
+        call = ToolCall(id="explicit_handoff", name="handoff_to_human", arguments={"reason": "顾客要求转人工"})
+        yield {"type": "tool_call", "id": call.id, "name": call.name, "arguments": call.arguments}
+        outcome = self._run_tool(tracer, ctx, call)
+        yield {"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
+               "is_error": outcome.is_error}
+        text = str(outcome.output.get("message") or "已为您转接人工客服，请稍候。")
+        yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
+
+    def _degraded(self, run, tracer, ctx, state, started) -> Iterator[dict[str, Any]]:
+        """The model failed and its other tier too, or both are behind an open breaker (N-031).
+        Answer what needs no model: a knowledge question gets the policy text itself, quoted and
+        cited (it is the source, so there is nothing to verify and nothing is cached); a question
+        about an order needs tools and a judgement, and one with nothing relevant to quote needs a
+        person, so those are handed over. Before this the customer read "暂时繁忙，请稍后再试或转人工"
+        and typing "转人工" failed the same way."""
+        with tracer.span("guardrail", "model_unavailable", {"error": run.error}) as span:
+            span.status = "error"
+        state["cache_key"] = None
+        if state.get("executed_message"):  # an approved action already ran (money moved): say so
+            yield from self._finish(run, tracer, ctx, state, state["executed_message"], started, status="completed",
+                                    extra_meta={"degraded": True})
+            return
+        question = state.get("question") or state["user_text"]
+        quoted = None
+        if not ORDER_ID_RE.search(question):
+            call = ToolCall(id="degraded_search", name="search_knowledge", arguments={"query": question})
+            outcome = self._run_tool(tracer, ctx, call)
+            results = [] if outcome.is_error or outcome.output.get("disputed") else outcome.output.get("results", [])
+            quoted = results[0] if results else None
+        if quoted is not None:
+            ctx.evidence[:] = [e for e in ctx.evidence if e.kind != "kb" or e.ref == quoted["ref"]]
+            text = DEGRADED_ANSWER.format(text=quoted["text"].strip(), ref=quoted["ref"])
+            yield from self._finish(run, tracer, ctx, state, text, started, status="completed",
+                                    extra_meta={"degraded": True})
+            return
+        text = DEGRADED_HANDOFF_TEXT + self._fallback_handoff(tracer, ctx, "智能客服暂时不可用")
+        yield from self._finish(run, tracer, ctx, state, text, started, status="handoff",
+                                extra_meta={"degraded": True})
 
     def _conflict_handoff(self, run, tracer, ctx, state, disputed, started) -> Iterator[dict[str, Any]]:
         """The knowledge this answer would rest on contradicts itself and nobody has checked which

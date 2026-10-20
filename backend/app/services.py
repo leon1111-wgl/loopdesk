@@ -10,6 +10,7 @@ from .agent.tools import ToolRegistry
 from .config import Settings, get_settings
 from .llm import build_provider
 from .llm.base import Embedder, LLMProvider
+from .llm.breaker import CircuitBreaker
 from .rag.embeddings import build_embedder
 
 
@@ -19,9 +20,10 @@ class Services:
         self.provider: LLMProvider = build_provider(settings)
         self.embedder: Embedder = build_embedder(settings)
         self.registry: ToolRegistry = build_registry()
+        self.breaker = CircuitBreaker(settings)
 
     def runtime(self, db: Session) -> AgentRuntime:
-        return AgentRuntime(db, self.settings, self.provider, self.embedder, self.registry)
+        return AgentRuntime(db, self.settings, self.provider, self.embedder, self.registry, self.breaker)
 
 
 _services: Services | None = None

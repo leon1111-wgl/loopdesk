@@ -85,7 +85,14 @@ class Settings:
     llm_timeout: float = 60.0
     otlp_endpoint: str | None = None  # OTLP/HTTP traces endpoint, e.g. http://otel-collector:4318/v1/traces
     otlp_service_name: str = "loopdesk"
-    run_deadline_seconds: float = 90.0  # whole run (all steps, retries, both model tiers); 0 disables
+    # Whole run (all steps, retries, both model tiers); 0 disables. A customer is handed to a person
+    # when it runs out, so it is the longest anyone waits for a hanging model (was 90 s, N-031).
+    run_deadline_seconds: float = 45.0
+    # Per-model circuit breaker (app/llm/breaker.py): this many failures within the window open it
+    # for the cool-down. 0 disables.
+    llm_breaker_failures: int = 5
+    llm_breaker_window_seconds: float = 30.0
+    llm_breaker_cooldown_seconds: float = 60.0
     llm_stream_usage: bool = True  # send stream_options.include_usage (disable if a vendor rejects it)
     anthropic_effort: str = "low"
     mock_stream_delay: float = 0.0  # seconds between streamed chunks of the mock model
@@ -161,6 +168,9 @@ class Settings:
         s.llm_model_fast = _env("LLM_MODEL_FAST", default_fast if s.llm_provider in ("mock", "anthropic") else s.llm_model_strong)
         s.llm_timeout = _env_float("LLM_TIMEOUT", s.llm_timeout)
         s.run_deadline_seconds = _env_float("RUN_DEADLINE_SECONDS", s.run_deadline_seconds)
+        s.llm_breaker_failures = _env_int("LLM_BREAKER_FAILURES", s.llm_breaker_failures)
+        s.llm_breaker_window_seconds = _env_float("LLM_BREAKER_WINDOW_SECONDS", s.llm_breaker_window_seconds)
+        s.llm_breaker_cooldown_seconds = _env_float("LLM_BREAKER_COOLDOWN_SECONDS", s.llm_breaker_cooldown_seconds)
         s.llm_stream_usage = _env_bool("LLM_STREAM_USAGE", s.llm_stream_usage)
         s.anthropic_effort = _env("ANTHROPIC_EFFORT", s.anthropic_effort)
         s.mock_stream_delay = _env_float("MOCK_STREAM_DELAY", s.mock_stream_delay)
