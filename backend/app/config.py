@@ -206,6 +206,20 @@ class Settings:
     # Order and payment systems: tenant slug -> its own systems over HTTP; the rest use the demo tables
     commerce_apis: dict[str, CommerceApi] = field(default_factory=dict)
 
+    # Voice channel (app/voice). Off unless an ASR and a TTS engine are named; the speech packages
+    # are optional (requirements-voice.txt), so a server without them just has no voice button.
+    voice_asr: str = "off"  # off | paraformer | sensevoice | whisper
+    voice_tts: str = "off"  # off | cosyvoice | kokoro | say
+    voice_vad: str = "energy"  # energy | silero
+    voice_device: str = "cpu"  # where FunASR runs: cpu | cuda | mps
+    voice_hotwords: bool = True  # the tenant's plan and product names bias the ASR
+    voice_end_silence_ms: int = 600  # trailing silence that ends an utterance (continuous mode)
+    voice_barge_in_ms: int = 240  # speech this long while the agent talks stops it
+    voice_readback_threshold: float = 0.6  # an order number or amount below this is read back first
+    voice_max_utterance_seconds: float = 20.0
+    voice_cosyvoice_url: str = "http://127.0.0.1:50000"  # the CosyVoice sidecar (backend/sidecars)
+    voice_tts_voice: str | None = None  # engine voice: a Kokoro voice id, a `say` voice, a CosyVoice speaker
+
     prices: dict[str, tuple[float, float]] = field(default_factory=lambda: dict(DEFAULT_PRICES))
 
     @classmethod
@@ -288,6 +302,18 @@ class Settings:
         s.feishu_apps = _feishu_apps()
         s.wecom_webhook_key = _env("WECOM_WEBHOOK_KEY")
         s.commerce_apis = _commerce_apis()
+
+        s.voice_asr = _env("VOICE_ASR", s.voice_asr)
+        s.voice_tts = _env("VOICE_TTS", s.voice_tts)
+        s.voice_vad = _env("VOICE_VAD", s.voice_vad)
+        s.voice_device = _env("VOICE_DEVICE", s.voice_device)
+        s.voice_hotwords = _env_bool("VOICE_HOTWORDS", s.voice_hotwords)
+        s.voice_end_silence_ms = _env_int("VOICE_END_SILENCE_MS", s.voice_end_silence_ms)
+        s.voice_barge_in_ms = _env_int("VOICE_BARGE_IN_MS", s.voice_barge_in_ms)
+        s.voice_readback_threshold = _env_float("VOICE_READBACK_THRESHOLD", s.voice_readback_threshold)
+        s.voice_max_utterance_seconds = _env_float("VOICE_MAX_UTTERANCE_SECONDS", s.voice_max_utterance_seconds)
+        s.voice_cosyvoice_url = _env("VOICE_COSYVOICE_URL", s.voice_cosyvoice_url)
+        s.voice_tts_voice = _env("VOICE_TTS_VOICE") or None
 
         extra_prices = _env("PRICES")
         if extra_prices:

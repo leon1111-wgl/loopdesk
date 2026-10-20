@@ -12,18 +12,22 @@ import math
 import re
 from functools import lru_cache
 
+# Customer-service domain words: jieba keeps them whole, and the voice channel uses those a
+# tenant's knowledge base mentions as ASR hotwords (app/voice/lexicon.py).
+DOMAIN_WORDS = (
+    "到账", "原路退回", "无理由退货", "七天无理由", "运单号", "工作日", "运费险", "电子发票",
+    "增值税专用发票", "优惠券", "积分", "签收", "质量问题", "换货", "退款", "退货", "转人工",
+    "工单", "补偿券", "定制商品", "生鲜", "偏远地区", "发货", "物流", "会员等级", "海外",
+    # the music-streaming tenant (Echo音乐)
+    "自动续费", "连续包月", "豪华会员", "普通会员", "数字专辑", "Echo币", "无损音质", "杜比全景声", "变灰",
+    "监护人", "未成年人", "青少年模式", "兑换券", "扣费",
+)
+
 try:
     import jieba
 
     jieba.setLogLevel(logging.WARNING)
-    for _word in (
-        "到账", "原路退回", "无理由退货", "七天无理由", "运单号", "工作日", "运费险", "电子发票",
-        "增值税专用发票", "优惠券", "积分", "签收", "质量问题", "换货", "退款", "退货", "转人工",
-        "工单", "补偿券", "定制商品", "生鲜", "偏远地区", "发货", "物流", "会员等级", "海外",
-        # the music-streaming tenant (Echo音乐)
-        "自动续费", "连续包月", "豪华会员", "普通会员", "数字专辑", "Echo币", "无损音质", "杜比全景声", "变灰",
-        "监护人", "未成年人", "青少年模式", "兑换券", "扣费",
-    ):
+    for _word in DOMAIN_WORDS:
         jieba.add_word(_word)
     # The general dictionary segments "退货运费" as 退 / 货运费. The knowledge base never says
     # 货运费, and the wrong split (made on both sides) sent "退货运费谁出" to the membership

@@ -1,0 +1,174 @@
+name: Voice eval
+
+# Speech models run here, on GitHub's CPU runners (4 vCPU, no GPU), never in the test jobs:
+# synthesise every gate question with several TTS voices and speeds, add babble noise, run the
+# ASR engines, sweep the endpointer, time the TTS engines, and publish one report artifact.
+# The agent's pass rate on the transcripts is measured separately (app.evals.voice.agent_eval),
+# because it needs the LLM, not the speech models.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Cases per tenant (0 = all)"
+        default: "0"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TORCH_CPU: https://download.pytorch.org/whl/cpu
+  NOISY: kokoro-zf_001-1,cosyvoice-default-1
+
+jobs:
+  synth-kokoro:
+    name: Synthesise (Kokoro zh, 4 voices, 3 speeds)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install torch --index-url $TORCH_CPU && pip install -r requirements.txt kokoro "misaki[zh]" soundfile scipy
+      - uses: actions/cache@v4
+        with: {path: ~/.cache/huggingface, key: hf-kokoro-v1.1-zh}
+      - run: python -m app.evals.voice.synth --engine kokoro --voices zf_001,zf_002,zm_009,zm_010 --extra zf_001:0.85,zf_001:1.2 --limit ${{ inputs.limit }} --out ../out/synth-kokoro
+      - run: python -m app.evals.voice.tts_bench --engine kokoro --voice zf_001 --out ../out/tts/tts-kokoro.jsonl
+      - uses: actions/upload-artifact@v4
+        with: {name: synth-kokoro, path: out/synth-kokoro, retention-days: 14}
+      - uses: actions/upload-artifact@v4
+        with: {name: tts-kokoro, path: out/tts}
+
+  synth-cosyvoice:
+    name: Synthesise + stream (CosyVoice 2 sidecar)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: CosyVoice code and its own environment (it pins torch 2.3 and numpy 1.26)
+        run: |
+          git clone --depth 1 --recursive --shallow-submodules https://github.com/FunAudioLLM/CosyVoice.git /tmp/CosyVoice
+          git -C /tmp/CosyVoice log -1 --format='CosyVoice %h %cs'
+          python -m venv /tmp/cv
+          /tmp/cv/bin/pip install torch==2.3.1 torchaudio==2.3.1 --index-url $TORCH_CPU
+          /tmp/cv/bin/pip install numpy==1.26.4 onnxruntime==1.18.0 transformers==4.51.3 HyperPyYAML==1.2.3 conformer==0.3.2 \
+            diffusers==0.29.0 hydra-core==1.3.2 omegaconf==2.3.0 inflect==7.3.1 librosa==0.10.2 soundfile "openai-whisper>=20250625" \
+            x-transformers==2.11.24 wetext==0.0.4 modelscope lightning==2.2.4 protobuf==4.25 regex tiktoken fastapi uvicorn huggingface_hub
+      - uses: actions/cache@v4
+        with: {path: ~/models/CosyVoice2-0.5B, key: cosyvoice2-0.5b-v1}
+      - name: CosyVoice2-0.5B weights (the files CPU inference uses)
+        run: |
+          /tmp/cv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('FunAudioLLM/CosyVoice2-0.5B', local_dir=os.path.expanduser('~/models/CosyVoice2-0.5B'), ignore_patterns=['speech_tokenizer_v2.batch.onnx', 'flow.decoder.estimator.fp32.onnx', '*.plan'])"
+          du -sh ~/models/CosyVoice2-0.5B
+      - name: Start the sidecar
+        run: |
+          nohup /tmp/cv/bin/python backend/sidecars/cosyvoice_server.py --cosyvoice /tmp/CosyVoice --model ~/models/CosyVoice2-0.5B --port 50000 > /tmp/sidecar.log 2>&1 &
+          for i in $(seq 1 120); do curl -sf http://127.0.0.1:50000/info && break; sleep 5; done
+          curl -sf http://127.0.0.1:50000/info || (cat /tmp/sidecar.log; exit 1)
+      - working-directory: backend
+        run: |
+          pip install -r requirements.txt scipy
+          python -m app.evals.voice.tts_bench --engine cosyvoice --out ../out/tts/tts-cosyvoice.jsonl
+          python -m app.evals.voice.synth --engine cosyvoice --limit ${{ inputs.limit }} --out ../out/synth-cosyvoice
+      - if: always()
+        run: tail -50 /tmp/sidecar.log
+      - uses: actions/upload-artifact@v4
+        with: {name: synth-cosyvoice, path: out/synth-cosyvoice, retention-days: 14}
+      - uses: actions/upload-artifact@v4
+        with: {name: tts-cosyvoice, path: out/tts}
+
+  synth-say:
+    name: Synthesise (macOS say, if a Mandarin voice is installed)
+    runs-on: macos-14
+    timeout-minutes: 60
+    continue-on-error: true
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - id: voice
+        run: |
+          say -v '?' | grep -E 'zh_CN|zh_TW' || true
+          echo "name=$(say -v '?' | awk '/zh_CN/ {print $1; exit}')" >> $GITHUB_OUTPUT
+      - if: steps.voice.outputs.name != ''
+        run: |
+          python -m app.evals.voice.tts_bench --engine say --voice ${{ steps.voice.outputs.name }} --out ../out/tts/tts-say.jsonl
+          python -m app.evals.voice.synth --engine say --voices ${{ steps.voice.outputs.name }} --limit ${{ inputs.limit }} --out ../out/synth-say
+      - if: steps.voice.outputs.name != ''
+        uses: actions/upload-artifact@v4
+        with: {name: synth-say, path: out/synth-say, retention-days: 14}
+      - if: steps.voice.outputs.name != ''
+        uses: actions/upload-artifact@v4
+        with: {name: tts-say, path: out/tts}
+
+  asr:
+    name: ASR ${{ matrix.engine }} ${{ matrix.shard }}/6
+    needs: [synth-kokoro, synth-cosyvoice, synth-say]
+    if: ${{ !cancelled() && needs.synth-kokoro.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [paraformer, sensevoice, whisper]
+        shard: [0, 1, 2, 3, 4, 5]
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install torch torchaudio --index-url $TORCH_CPU && pip install -r requirements-voice.txt
+      - uses: actions/download-artifact@v4
+        with: {pattern: "synth-*", path: out}
+      - uses: actions/cache@v4
+        with: {path: "~/.cache/modelscope\n~/.cache/huggingface", key: "asr-${{ matrix.engine }}-v1"}
+      - run: python -m app.evals.voice.asr_run --engine ${{ matrix.engine }} --synth ../out/synth-* --noisy $NOISY --shard ${{ matrix.shard }}/6 --out ../out/asr/asr-${{ matrix.engine }}-${{ matrix.shard }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with: {name: "asr-${{ matrix.engine }}-${{ matrix.shard }}", path: out/asr}
+
+  vad:
+    name: Endpointing sweep (energy, Silero)
+    needs: [synth-kokoro, synth-cosyvoice]
+    if: ${{ !cancelled() && needs.synth-kokoro.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install torch --index-url $TORCH_CPU && pip install -r requirements.txt silero-vad onnxruntime
+      - uses: actions/download-artifact@v4
+        with: {pattern: "synth-*", path: out}
+      - run: mkdir -p ../out/vad && python -m app.evals.voice.vad_run --synth ../out/synth-* --out ../out/vad/vad.jsonl
+      - uses: actions/upload-artifact@v4
+        with: {name: vad, path: out/vad}
+
+  report:
+    name: Report
+    needs: [synth-kokoro, synth-cosyvoice, synth-say, asr, vad]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with: {path: out}
+      - run: |
+          python -m app.evals.voice.report --asr '../out/asr-*/*.jsonl' --vad '../out/vad/*.jsonl' --tts '../out/tts-*/*.jsonl' \
+            --synth ../out/synth-* --out ../out/report
+          mkdir -p ../out/report/data && cp ../out/asr-*/*.jsonl ../out/vad/*.jsonl ../out/tts-*/*.jsonl ../out/report/data/ || true
+          for d in ../out/synth-*; do cp $d/manifest.jsonl ../out/report/data/manifest-$(basename $d).jsonl || true; done
+          cat ../out/report/report.md >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with: {name: voice-eval-report, path: out/report}

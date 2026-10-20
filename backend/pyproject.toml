@@ -14,12 +14,15 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pypdf>=4.2",
     "jieba>=0.42",
+    "pypinyin>=0.50",
 ]
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.2"]
 anthropic = ["anthropic>=0.70"]
 mcp = ["mcp>=2.0"]
+voice = ["funasr==1.4.16", "modelscope>=1.20", "faster-whisper>=1.2", "silero-vad>=6.0", "onnxruntime>=1.18",
+         "kokoro>=0.9.4", "misaki[zh]>=0.9.4", "soundfile>=0.12", "scipy>=1.11"]
 dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]

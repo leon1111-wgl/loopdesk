@@ -81,7 +81,13 @@ def get_principal(request: Request, db: Session = Depends(get_db)) -> Principal:
     header = request.headers.get("authorization", "")
     if not header.lower().startswith("bearer "):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "缺少登录凭证")
-    claims = _decode(header.split(" ", 1)[1].strip())
+    return principal_from_token(db, header.split(" ", 1)[1].strip())
+
+
+def principal_from_token(db: Session, token: str) -> Principal:
+    """The caller behind a bearer token; also used by the voice WebSocket, which receives the token
+    in its first message (a browser cannot set headers on a WebSocket, and URLs end up in logs)."""
+    claims = _decode(token)
     user = db.get(User, int(claims["sub"]))
     if user is None or user.tenant_id != claims.get("tid"):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在")

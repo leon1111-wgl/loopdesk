@@ -202,6 +202,7 @@ CUSTOMER_ROUTES = {
     ("GET", "/api/conversations/{conversation_id}/messages"),
     ("POST", "/api/conversations/{conversation_id}/stream"), ("POST", "/api/chat"),
     ("POST", "/api/messages/{message_id}/feedback"),
+    ("GET", "/api/voice/config"),  # whether the chat page shows the voice button
 }
 
 

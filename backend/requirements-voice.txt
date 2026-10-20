@@ -1,0 +1,14 @@
+# Speech engines for the voice channel (app/voice) and its evaluation (app/evals/voice).
+# Not needed for the tests or CI, which use fake engines. Install a CPU build of torch first on
+# machines without CUDA:  pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+# CosyVoice 2 runs as a sidecar in its own environment: backend/sidecars/cosyvoice_server.py.
+-r requirements.txt
+funasr==1.4.16          # Paraformer streaming + SeACo-Paraformer (hotwords), SenseVoice-Small
+modelscope>=1.20        # model download for FunASR
+faster-whisper>=1.2     # Whisper large-v3-turbo on CPU (CTranslate2)
+silero-vad>=6.0         # model VAD
+onnxruntime>=1.18
+kokoro>=0.9.4           # Kokoro-82M v1.1-zh, small multi-speaker TTS
+misaki[zh]>=0.9.4
+soundfile>=0.12
+scipy>=1.11
