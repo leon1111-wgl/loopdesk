@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from .. import audit
 from ..channels.wecom import notify_approval
 from ..config import Settings
-from ..guardrails.injection import detect_injection, unsafe_answer
+from ..guardrails.injection import Channels, detect_injection, unsafe_answer
 from ..guardrails.pii import PIIReport, mask_pii
 from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.breaker import CircuitBreaker
@@ -62,7 +62,7 @@ CONFLICT_TEXT = "抱歉，这个问题涉及的规定正在核对中。"
 # private WeChat or QQ, or asked for money (N-038). Said instead, before handing over.
 UNSAFE_TEXT = ("抱歉，这条回复涉及您的账户和资金安全，没有发出。请不要向任何人提供验证码、银行卡号或密码，"
                "也不要添加私人联系方式或转账。")
-UNSAFE_REASON = "回答里有索要验证码、银行卡号、密码，或私人联系方式、转账的内容，已拦截并转人工"
+UNSAFE_REASON = "回答里有索要验证码、银行卡号、密码，或官方渠道以外的链接、联系方式、转账要求，已拦截并转人工"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 REWRITE_BUDGET_SECONDS = 5.0
 TOOL_LABEL = {"request_refund": "退款"}
@@ -103,12 +103,16 @@ def _reviewed(ctx: ToolContext) -> list[str]:
     return [e.text for e in ctx.evidence if e.kind == "kb" and e.meta.get("reviewed")]
 
 
+def _channels(ctx: ToolContext) -> Channels:
+    return Channels.of(ctx.tenant.official_domains, ctx.tenant.official_contacts)
+
+
 def _unsafe_sources(ctx: ToolContext) -> list[dict[str, Any]]:
     """The knowledge in this run that says such things itself: what an administrator should read.
     Empty when the answer did not come from the knowledge base (the model, or the customer's prompt)."""
     return [{"document_id": e.meta.get("document_id"), "chunk_id": e.meta.get("chunk_id"), "title": e.title,
              "reviewed": bool(e.meta.get("reviewed"))}
-            for e in ctx.evidence if e.kind == "kb" and unsafe_answer(e.text)]
+            for e in ctx.evidence if e.kind == "kb" and unsafe_answer(e.text, None, _channels(ctx))]
 
 
 class _StreamGate:
@@ -134,7 +138,7 @@ class _StreamGate:
         return self._release(ready) if ready else ""
 
     def _release(self, ready: str) -> str:
-        if self.stopped or unsafe_answer(ready, _reviewed(self.ctx)):
+        if self.stopped or unsafe_answer(ready, _reviewed(self.ctx), _channels(self.ctx)):
             self.stopped = True
             return ""
         return ready
@@ -698,7 +702,7 @@ class AgentRuntime:
                 started: float, status: str | None = None, verify: bool = False,
                 extra_meta: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
         final_text = text or MODEL_ERROR_TEXT
-        reasons = unsafe_answer(final_text, _reviewed(ctx))
+        reasons = unsafe_answer(final_text, _reviewed(ctx), _channels(ctx))
         if reasons:  # never sent (N-038): a person takes over, and the dashboard names the sources
             with tracer.span("guardrail", "unsafe_answer", {"answer": final_text}) as span:
                 span.status = "error"

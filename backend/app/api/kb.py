@@ -7,11 +7,12 @@ from sqlalchemy.orm import Session
 
 from ..audit import changes, record, text_diff
 from ..db import get_db
-from ..guardrails.injection import REASON_TEXT
+from ..guardrails.injection import REASON_TEXT, links
 from ..models import Chunk, Document, KnowledgeConflict
 from ..rag.chunking import UnsupportedFile, parse_upload
 from ..rag.conflicts import detect_conflicts, open_conflict_counts
-from ..rag.ingest import StaleDocument, delete_document, edit_document, ingest_document, release_chunk
+from ..rag.ingest import (StaleDocument, delete_document, edit_document, ingest_document, release_chunk,
+                          tenant_channels)
 from ..rag.retrieval import cosine_gate, hybrid_search, index_manager, passes_gate
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
@@ -70,13 +71,30 @@ def get_document(document_id: int, principal: Principal = Depends(require_staff)
     }
 
 
+@router.get("/domains")
+def knowledge_domains(principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> list[dict]:
+    """The sites the tenant's knowledge links to, for setting its official channels: how many
+    chunks mention each, how many of those are held back, and whether it is official already."""
+    channels = tenant_channels(db, principal.tenant.id)
+    found: dict[str, dict] = {}
+    rows = db.execute(select(Chunk.text, Chunk.flagged_injection).where(Chunk.tenant_id == principal.tenant.id)).all()
+    for text, held in rows:
+        for host in {host for host, _ in links(text)}:
+            entry = found.setdefault(host, {"domain": host, "chunks": 0, "held_chunks": 0,
+                                            "official": channels.official_host(host)})
+            entry["chunks"] += 1
+            entry["held_chunks"] += bool(held)
+    return sorted(found.values(), key=lambda d: (d["official"], -d["chunks"], d["domain"]))
+
+
 @router.post("/chunks/{chunk_id}/release")
 def release_held_chunk(chunk_id: int, principal: Principal = Depends(require_admin),
                        db: Session = Depends(get_db)) -> dict:
     """An administrator read a chunk the scan held back and judged it harmless (review round 5,
     N-038): it is indexed again, the decision is audited with the reasons that were reviewed.
-    The output check still stops answers that ask customers for credentials, money or a private
-    contact, unless they quote this reviewed chunk word for word."""
+    The answer check still stops answers that ask customers for credentials or money unless they
+    quote a clause of this chunk word for word; links and contact accounts are never exempted this
+    way: if they are the tenant's, they belong in its official channels."""
     chunk = get_owned(db, Chunk, chunk_id, principal.tenant.id)
     document = db.get(Document, chunk.document_id)
     reasons = list(chunk.flag_reasons or [])

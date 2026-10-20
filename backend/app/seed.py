@@ -27,7 +27,7 @@ EVAL_DIR = BASE_DIR / "evals"
 TENANTS = [
     {
         "slug": "leon", "name": "Leon优选", "industry": "ecommerce", "auto_refund_limit": 50.0, "ticket_sla_hours": 24,
-        "return_window_days": 7, "quality_window_days": 15,
+        "return_window_days": 7, "quality_window_days": 15, "official_domains": ["leonshop.example"],
         "users": [
             ("admin@leon.demo", "Leon", "admin"),
             ("agent@leon.demo", "Mia", "agent"),
@@ -45,6 +45,7 @@ TENANTS = [
     },
     {
         "slug": "iris", "name": "Iris云文档", "industry": "saas", "auto_refund_limit": 0.0, "ticket_sla_hours": 8,
+        "official_domains": ["iriscloud.example"],
         "users": [
             ("admin@iris.demo", "Iris", "admin"),
             ("customer@iris.demo", "Noah", "customer"),
@@ -176,7 +177,8 @@ def seed_demo(db: Session, embedder: Embedder) -> bool:
     for spec in TENANTS:
         tenant = Tenant(slug=spec["slug"], name=spec["name"], industry=spec["industry"],
                         auto_refund_limit=spec["auto_refund_limit"], ticket_sla_hours=spec["ticket_sla_hours"],
-                        **{k: spec[k] for k in ("return_window_days", "quality_window_days") if k in spec})
+                        **{k: spec[k] for k in ("return_window_days", "quality_window_days", "official_domains",
+                                                "official_contacts") if k in spec})
         db.add(tenant)
         db.flush()
         users = {}

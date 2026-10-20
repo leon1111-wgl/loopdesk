@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
@@ -8,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..audit import changes, record
 from ..db import get_db
+from ..guardrails.injection import clean_domain
 from ..localtime import is_valid_zone
 from ..models import Tenant, User
 from ..security import (DUMMY_PASSWORD_HASH, Principal, create_token, get_principal, rate_limiter, require_admin,
@@ -29,6 +32,12 @@ class TenantPatch(BaseModel):
     quality_window_days: int | None = Field(default=None, ge=0, le=365)
     approval_admin_threshold: float | None = Field(default=None, ge=0, le=1000000)
     timezone: str | None = Field(default=None, max_length=64)
+    # Official channels (whole lists): sites answers may link to, accounts that are the tenant's.
+    official_domains: list[str] | None = Field(default=None, max_length=50)
+    official_contacts: list[str] | None = Field(default=None, max_length=50)
+
+
+CONTACT_RE = re.compile(r"^(?:[a-z][a-z0-9_-]{4,63}|\d{5,15})$")
 
 
 def user_out(user: User, tenant: Tenant) -> dict:
@@ -42,7 +51,9 @@ def tenant_out(tenant: Tenant) -> dict:
     return {"id": tenant.id, "slug": tenant.slug, "name": tenant.name, "industry": tenant.industry,
             "auto_refund_limit": tenant.auto_refund_limit, "ticket_sla_hours": tenant.ticket_sla_hours,
             "return_window_days": tenant.return_window_days, "quality_window_days": tenant.quality_window_days,
-            "approval_admin_threshold": tenant.approval_admin_threshold, "timezone": tenant.timezone}
+            "approval_admin_threshold": tenant.approval_admin_threshold, "timezone": tenant.timezone,
+            "official_domains": list(tenant.official_domains or []),
+            "official_contacts": list(tenant.official_contacts or [])}
 
 
 def _login_limiter(backend: str, db: Session):
@@ -141,11 +152,32 @@ def patch_tenant(body: TenantPatch, principal: Principal = Depends(require_admin
         if not is_valid_zone(body.timezone):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"未知的时区：{body.timezone}（请用 IANA 名称，例如 Asia/Shanghai）")
         tenant.timezone = body.timezone
-    diff = changes(before, tenant_out(tenant))
+    if body.official_domains is not None:
+        domains = []
+        for value in body.official_domains:
+            domain = clean_domain(value)
+            if not domain:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不是有效的域名：{value}（例如 leonshop.example，子域名自动包含）")
+            domains.append(domain)
+        tenant.official_domains = list(dict.fromkeys(domains))
+    if body.official_contacts is not None:
+        contacts = []
+        for value in body.official_contacts:
+            account = value.strip().lower()
+            if not CONTACT_RE.match(account):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"不是有效的账号：{value}（微信号、QQ 号或群号）")
+            contacts.append(account)
+        tenant.official_contacts = list(dict.fromkeys(contacts))
+    after = tenant_out(tenant)
+    diff = changes(before, after)
     if diff:  # risk limits and after-sales windows decide whether money moves without a person
         record(db, principal, "tenant.update", f"tenant:{tenant.id}", changes=diff)
     db.commit()
-    return tenant_out(tenant)
+    if any(key in diff for key in ("official_domains", "official_contacts")):
+        # What is outside the official channels changed: the knowledge is scanned again with them.
+        from ..ops.rescan_knowledge import rescan
+        after["rescan"] = rescan(db, tenant.id)
+    return after
 
 
 @router.delete("/admin/users/{user_id}/personal-data")

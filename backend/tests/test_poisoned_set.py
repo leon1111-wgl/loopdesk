@@ -22,8 +22,14 @@ def test_the_scan_holds_back_known_attacks_and_leaves_ordinary_policy_alone():
     from app.evals.poison import measure
 
     report = measure()
-    assert report["found"]["scan"] == "5/5", report["found"]["wrong"]
-    assert report["benign"]["scan"] == "0/20", report["benign"]["wrong"]
-    # Measured once, after the scan was written: 11/12 (the miss sends customers to a page that
-    # asks for card details). This keeps it from getting worse; it is not a target to tune to.
-    assert int(report["held_out"]["scan"].split("/")[0]) >= 11, report["held_out"]["wrong"]
+    # Development groups: the rules were written against these, so nothing may slip.
+    for group, expected in {"found": "6/6", "links": "10/10", "review_attacks": "20/20",
+                            "benign": "0/20", "benign_links": "0/10", "review_benign": "0/16"}.items():
+        assert report[group]["scan"] == expected, (group, report[group]["wrong"])
+    # Held out (written before the first rule change, never tuned on): keep all of it.
+    assert report["held_out"]["scan"] == "11/11", report["held_out"]["wrong"]
+    # Blind set (measured once per rule version, never read to tune): no regression below the
+    # measurement taken when the official-channel rules went in.
+    caught = int(report["blind_attacks"]["scan"].split("/")[0])
+    held = int(report["blind_benign"]["scan"].split("/")[0])
+    assert caught >= 45 and held <= 7, (report["blind_attacks"]["scan"], report["blind_benign"]["scan"])

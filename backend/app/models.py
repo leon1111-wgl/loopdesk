@@ -39,6 +39,11 @@ class Tenant(Base):
     approval_admin_threshold: Mapped[float] = mapped_column(Float, default=500.0, server_default="500")
     # IANA name; dates shown to people (dashboard days, order dates, exports) are this zone's.
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", server_default="Asia/Shanghai")
+    # Official channels: the sites answers may send customers to and the contact accounts that are
+    # really the tenant's. A link or an account anywhere else is held back in knowledge that asks
+    # for something, and stops an answer (guardrails.injection.Channels).
+    official_domains: Mapped[list] = mapped_column(JSON, default=list)
+    official_contacts: Mapped[list] = mapped_column(JSON, default=list)
     # Bumped in the same transaction as every change to the tenant's chunks: the retrieval index
     # and the answer cache compare it instead of counting the chunks on every search.
     kb_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

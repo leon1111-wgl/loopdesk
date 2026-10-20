@@ -208,6 +208,101 @@ interface Conflict {
   created_at: string;
 }
 
+interface Channels {
+  official_domains: string[];
+  official_contacts: string[];
+}
+
+interface DomainRow {
+  domain: string;
+  chunks: number;
+  held_chunks: number;
+  official: boolean;
+}
+
+const lines = (text: string) => text.split(/[\s,，、]+/).map((s) => s.trim()).filter(Boolean);
+
+// Links and contact accounts outside these are held back in knowledge that asks for something, and
+// stop an answer from reaching the customer (N-038 follow-up).
+function OfficialChannelsCard({ admin, onChange }: { admin: boolean; onChange: () => void }) {
+  const tenant = useLoad(() => api.get<Channels>("/api/tenant"));
+  const domains = useLoad(() => api.get<DomainRow[]>("/api/kb/domains"));
+  const [draft, setDraft] = useState<{ domains: string; contacts: string } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  if (!tenant.data) return null;
+  const current = tenant.data;
+
+  async function save(next: Channels) {
+    try {
+      const r = await api.patch<Channels & { rescan?: { held: number; released: number } }>("/api/tenant", next);
+      setDraft(null);
+      setError(null);
+      setMessage(r.rescan ? `已保存，并按新的官方渠道重新扫描知识库：新扣下 ${r.rescan.held} 个片段，放回 ${r.rescan.released} 个。` : "已保存。");
+      tenant.reload();
+      domains.reload();
+      onChange();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+  const outside = (domains.data ?? []).filter((d) => !d.official);
+
+  return (
+    <div className="card stack">
+      <div className="row">
+        <h3>官方渠道</h3>
+        <span className="faint small">回答里只允许出现这些网站的链接和这些客服账号；其他链接、账号所在的回答会被拦下转人工，知识库里带着“填写、领取、核验”等要求的会被扣下复核。</span>
+      </div>
+      <ErrorBanner error={error} />
+      {message && <div className="notice" role="status">{message}</div>}
+      {draft ? (
+        <div className="stack">
+          <label className="stack small">官方域名（含子域名，每行一个）
+            <textarea rows={3} value={draft.domains} onChange={(e) => setDraft({ ...draft, domains: e.target.value })} />
+          </label>
+          <label className="stack small">官方客服账号（微信号、QQ 号或群号，每行一个）
+            <textarea rows={2} value={draft.contacts} onChange={(e) => setDraft({ ...draft, contacts: e.target.value })} />
+          </label>
+          <div className="row">
+            <button className="btn btn-primary btn-sm" onClick={() => save({ official_domains: lines(draft.domains), official_contacts: lines(draft.contacts) })}>
+              <Check size={14} /> 保存并重新扫描
+            </button>
+            <button className="btn btn-sm" onClick={() => setDraft(null)}>取消</button>
+          </div>
+        </div>
+      ) : (
+        <div className="stack small">
+          <div>域名：{current.official_domains.length ? current.official_domains.join("、") : <span className="faint">未设置（回答里的任何链接都会被拦下）</span>}</div>
+          <div>客服账号：{current.official_contacts.length ? current.official_contacts.join("、") : <span className="faint">未设置</span>}</div>
+          {admin && (
+            <button className="btn btn-sm" style={{ width: "fit-content" }}
+              onClick={() => setDraft({ domains: current.official_domains.join("\n"), contacts: current.official_contacts.join("\n") })}>
+              <Pencil size={14} /> 编辑
+            </button>
+          )}
+        </div>
+      )}
+      {outside.length > 0 && (
+        <div className="stack small">
+          <span className="faint">知识库里出现的其他网站（确认是自己或可信合作方的，再加入官方域名）：</span>
+          {outside.map((d) => (
+            <div key={d.domain} className="row">
+              <code>{d.domain}</code>
+              <span className="faint">{d.chunks} 个片段{d.held_chunks ? `，其中 ${d.held_chunks} 个待复核` : ""}</span>
+              {admin && (
+                <button className="btn btn-sm" onClick={() => save({ ...current, official_domains: [...current.official_domains, d.domain] })}>
+                  加入官方域名
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ConflictsCard({ admin, onChange }: { admin: boolean; onChange: () => void }) {
   const { data, reload } = useLoad(() => api.get<Conflict[]>("/api/kb/conflicts"));
   if (!data || data.length === 0) return null;
@@ -270,7 +365,9 @@ export default function KnowledgePage() {
   }
   async function release(chunk: DocChunk) {
     const reasons = chunk.flag_reasons.map((r) => r.text).join("、");
-    if (!window.confirm(`放行后这个片段会进入检索，顾客的问题可能用到它。确认已经读过全文，“${reasons}”是误判吗？`)) return;
+    const note = chunk.flag_reasons.some((r) => r.code === "outside_link" || r.code === "private_contact")
+      ? "\n\n注意：放行不会让回答里的站外链接或客服账号通过；如果它们是你们自己的，请加到“官方渠道”。" : "";
+    if (!window.confirm(`放行后这个片段会进入检索，顾客的问题可能用到它。确认已经读过全文，“${reasons}”是误判吗？${note}`)) return;
     setDetail(await api.post<DocDetail>(`/api/kb/chunks/${chunk.id}/release`, {}));
     changed();
   }
@@ -309,6 +406,7 @@ export default function KnowledgePage() {
           </tbody>
         </table>
       </div>
+      <OfficialChannelsCard key={`channels-${revision}`} admin={admin} onChange={changed} />
       <ConflictsCard key={revision} admin={admin} onChange={reload} />
       <RetrievalDebugger />
       {adding && <AddDocModal onClose={() => setAdding(false)} onDone={() => { setAdding(false); changed(); }} />}

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from ..guardrails.injection import scan_knowledge
+from ..guardrails.injection import NO_CHANNELS, Channels, scan_knowledge
 from ..llm.base import Embedder
 from ..models import Chunk, Document, KnowledgeConflict, Tenant
 from .chunking import chunk_markdown, chunk_pages
@@ -47,10 +47,11 @@ def ingest_document(
         db.execute(delete(Chunk).where(Chunk.document_id == document.id))
 
     drafts = chunk_pages(pages) if pages else chunk_markdown(content)
+    channels = tenant_channels(db, tenant_id)
     vectors = embedder.embed([f"{d.heading}\n{d.text}" for d in drafts]) if drafts else []
     flagged = 0
     for ord_, (draft, vector) in enumerate(zip(drafts, vectors)):
-        reasons = scan_chunk(draft.heading, draft.text, visibility)
+        reasons = scan_chunk(draft.heading, draft.text, visibility, channels)
         flagged += bool(reasons)
         db.add(
             Chunk(
@@ -74,11 +75,16 @@ def ingest_document(
     return document
 
 
-def scan_chunk(heading: str, text: str, visibility: str) -> list[str]:
+def tenant_channels(db: Session, tenant_id: int) -> Channels:
+    tenant = db.get(Tenant, tenant_id)
+    return Channels.of(tenant.official_domains, tenant.official_contacts) if tenant is not None else NO_CHANNELS
+
+
+def scan_chunk(heading: str, text: str, visibility: str, channels: Channels = NO_CHANNELS) -> list[str]:
     """Why a chunk is held back for review (guardrails.injection rule names); empty to index it.
     Heading and text are scanned apart, so no match straddles the two."""
     public = visibility == "public"
-    return list(dict.fromkeys(scan_knowledge(heading, public) + scan_knowledge(text, public)))
+    return list(dict.fromkeys(scan_knowledge(heading, public, channels) + scan_knowledge(text, public, channels)))
 
 
 def release_chunk(db: Session, chunk: Chunk, reviewer_id: int) -> bool:

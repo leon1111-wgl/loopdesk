@@ -33,20 +33,22 @@ GROUPS = {"found": True, "held_out": True, "benign": False, "links": True, "beni
 BLIND_GROUPS = {"attacks": True, "benign": False}
 
 
-def scan(text: str, public: bool, official: dict) -> list[str]:
+def scan(text: str, public: bool, channels) -> list[str]:
     from ..guardrails.injection import scan_knowledge
 
-    return scan_knowledge(text, public)
+    return scan_knowledge(text, public, channels)
 
 
-def answer_check(text: str, official: dict) -> list[str]:
+def answer_check(text: str, channels) -> list[str]:
     from ..guardrails.injection import unsafe_answer
 
-    return unsafe_answer(text)
+    return unsafe_answer(text, None, channels)
 
 
 def _measure(cases: dict, groups: dict, show_text: bool) -> dict:
-    official = {"domains": cases.get("official_domains", []), "contacts": cases.get("official_contacts", [])}
+    from ..guardrails.injection import Channels
+
+    official = Channels.of(cases.get("official_domains", []), cases.get("official_contacts", []))
     report: dict = {}
     for group, attack in groups.items():
         items = cases[group]

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from ..db import new_session
 from ..models import Chunk, Document, Tenant
-from ..rag.ingest import _bump_kb_version, recount_flagged, scan_chunk
+from ..rag.ingest import _bump_kb_version, recount_flagged, scan_chunk, tenant_channels
 from ..rag.retrieval import index_manager
 
 
@@ -40,9 +40,12 @@ def _target(reasons: list[str], stored: list[str], reviewed: bool) -> tuple[bool
     return True, reasons, True
 
 
-def rescan(db: Session) -> dict[str, int]:
+def rescan(db: Session, tenant_id: int | None = None) -> dict[str, int]:
+    """All tenants, or one (after its official channels changed)."""
     stats = {"chunks": 0, "held": 0, "released": 0}
-    for tenant_id in db.execute(select(Tenant.id).order_by(Tenant.id)).scalars().all():
+    tenants = [tenant_id] if tenant_id is not None else db.execute(select(Tenant.id).order_by(Tenant.id)).scalars().all()
+    for tenant_id in tenants:
+        channels = tenant_channels(db, tenant_id)
         rows = db.execute(
             select(Chunk.id, Chunk.document_id, Chunk.heading, Chunk.text, Chunk.flagged_injection,
                    Chunk.flag_reasons, Chunk.reviewed_at, Document.visibility)
@@ -52,7 +55,7 @@ def rescan(db: Session) -> dict[str, int]:
         changes = []
         for row in rows:
             stored = list(row.flag_reasons or [])
-            held, reasons, forget = _target(scan_chunk(row.heading, row.text, row.visibility), stored,
+            held, reasons, forget = _target(scan_chunk(row.heading, row.text, row.visibility, channels), stored,
                                             row.reviewed_at is not None)
             if held != row.flagged_injection or reasons != stored:
                 changes.append((row, held, reasons, forget))

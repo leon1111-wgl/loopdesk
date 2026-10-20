@@ -39,15 +39,16 @@ def _plant(text: str, title: str = "供应商来稿-蓝牙耳机售后说明") -
 def test_the_output_check_reads_requests_not_warnings():
     assert unsafe_answer("请提供您的银行卡号和短信验证码，我们为您办理退款[1]。") == ["credential_request"]
     assert unsafe_answer("请添加专员微信 leon_vip_888 办理。") == ["private_contact"]
-    assert unsafe_answer("办理前请先转账押金 99 元。") == ["transfer_request"]
+    assert unsafe_answer("办理退款前请先转账押金 99 元。") == ["transfer_request"]
+    assert unsafe_answer("设备租赁需缴纳押金 200 元，归还后原路退还。") == []  # paying to get money is the scam
     assert unsafe_answer("我们不会索要您的验证码，请勿告诉任何人。") == []
     assert unsafe_answer("退款将原路退回您的银行卡，预计3-7个工作日到账[1]。") == []
 
 
 def test_only_a_word_for_word_quote_of_reviewed_knowledge_is_let_through():
-    reviewed = ["供应商入驻需缴纳 5000 元保证金，合作结束后无息退还。"]
-    assert unsafe_answer("供应商入驻需缴纳 5000 元保证金[1]。", reviewed) == []
-    assert unsafe_answer("办理退款前请先缴纳 99 元保证金。", reviewed) == ["transfer_request"]
+    reviewed = ["海外直邮商品清关时，海关可能要求提供身份证正反面照片，请按短信提示在海关官方渠道上传。"]
+    assert unsafe_answer("海关可能要求提供身份证正反面照片[1]。", reviewed) == []
+    assert unsafe_answer("请提供身份证正反面照片以便办理退款。", reviewed) == ["credential_request"]
 
 
 def test_a_phishing_answer_is_never_shown_and_a_person_takes_over(client, login, ask):
@@ -73,15 +74,15 @@ def test_a_phishing_answer_is_never_shown_and_a_person_takes_over(client, login,
 
 def test_an_answer_may_quote_what_an_administrator_released(client, login, ask):
     admin = login("admin@leon.demo")
+    customs = "跨境直邮\n\n海外直邮商品清关时，海关可能要求提供身份证正反面照片，请按短信提示在海关官方渠道上传。"
     doc = client.post("/api/kb/documents/text", headers=admin, json={
-        "title": "官方渠道", "content": "官方渠道\n\n关注官方微信 leonshop2026 可以第一时间收到发货通知。",
-        "visibility": "public"}).json()
+        "title": "跨境直邮", "content": customs, "visibility": "public"}).json()
     chunk = next(c for c in client.get(f"/api/kb/documents/{doc['id']}", headers=admin).json()["chunks"]
                  if c["flagged_injection"])
     assert client.post(f"/api/kb/chunks/{chunk['id']}/release", headers=admin).status_code == 200
-    _, events = ask(login("customer@leon.demo"), "有官方微信吗")
+    _, events = ask(login("customer@leon.demo"), "海外直邮清关需要身份证照片吗")
     final = by_type(events, "final")[0]["text"]
-    assert "leonshop2026" in final and not by_type(events, "answer_replaced")
+    assert "身份证正反面照片" in final and not by_type(events, "answer_replaced"), final
 
 
 def test_a_degraded_answer_quoting_the_knowledge_is_checked_too(client, login, ask, monkeypatch):
@@ -136,6 +137,7 @@ def test_a_request_split_across_lines_is_not_streamed():
 
     class Context:
         evidence: list = []
+        tenant = type("Tenant", (), {"official_domains": [], "official_contacts": []})()
 
     gate = _StreamGate(Context())
     shown = "".join(gate.feed(piece) for piece in ["您好。", "请把您的银行卡号\n", "发给我。", "谢谢。"]) + gate.flush()
