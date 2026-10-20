@@ -3,6 +3,7 @@ endpointing, transcript handling, the spoken confirmation in front of money tool
 and barge-in keeping only what the customer heard."""
 
 import json
+import time
 from contextlib import contextmanager
 
 import numpy as np
@@ -136,10 +137,16 @@ def voice(client, login):
     set_engines(None, None)
 
 
-def say(ws, speech=0.8, pause=0.9):
+def say(ws, speech=0.8, pause=0.9, pace=0.0):
+    """Send speech and a pause in 100 ms frames; ``pace`` seconds between frames (a browser sends ten a
+    second; tests that are about the backlog send them faster than that, but not in one burst)."""
+    import time as _time
+
     audio = np.concatenate([tone(speech), silence(pause)])
     for start in range(0, len(audio), 1600):
         ws.send_bytes(audio[start:start + 1600].tobytes())
+        if pace:
+            _time.sleep(pace)
 
 
 def until(ws, kind, *, play=True, stop_at=None):
@@ -463,10 +470,11 @@ def test_a_slow_answer_does_not_cut_the_customer_off(voice, monkeypatch):
     monkeypatch.setattr(get_services().provider, "stream_delay", 0.15)
     voice.asr.transcripts += ["怎么取消自动续费", "会员退款多久能到账"]
     with voice.connect() as ws:
-        say(ws)
-        say(ws, speech=0.8, pause=0.9)  # a second sentence while the first answer is still being written
-        for _ in range(40):
+        say(ws, pace=0.01)
+        say(ws, pace=0.01)  # a second sentence while the first answer is still being written
+        for _ in range(40):  # the browser keeps streaming: 40 frames in 0.4 s, ten times real time
             ws.send_bytes(silence(0.1).tobytes())
+            time.sleep(0.01)
         until_open(ws, "turn_saved")
         until_open(ws, "turn_saved")
 
