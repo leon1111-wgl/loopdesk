@@ -13,6 +13,7 @@ from ..agent.outcome import is_refusal
 from ..models import Approval, EvalRun, Feedback, KnowledgeConflict, Message, Run, Span, Ticket
 from ..security import Principal, require_staff
 from .common import as_utc
+from .tickets import open_ticket_stats
 
 router = APIRouter(tags=["metrics"])
 
@@ -164,6 +165,7 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         "pending_approvals": pending,
         "handoff_queue": _handoff_stats(db, tenant_id, since),
         "knowledge_conflicts": _conflict_backlog(db, tenant_id, run_ids),
+        "tickets": open_ticket_stats(db, principal.tenant),
         "latency_p50_ms": _pct(latencies, 0.5),
         "latency_p95_ms": _pct(latencies, 0.95),
         "tokens": sum(r.prompt_tokens + r.completion_tokens for r in runs),

@@ -323,6 +323,7 @@ def create_ticket(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         ticket = Ticket(
             tenant_id=ctx.tenant.id, conversation_id=ctx.conversation_id, customer_id=ctx.user.id,
             title=title, description=description, priority=priority,
+            due_at=datetime.now(timezone.utc) + timedelta(hours=sla),  # what the customer is told below
         )
         ctx.db.add(ticket)
         ctx.db.commit()

@@ -10,6 +10,7 @@ import FlywheelPage from "./pages/FlywheelPage";
 import HandoffsPage from "./pages/HandoffsPage";
 import KnowledgePage from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
+import TicketsPage from "./pages/TicketsPage";
 import TracesPage from "./pages/TracesPage";
 
 export default function App() {
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/approvals" element={<ApprovalsPage />} />
             <Route path="/handoffs" element={<HandoffsPage />} />
+            <Route path="/tickets" element={<TicketsPage />} />
             <Route path="/knowledge" element={<KnowledgePage />} />
             <Route path="/traces" element={<TracesPage />} />
             <Route path="/traces/:runId" element={<TracesPage />} />

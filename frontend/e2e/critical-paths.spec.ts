@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-// The three roles' critical paths, each crossing from one role to another the way the
+// The roles' critical paths, each crossing from one role to another the way the
 // demo is meant to be used. Every page also fails the test on a console error, an
 // uncaught exception or a 5xx from the API, so a page that "renders" but is broken
 // underneath does not pass. All accounts and orders are the synthetic demo data.
@@ -86,4 +86,25 @@ test("customer asks for a person; the agent replies from the handoff queue", asy
   // The customer's page polls while a person is involved.
   await expect(jack.locator(".msg.agent").getByText("您好，我是 Mia，这就帮您看。")).toBeVisible({ timeout: 20_000 });
   await expect(jack.getByRole("status").filter({ hasText: "人工客服 Mia 正在为您服务" })).toBeVisible();
+});
+
+test("the agent opens a ticket; staff claim and close it; the customer reads the outcome", async ({ browser }) => {
+  const emma = await signIn(browser, "customer@leon.demo");
+  await ask(emma, "我买的扫地机器人坏了开不了机，马上给我处理！");
+  await expect(emma.locator(".msg.assistant").last()).toContainText(/已为您创建工单 #\d+/);
+
+  const mia = await signIn(browser, "agent@leon.demo");
+  await mia.goto("/tickets");
+  const row = mia.getByRole("row").filter({ hasText: "扫地机器人" });
+  await row.getByRole("button", { name: "接手" }).click();
+  await expect(row).toContainText("处理中");
+  await row.getByRole("button", { name: "处理完成" }).click();
+  await mia.getByPlaceholder("例如：已安排上门检修，明天上午到达").fill("已安排上门检修，明天上午 10 点前到达。");
+  await mia.getByRole("button", { name: "完成并告知顾客" }).click();
+  await expect(mia.getByText("没有待处理的工单")).toBeVisible();
+
+  // Tickets take hours, so the customer's page does not poll for them: the outcome is in the
+  // conversation the next time they open it.
+  await emma.reload();
+  await expect(emma.locator(".msg.agent").last()).toContainText("已安排上门检修，明天上午 10 点前到达。");
 });

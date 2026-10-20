@@ -14,6 +14,7 @@ interface Overview {
   pending_approvals: number;
   handoff_queue: { waiting: number; in_progress: number; longest_wait_s: number; handoffs: number; avg_first_response_s: number | null };
   knowledge_conflicts: { open: number; oldest_open_s: number; handoffs: number };
+  tickets: { open: number; overdue: number };
   latency_p50_ms: number;
   latency_p95_ms: number;
   tokens: number;
@@ -97,6 +98,12 @@ export default function DashboardPage() {
       <ErrorBanner error={error} />
       {!data ? <Empty>加载中…</Empty> : (
         <>
+          {data.tickets.overdue > 0 && (
+            <div className="error-banner" role="alert">
+              {`有 ${data.tickets.overdue} 张工单已超过对顾客承诺的响应时限（待处理共 ${data.tickets.open} 张）。`}
+              <Link to="/tickets">去处理 →</Link>
+            </div>
+          )}
           {data.knowledge_conflicts.open > 0 && (
             <div className="notice" role="status">
               {`知识库有 ${data.knowledge_conflicts.open} 处冲突待核对（最久 ${duration(data.knowledge_conflicts.oldest_open_s)}）。`

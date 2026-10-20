@@ -235,6 +235,10 @@ class Ticket(Base):
     assignee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The response time promised to the customer when the issue ticket was opened (not recomputed
+    # from today's tenant settings), and what was done about it.
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolution: Mapped[str] = mapped_column(Text, default="", server_default="")
 
 
 class Feedback(Base):

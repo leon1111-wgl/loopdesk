@@ -17,7 +17,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 from fastapi.staticfiles import StaticFiles
 
-from .api import approvals, audit, auth, channels, chat, evals, exports, flywheel, handoffs, kb, metrics, traces
+from .api import (approvals, audit, auth, channels, chat, evals, exports, flywheel, handoffs, kb, metrics, tickets,
+                  traces)
 from .config import Settings, get_settings, set_settings
 from .db import head_revision, init_engine, new_session, prepare_database
 from .observability import configure_logging
@@ -81,7 +82,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     configure_logging(settings.log_format, settings.log_level)
     install_observability(app)
     prewarm.start(settings.prewarm_index)  # after seeding, so the demo's documents are included
-    for module in (auth, chat, kb, approvals, handoffs, traces, flywheel, evals, metrics, exports, channels, audit):
+    for module in (auth, chat, kb, approvals, handoffs, tickets, traces, flywheel, evals, metrics, exports, channels,
+                   audit):
         app.include_router(module.router)
 
     @app.get("/api/ready", tags=["meta"])
