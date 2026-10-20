@@ -46,7 +46,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 <td><img src="docs/assets/audit.png" alt="操作审计"><br><b>操作审计</b>：谁在什么时候改了风控额度、知识文档、补丁和评测用例，谁批了哪笔退款、导出了什么；配置记改前改后，文档记修改的行</td>
 </tr>
 <tr>
-<td><img src="docs/assets/dashboard.png" alt="运营看板"><br><b>运营看板</b>：自助解决率、转人工率、拒答率（都按会话计算：拒答和差评不算解决）、证据覆盖率、缓存命中率、Prompt 版本对比，按租户时区的自然日统计，支持导出 CSV</td>
+<td><img src="docs/assets/dashboard.png" alt="运营看板"><br><b>运营看板</b>：自助解决率、转人工率、拒答率（都按会话计算：拒答、差评和出错不算解决）、出错率与最近 15 分钟的故障提示、证据覆盖率、缓存命中率、Prompt 版本对比，按租户时区的自然日统计，支持导出 CSV</td>
 <td><img src="docs/assets/dashboard-dark.png" alt="深色模式"><br><b>深色模式</b>：跟随系统，也可以手动切换</td>
 </tr>
 <tr>

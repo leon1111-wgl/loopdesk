@@ -1,10 +1,14 @@
 """Circuit breaker per model, per process (review round 4, N-031).
 
-Closed: calls go through and failures are counted in a sliding window. ``llm_breaker_failures``
-failures within ``llm_breaker_window_seconds`` open it: the model is not called for
-``llm_breaker_cooldown_seconds``, so while a model is down each customer gets the degraded answer
-at once instead of waiting out retries and timeouts. After the cool-down one trial call goes
+Closed: calls go through. ``llm_breaker_failures`` consecutive failures open it: the model is not
+called for ``llm_breaker_cooldown_seconds``, so while a model is down each customer gets the
+degraded answer at once instead of waiting out retries and timeouts. Then one trial call goes
 through (half-open): success closes the breaker, failure opens it again.
+
+Consecutive, not "N within a time window": a model that hangs fails once per run deadline (45 s)
+and light traffic spreads failures out, so a 30-second window never filled and every customer kept
+waiting (found by pointing a server at an unreachable model). Any success resets the count, so
+occasional failures among successes never open it.
 
 Each worker process learns on its own; with N workers a dead model costs up to N times the
 threshold before every worker stops calling it, which is cheap compared with sharing state.
@@ -21,7 +25,7 @@ class CircuitBreaker:
         self.settings = settings  # read on every call, so thresholds can be changed at run time
         self.clock = clock
         self._lock = threading.Lock()
-        self._failures: dict[str, list[float]] = {}
+        self._failures: dict[str, int] = {}
         self._opened: dict[str, float] = {}
         self._trial: set[str] = set()
 
@@ -39,7 +43,6 @@ class CircuitBreaker:
 
     def record(self, key: str, ok: bool) -> None:
         with self._lock:
-            now = self.clock()
             if ok:
                 self._failures.pop(key, None)
                 self._opened.pop(key, None)
@@ -47,14 +50,13 @@ class CircuitBreaker:
                 return
             if key in self._trial:  # the trial failed: open for another cool-down
                 self._trial.discard(key)
-                self._opened[key] = now
+                self._opened[key] = self.clock()
                 return
-            window = self.settings.llm_breaker_window_seconds
-            recent = [t for t in self._failures.get(key, []) if now - t < window] + [now]
-            if 0 < self.settings.llm_breaker_failures <= len(recent):
-                self._opened[key] = now
-                recent = []
-            self._failures[key] = recent
+            failures = self._failures.get(key, 0) + 1
+            if 0 < self.settings.llm_breaker_failures <= failures:
+                self._opened[key] = self.clock()
+                failures = 0
+            self._failures[key] = failures
 
     def state(self, key: str) -> str:
         with self._lock:

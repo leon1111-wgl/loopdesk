@@ -16,6 +16,7 @@ interface Overview {
   handoff_queue: { waiting: number; in_progress: number; longest_wait_s: number; handoffs: number; avg_first_response_s: number | null };
   knowledge_conflicts: { open: number; oldest_open_s: number; handoffs: number };
   tickets: { open: number; overdue: number };
+  failures: { runs: number; rate: number | null; last_15m: number; kinds: Record<string, number>; last_error: string | null; last_kind: string | null };
   latency_p50_ms: number;
   latency_p95_ms: number;
   tokens: number;
@@ -69,6 +70,12 @@ function DailyChart({ daily }: { daily: Overview["daily"] }) {
   );
 }
 
+// Why runs hit an error (N-037). Customers were served either way (quoted policy or a person, N-031).
+const FAILURE_KIND: Record<string, string> = {
+  unavailable: "模型服务不可用", rejected: "请求被拒绝（多半是配置或参数）", timeout: "超时",
+  breaker: "熔断中", disconnected: "顾客断开", other: "其他",
+};
+
 // The dashboard's days are the tenant's calendar days (N-024); say which zone that is.
 function zoneLabel(zone: string) {
   return zone === "Asia/Shanghai" ? "北京时间" : zone;
@@ -104,6 +111,15 @@ export default function DashboardPage() {
       <ErrorBanner error={error} />
       {!data ? <Empty>加载中…</Empty> : (
         <>
+          {data.failures.last_15m > 0 && (
+            <div className="error-banner" role="alert">
+              {`最近 15 分钟有 ${data.failures.last_15m} 次运行出错（`
+                + Object.entries(data.failures.kinds).map(([kind, n]) => `${FAILURE_KIND[kind] ?? kind} ${n}`).join("、")
+                + `），顾客收到的是引用原文的回复或已转人工，这些会话不计入自助解决。`
+                + `最近一次：${FAILURE_KIND[data.failures.last_kind ?? ""] ?? "其他"}（${data.failures.last_error ?? "—"}）。`}
+              <Link to="/traces">查看链路 →</Link>
+            </div>
+          )}
           {data.tickets.overdue > 0 && (
             <div className="error-banner" role="alert">
               {`有 ${data.tickets.overdue} 张工单已超过对顾客承诺的响应时限（待处理共 ${data.tickets.open} 张）。`}
@@ -126,7 +142,8 @@ export default function DashboardPage() {
             <Kpi label="待审批 / 等待人工"
               value={<><Link to="/approvals">{data.pending_approvals}</Link> / <Link to="/handoffs">{data.handoff_queue.waiting}</Link></>}
               sub={`接待中 ${data.handoff_queue.in_progress} · 最长等待 ${duration(data.handoff_queue.longest_wait_s)} · 首次响应 ${duration(data.handoff_queue.avg_first_response_s)}`} />
-            <Kpi label="延迟 p50 / p95" value={`${ms(data.latency_p50_ms)} / ${ms(data.latency_p95_ms)}`} />
+            <Kpi label="延迟 p50 / p95" value={`${ms(data.latency_p50_ms)} / ${ms(data.latency_p95_ms)}`}
+              sub={`出错 ${pct(data.failures.rate)}（${data.failures.runs} 次）· 近 15 分钟 ${data.failures.last_15m} 次`} />
             <Kpi label="Token / 估算成本" value={data.tokens.toLocaleString()} sub={`¥${data.cost.toFixed(4)}`} />
             <Kpi label="用户反馈" value={(data.feedback.up ?? 0) + (data.feedback.down ?? 0) + (data.feedback.correction ?? 0)}
               sub={`有用 ${data.feedback.up ?? 0} · 无用 ${data.feedback.down ?? 0} · 纠错 ${data.feedback.correction ?? 0}`} />

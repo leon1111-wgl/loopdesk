@@ -13,6 +13,7 @@ from ..agent.outcome import is_refusal
 from ..models import Approval, EvalRun, Feedback, KnowledgeConflict, Message, Run, Span, Ticket
 from ..security import Principal, require_staff
 from ..localtime import start_of_day, zone_of
+from ..llm.errors import error_kind
 from .common import as_utc
 from .tickets import open_ticket_stats
 
@@ -111,13 +112,31 @@ def _conversation_outcomes(db: Session, runs: list[Run], tenant_id: int, since: 
         was_refused = any(is_refusal(r.output_text) for r in items if r.status == "completed")
         handed += handed_off
         refused += was_refused
-        resolved += (not handed_off and not was_refused and key not in unhappy and items[-1].status == "completed")
+        # A run that hit an error is not self-service, even when the customer got the quoted policy
+        # (N-031): otherwise an outage would raise the resolution rate.
+        resolved += (not handed_off and not was_refused and key not in unhappy and items[-1].status == "completed"
+                     and not any(r.error for r in items))
     n = len(groups)
     return {
         "conversations": n,
         "resolution_rate": round(resolved / n, 4) if n else None,
         "handoff_rate": round(handed / n, 4) if n else None,
         "refusal_rate": round(refused / n, 4) if n else None,
+    }
+
+
+def _failures(runs: list[Run], now: datetime) -> dict:
+    """Runs that hit an error (N-037). Since N-031 a customer gets the quoted policy or a person when
+    the model fails, so the run is not "failed" and only this shows the outage: how many, how many in
+    the last 15 minutes (the alert), and why."""
+    errors = sorted((r for r in runs if r.error), key=lambda r: as_utc(r.created_at))
+    return {
+        "runs": len(errors),
+        "rate": round(len(errors) / len(runs), 4) if runs else None,
+        "last_15m": sum(1 for r in errors if now - as_utc(r.created_at) <= timedelta(minutes=15)),
+        "kinds": dict(Counter(error_kind(r.error) for r in errors)),
+        "last_error": errors[-1].error[:200] if errors else None,
+        "last_kind": error_kind(errors[-1].error) if errors else None,
     }
 
 
@@ -169,6 +188,7 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         "handoff_queue": _handoff_stats(db, tenant_id, since),
         "knowledge_conflicts": _conflict_backlog(db, tenant_id, run_ids),
         "tickets": open_ticket_stats(db, principal.tenant),
+        "failures": _failures(runs, datetime.now(timezone.utc)),
         "latency_p50_ms": _pct(latencies, 0.5),
         "latency_p95_ms": _pct(latencies, 0.95),
         "tokens": sum(r.prompt_tokens + r.completion_tokens for r in runs),
@@ -199,4 +219,9 @@ def prometheus(db: Session = Depends(get_db)) -> str:
     lines += ["# HELP loopdesk_tokens_total Tokens consumed", "# TYPE loopdesk_tokens_total counter"]
     lines.append(f'loopdesk_tokens_total{{type="prompt"}} {sum(p or 0 for _, _, p, _ in rows)}')
     lines.append(f'loopdesk_tokens_total{{type="completion"}} {sum(c or 0 for _, _, _, c in rows)}')
+    # Runs that hit an error, whatever their status: with the fallback (N-031) a model outage ends in
+    # quoted policy or a handoff, not "failed". Alert on its rate (docs/DEPLOYMENT.md).
+    errors = db.execute(select(func.count(Run.id)).where(Run.is_eval.is_(False), Run.error.isnot(None))).scalar_one()
+    lines += ["# HELP loopdesk_run_errors_total Agent runs that hit an error (model, timeout, crash)",
+              "# TYPE loopdesk_run_errors_total counter", f"loopdesk_run_errors_total {errors}"]
     return "\n".join(lines) + "\n"

@@ -31,6 +31,17 @@ docker compose up --build
 
 - `/api/health`：存活检查，只确认进程在运行。
 - `/api/ready`：就绪检查，确认数据库可连接、表结构已经迁移到最新版本、检索索引已在后台预热完成，否则返回 503。预热让重启后的第一位顾客不必等索引构建（5 万片段约 9 秒）；`LOOPDESK_PREWARM_INDEX=0` 可以关闭，关闭后第一次检索时构建。Dockerfile 中的 `HEALTHCHECK` 和 Kubernetes 的 readinessProbe 都应该指向它。
+- 模型故障不影响就绪：模型挂了，系统照样能转人工、引用政策原文回答（见 ARCHITECTURE“模型故障”），所以 `/api/ready` 不检查模型。故障要靠告警发现：看板顶部会提示最近 15 分钟出错的运行数和原因（模型不可用、请求被拒、超时、熔断中）；Prometheus 的 `loopdesk_run_errors_total` 统计所有出错的运行（不管顾客最后拿到的是降级回复还是人工），可以这样告警：
+
+  ```yaml
+  - alert: LoopDeskModelErrors
+    expr: increase(loopdesk_run_errors_total[5m]) > 5
+    for: 2m
+    annotations:
+      summary: "LoopDesk 运行持续出错，顾客正在收到降级回复或被转人工"
+  ```
+
+  “请求被拒”（4xx）多半是配置或参数问题（密钥、模型名、`stream_options`），重试和等待都没用，要直接修配置。
 - 每个响应都带 `X-Request-ID`。用户报障时只要提供这个 ID，就可以在日志中找到对应的请求，在链路追踪中找到对应的 Agent 运行（trace 详情里会显示 request_id）。
 
 ## 审计记录的外部锚点
@@ -105,7 +116,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.retention --
 | `ANSWER_CACHE_TTL_HOURS` | `24` | 答案缓存的有效期，设为 0 即关闭；知识或配置变化时缓存会自动失效 |
 | `REFUND_WINDOW_DAYS` / `REFUND_WINDOW_MAX_COUNT` / `REFUND_WINDOW_MAX_AMOUNT` | `30` / `3` / `200` | 累计退款风控：窗口天数内同一顾客的退款笔数或累计金额超过上限时，小额退款也转人工审核 |
 | `RUN_DEADLINE_SECONDS` | `45` | 整次运行的时间预算（所有步骤、两档模型、所有重试加起来），也是模型挂起时顾客最长的等待时间。每一步开始前检查；模型调用的超时被压到剩余时间，过了期限不再重试。超时后转人工（建工单、告知排队位次），链路里记录 `run_deadline`。设为 0 关闭 |
-| `LLM_BREAKER_FAILURES` | `5` | 每个模型的熔断阈值：`LLM_BREAKER_WINDOW_SECONDS`（默认 30）秒内失败这么多次就打开，`LLM_BREAKER_COOLDOWN_SECONDS`（默认 60）秒内不再调用这个模型，顾客直接得到降级回复（引用政策原文或转人工）；之后放一次试探调用。设为 0 关闭。熔断状态在每个进程内 |
+| `LLM_BREAKER_FAILURES` | `3` | 每个模型的熔断阈值：连续失败这么多次就打开，`LLM_BREAKER_COOLDOWN_SECONDS`（默认 60）秒内不再调用这个模型，顾客直接得到降级回复（引用政策原文或转人工）；之后放一次试探调用，成功才关闭。中间有一次成功就重新计数。设为 0 关闭。熔断状态在每个进程内 |
 | `OTLP_ENDPOINT` / `OTLP_SERVICE_NAME` | — / `loopdesk` | 设置后，每次运行结束时以 OpenTelemetry trace 导出到这个 OTLP/HTTP 地址（例如 `http://otel-collector:4318/v1/traces`），按 GenAI 语义约定命名；只导出元数据，不含问题、回答和工具参数 |
 | `AUDIT_KEY` | 演示模式下由 `JWT_SECRET` 派生 | 审计记录的 HMAC 签名密钥。生产配置（`SEED_DEMO=0`）下必须单独设置、至少 32 字节、不能和 JWT 密钥相同，否则拒绝启动：从 JWT 密钥派生的话，轮换 JWT 密钥会让所有旧记录校验失败。请和数据库分开保管：能写数据库的人不应同时拿到它。更换密钥后旧记录会校验失败（暂不支持轮换） |
 | `TRACE_WRITES` | `auto` | 链路写入方式：`auto` 在 PostgreSQL 上批量写（运行结束、暂停审批、出错时一次写入，同次实测吞吐 +39%–47%），在 SQLite 上每个 span 完成即提交；也可以显式设为 `per_span` 或 `buffered`。批量模式下，运行中的链路要等运行结束才能看到 |

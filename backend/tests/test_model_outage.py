@@ -128,3 +128,52 @@ def test_the_follow_up_rewrite_does_not_wait_on_a_failing_model(ask, login, monk
         services.breaker.record(fast, ok=False)
     ask(emma, "那发票呢？", conversation_id=conversation_id)
     assert len(asked) == 1, "an open breaker: the rule rewrite, no call"
+
+
+def test_the_dashboard_counts_failures_even_when_customers_were_served(client, ask, login, monkeypatch):
+    # N-037: with every run failing, the overview showed resolution, handoff and refusal rates of 0 and
+    # nothing about failures. Customers are now served when the model fails (N-031), which would hide
+    # an outage completely: the overview counts runs that hit an error, by cause, and so does /metrics.
+    _model(monkeypatch, LLMRetryableError("HTTP 503: overloaded"))
+    emma, admin = login("customer@leon.demo"), login("admin@leon.demo")
+    ask(emma, "退款多久能到账？")  # the policy, quoted
+    ask(emma, "SO20261008002 到哪了？")  # a person
+    overview = client.get("/api/metrics/overview", headers=admin).json()
+    failures = overview["failures"]
+    assert (failures["runs"], failures["last_15m"], failures["rate"]) == (2, 2, 1.0)
+    assert failures["kinds"] == {"unavailable": 2} and "503" in failures["last_error"]
+    assert failures["last_kind"] == "unavailable"
+    assert overview["resolution_rate"] == 0.0, "a quoted policy during an outage is not self-service"
+    assert "loopdesk_run_errors_total 2" in client.get("/metrics").text
+
+
+def test_a_rejected_request_is_told_apart_from_an_unavailable_model(client, ask, login, monkeypatch):
+    from app.llm.base import LLMError
+
+    _model(monkeypatch, LLMError("HTTP 400: unsupported parameter stream_options"))
+    ask(login("customer@leon.demo"), "积分可以怎么抵扣？")
+    failures = client.get("/api/metrics/overview", headers=login("admin@leon.demo")).json()["failures"]
+    assert failures["kinds"] == {"rejected": 1}, "4xx: configuration or parameters, retrying will not help"
+
+
+def test_the_breaker_counts_consecutive_failures_however_slow_they_are():
+    # Found with a really unreachable model: "5 failures within 30 s" never opens for a model that
+    # hangs (each failure takes the whole 45 s budget) or under light traffic, so every customer
+    # kept waiting. Consecutive failures open it; any success starts the count again.
+    from app.config import Settings
+    from app.llm.breaker import CircuitBreaker
+
+    settings = Settings()
+    now = [0.0]
+    breaker = CircuitBreaker(settings, clock=lambda: now[0])
+    for _ in range(settings.llm_breaker_failures):
+        assert breaker.allow("m")
+        breaker.record("m", ok=False)
+        now[0] += 45
+    assert not breaker.allow("m"), "open, although the failures were minutes apart"
+
+    other = CircuitBreaker(settings, clock=lambda: now[0])
+    for _ in range(3 * settings.llm_breaker_failures):
+        other.record("m", ok=False)
+        other.record("m", ok=True)  # an occasional failure among successes never opens it
+    assert other.allow("m") and other.state("m") == "closed"

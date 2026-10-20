@@ -16,6 +16,7 @@ non-streaming API, the Feishu channel and the eval runner.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import time
 from collections.abc import Iterator
@@ -53,7 +54,8 @@ MODEL_ERROR_TEXT = "抱歉，智能客服暂时繁忙，请稍后再试或转人
 REFUSAL_TEXT = "抱歉，这个问题我无法处理。"
 DEADLINE_TEXT = "抱歉，这个问题处理时间过长。"
 # The model service failed or its breaker is open (N-031): quote the policy, or hand over.
-DEGRADED_ANSWER = "智能客服暂时无法生成回答，以下是相关规定的原文：\n「{text}」[{ref}]\n如果没有解决您的问题，请回复“转人工”，人工客服会接手。"
+DEGRADED_ANSWER = "智能客服暂时无法生成回答，以下是相关规定的原文：\n{quotes}\n如果没有解决您的问题，请回复“转人工”，人工客服会接手。"
+DEGRADED_QUOTES = 2  # the best chunk is not always the one that answers; two cover most FAQ questions
 DEGRADED_HANDOFF_TEXT = "抱歉，智能客服暂时无法处理您的问题。"
 CONFLICT_TEXT = "抱歉，这个问题涉及的规定正在核对中。"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
@@ -84,6 +86,11 @@ class ToolOutcome:
     customer_note: str = ""  # what a customer may be told about the approval
     arguments: dict[str, Any] | None = None  # normalized arguments a human is asked to approve
 
+
+
+def _plain(chunk: str) -> str:
+    """A knowledge chunk as one quotable passage: list markers and line breaks removed."""
+    return "".join(re.sub(r"^\s*(?:[-*•]|\d+[.)、])\s*", "", line).strip() for line in chunk.splitlines())
 
 class AgentRuntime:
     def __init__(self, db: Session, settings: Settings, provider: LLMProvider, embedder: Embedder,
@@ -536,17 +543,18 @@ class AgentRuntime:
                                     extra_meta={"degraded": True})
             return
         question = state.get("question") or state["user_text"]
-        quoted = None
+        quoted: list[dict[str, Any]] = []
         if not ORDER_ID_RE.search(question):
             call = ToolCall(id="degraded_search", name="search_knowledge", arguments={"query": question})
             outcome = self._run_tool(tracer, ctx, call)
-            results = [] if outcome.is_error or outcome.output.get("disputed") else outcome.output.get("results", [])
-            quoted = results[0] if results else None
-        if quoted is not None:
-            ctx.evidence[:] = [e for e in ctx.evidence if e.kind != "kb" or e.ref == quoted["ref"]]
-            text = DEGRADED_ANSWER.format(text=quoted["text"].strip(), ref=quoted["ref"])
-            yield from self._finish(run, tracer, ctx, state, text, started, status="completed",
-                                    extra_meta={"degraded": True})
+            if not outcome.is_error and not outcome.output.get("disputed"):
+                quoted = outcome.output.get("results", [])[:DEGRADED_QUOTES]
+        if quoted:
+            refs = {q["ref"] for q in quoted}
+            ctx.evidence[:] = [e for e in ctx.evidence if e.kind != "kb" or e.ref in refs]
+            quotes = "\n".join(f"「{_plain(q['text'])}」[{q['ref']}]" for q in quoted)
+            yield from self._finish(run, tracer, ctx, state, DEGRADED_ANSWER.format(quotes=quotes), started,
+                                    status="completed", extra_meta={"degraded": True})
             return
         text = DEGRADED_HANDOFF_TEXT + self._fallback_handoff(tracer, ctx, "智能客服暂时不可用")
         yield from self._finish(run, tracer, ctx, state, text, started, status="handoff",
