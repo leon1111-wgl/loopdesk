@@ -75,7 +75,8 @@ def asks_for_person(text: str) -> bool:
 # "退款就算了", "No refund") are cut out first. Then an explicit request ("帮我退", "申请退款", "如果不能换货就退款",
 # "please refund") files one, unless the message says it is only asking ("就问问", "假如", "what if"); any other
 # question about refunds ("如果退款的话…", "退款是原路退回吗", "refund rules?") is answered, not filed; a bare
-# statement ("SO… 退货退款") is still a request.
+# statement ("SO… 退货退款") is still a request. A conditional followed by a question is not a request
+# (N-095, `_asks_what_if`): "如果我申请退款，优惠券会退吗" asks what would happen.
 REFUND_RE = re.compile(r"退款|退钱|退货|退掉|退我|refund", re.IGNORECASE)
 REFUND_APPLY_RE = re.compile(
     r"我要退|申请退|帮我退|给我退|想退|要退|退一下|退掉|请(?:帮我|直接)?退|直接退|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退"
@@ -102,10 +103,53 @@ REFUND_INQUIRY_RE = re.compile(
     re.IGNORECASE)
 
 
+# A conditional ("如果 / 要是 / 若 / 一旦 / if …", "申请退款的话 / 后 / 的时候", "想问一下申请退款…") followed by a question
+# asks what would happen (N-095). Request words still count when they come before the condition ("我要退款，如果可以的话
+# 今天能到账吗"), right after its consequence ("的话 / 那就 / 就帮我退 / please": "如果可以的话帮我退款，多久到账"), or
+# when no question follows ("如果不能换货就退款", "如果坏了帮我退款", "if it's broken please refund"). A bare "就退款" does
+# not end the condition: "如果我今天就退款，优惠券还能退吗" is a question, so "如果不能换货就退款，多久到账" is answered too.
+_CONDITION_RE = re.compile(
+    r"如果|(?<![需主只想])要是|倘若|若(?!干)|一旦|(?<![A-Za-z])if(?![A-Za-z])|想?问一?下|咨询一下"
+    r"|(?:" + REFUND_APPLY_RE.pattern + r")[款货钱]?了?(?:的话|之?后|以后|的时候|时|会不会|需要|要不要)",
+    re.IGNORECASE)
+_QUESTION_RE = re.compile(
+    r"吗|[？?]|是不是|会不会|能不能|可不可以|还能|还在|多久|多长时间|几天|多少|哪|谁|什么|怎么|如何|是否|有没有"
+    r"|呢(?=[\s，,。！!]|$)|(?:应该|会|是)[^，,。！!？?]{0,10}吧"
+    r"|(?:^|[,，.;；]\s*)(?:how|what|when|where|will|would|does|do|is|are|can|could)(?![A-Za-z])"
+    r"|(?<![A-Za-z])(?:will|would|does|do|is|are|can|could)\s+(?:i|my|it|the|you|we|there|shipping|this|that)(?![A-Za-z])",
+    re.IGNORECASE)
+_CLAUSE_RE = re.compile(r"[^，,。.！!？?；;\n]+")
+_CONSEQUENCE_RE = re.compile(r"的话|那么|那就|就(?=(?:帮我|给我|直接|请)退)|(?<![A-Za-z])(?:then|please)(?![A-Za-z])",
+                             re.IGNORECASE)
+
+
+def _asks_what_if(text: str) -> bool:
+    """A conditional followed by a question, with no request outside the condition."""
+    condition = _CONDITION_RE.search(text)
+    if not condition or not _QUESTION_RE.search(text, condition.start()):
+        return False
+    for clause in _CLAUSE_RE.finditer(text):
+        part = clause.group(0)
+        for request in REFUND_APPLY_RE.finditer(part):
+            if _QUESTION_RE.search(part, request.end()):
+                continue  # "…，钱会退我原来的卡吗" asks
+            starts = [m.start() for m in _CONDITION_RE.finditer(part) if m.start() <= request.start()]
+            if not starts:
+                if not _QUESTION_RE.search(part[:request.start()]):
+                    return False  # "我要退款，如果…", "refund me if it has not shipped, how long…"
+                continue
+            consequence = _CONSEQUENCE_RE.search(part, starts[-1])
+            if starts[-1] < request.start() and consequence and consequence.start() <= request.start():
+                return False  # "如果可以的话帮我退款，多久到账", "要是今天不发货就给我退款，可以吗"
+    return True
+
+
 def refund_requested(text: str) -> bool:
     """True when the message asks for a refund, not when it asks about one or declines one."""
     kept = NEGATED_REFUND_RE.sub("，", normalize_width(text or ""))
     if not REFUND_RE.search(kept) or _ONLY_ASKING_RE.search(kept):
+        return False
+    if _asks_what_if(kept):
         return False
     return bool(REFUND_APPLY_RE.search(kept)) or not REFUND_INQUIRY_RE.search(kept)
 

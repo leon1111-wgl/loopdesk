@@ -79,7 +79,8 @@ def asks_refund_status(text: str) -> bool:
 
 _ASKING_WORDS = re.compile(r"如果|要是|假如|假设|万一|的话|只是问问|就问问|问问而已|随便问问|先问问|咨询一下|想?问一?下"
                            r"|just\s+asking|just\s+wondering|what\s+if|(?<![A-Za-z])if(?![A-Za-z])", re.IGNORECASE)
-_FILLER = re.compile(r"^[，,\s]*(?:我|先)?|[啊哈呀吧呢嘛]+(?=[\s，,！!。]|$)|我?就?问问|\bI\b")
+_FILLER = re.compile(r"^[，,\s]*(?:我|先)?|[啊哈呀吧呢嘛]+(?=[\s，,！!。]|$)|我?就?问问|\bI\b"
+                     r"|(?<!需)(?:我?(?:申请|想要?|要)|帮我|给我)(?=退)")  # "如果我申请退款，…" looks up the refund, not 申请
 
 
 def refund_question(text: str) -> str:

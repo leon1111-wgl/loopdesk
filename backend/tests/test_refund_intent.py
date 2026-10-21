@@ -18,6 +18,9 @@ DECLINED = [
     ("customer@leon.demo", "SO20261008010", "不要退款，我要换货 SO20261008010 尺寸不对"),
     ("customer@echo.demo", "SO20261019101", "SO20261019101 如果退款的话 我收藏的歌单还在吗"),
     ("customer@echo.demo", "SO20261014103", "I don't want a refund, just asking: SO20261014103 refund rules?"),
+    # N-095: a request word inside an "if" clause asks what would happen.
+    ("customer@echo.demo", "SO20261019101", "SO20261019101 如果我申请退款，会员期间下载的歌还能听吗"),
+    ("customer@leon.demo", "SO20261008010", "SO20261008010 如果我申请退款，优惠券会退吗"),
 ]
 
 
@@ -36,6 +39,21 @@ def _nothing_filed(order_id: str) -> bool:
     "我不是想退款，只是想知道能不能换", "No refund, I want an exchange SO20261019101", "I did not request a refund",
     "I haven't asked for a refund", "What if I want a refund for SO20261019101, how long does it take?",
     "SO20260918001 退款是原路退回吗", "退款会扣手续费吗 SO20260918001", "SO20261008002 能退款吗？",
+    # N-095: request words inside an "if" clause, ending at a comma, a space, "的话" or the end of the message.
+    "SO20261008010 要是我要退款，运费谁出？", "SO20261008010 If I request a refund, will my coupon come back?",
+    "SO20261008010 如果我想退款的话要多久", "SO20261008010 如果申请退款 钱退到哪", "如果我申请退款会员期间的歌还能听吗 SO20261019101",
+    "SO20261008010 要是帮我退款了，积分还在吗", "if I want a refund for SO20261008010 is shipping refunded?",
+    "如果那个订单我申请退款，会员还能用吗", "SO20261008010 如果我申请退款\n优惠券会退吗",
+    # Found by review: "就" or "则" inside the condition, other conditionals, and "…的话 / …后" after a request word.
+    "SO20261019101 如果我现在就申请退款，会员期间下载的歌还能听吗", "SO20261019101 如果我今天就退款，优惠券还能退吗",
+    "SO20261008010 如果按规则申请退款，优惠券会退吗", "如果 我申请退款，优惠券会退吗", "一旦我申请退款，下载的歌还能听吗",
+    "若申请退款，会员还能用吗", "我申请退款后会员期间下载的歌还能听吗", "申请退款之后优惠券会退吗", "想问下申请退款后钱退到哪",
+    "我申请退款的话优惠券会退吗", "我要退款的话多久到账", "我想退款的话需要退货吗", "如果我申请退款，钱会退我原来的卡吗",
+    "SO20261008010 If I request a refund will I lose my downloads", "if I want a refund for SO20261008010 is shipping refunded",
+    "SO20261019101 如果我现在就申请退款，会员应该就没了吧", "我申请退款的时候需要退货吗", "申请退款时运费谁出", "我申请退款会不会影响会员",
+    "想问一下申请退款需要退货吗", "咨询一下申请退款要几天", "申请退款了的话优惠券还能用吗",
+    # "就退" after "如果我…" is ambiguous ("如果我今天就退款" vs "如果不能换货就退款"); with a question after it, money stays put.
+    "SO20261019101 如果我今天就退款，优惠券还能退吗",
 ])
 def test_declining_or_asking_is_not_a_request(text):
     assert not refund_requested(text) and refund_declined(text)
@@ -48,9 +66,33 @@ def test_declining_or_asking_is_not_a_request(text):
     "为什么不退款 SO20261008002", "不要换货，我要退款 SO20261008002", "如果不能换货就退款 SO20261008002",
     "如果可以的话请退款 SO20261008002", "按照退款规则退款给我 SO20261008002", "If possible, please refund SO20261008002",
     "好的，那就退款吧", "按政策给客户退款 SO20261008002",
+    # The request after the "if" clause still counts (N-095).
+    "如果可以的话请直接帮我退款 SO20261008002", "我要退款，如果可以的话今天处理 SO20261008002",
+    "杯子碎了，如果你们不换那就给我退款 SO20261008010", "refund me if it has not shipped SO20261008002",
+    "如果可以，帮我退款 SO20261008002", "如果不行 帮我退款 SO20261008002", "SO20261008002 如果明天还不发货，我要退款",
+    "如果不换货，那我要退款 SO20261008002",
+    # A condition without a question is still a request (review: the first N-095 rule turned these down).
+    "if it's broken please refund SO20261008002", "If it arrives damaged please refund me", "if you can't replace it I want a refund",
+    "if no stock refund me", "如果坏了帮我退款", "如果明天还不发货我要退款", "如果还没发货请帮我退款", "如果没法换货请直接退款吧",
+    "要是没货了直接退款", "要是不能发货退我钱", "如果不能换货那退款吧", "帮我退款后通知我一声", "需要是全额退款，帮我退款",
+    # A request before the condition, or right after its consequence, still counts when a question follows.
+    "我要退款，如果可以的话今天能到账吗", "帮我退款，如果可以的话今天处理，钱退到哪", "refund me if it has not shipped, how long will it take?",
+    "I want a refund if it hasn't shipped. Can you do that?", "如果可以的话帮我退款，多久到账？", "要是今天不发货就给我退款，可以吗",
+    "if it's broken please refund, where does the money go", "快递一直不动，如果明天还不到怎么办？帮我退款吧", "要是货还在仓库就直接退款吧",
+    "如果还能截停就帮我退款", "如果不发货呢，那就帮我退款",
 ])
 def test_requests_still_count(text):
     assert refund_requested(text) and not refund_declined(text)
+
+
+@pytest.mark.parametrize("text", [
+    "如果几天内都不发货就退款", "如果不能换货就退款 谢谢，还有别的问题吗", "如果不能换货就退款，退款多久到账",
+    "如果不能换，能不能直接退款", "If it doesn't ship by Friday refund me, do it automatically",
+])
+def test_unclear_conditional_requests_are_answered_not_filed(text):
+    # Known cost of N-095: a bare "就退款" after a condition, with a question anywhere after it, reads like
+    # "如果我今天就退款，优惠券还能退吗". These are answered with how to apply; the customer replies "SO… 申请退款".
+    assert not refund_requested(text)
 
 
 def test_a_turn_that_does_not_mention_refunds_is_not_declined():
