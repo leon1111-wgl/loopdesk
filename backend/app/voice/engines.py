@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 import tempfile
 import threading
@@ -255,15 +256,46 @@ class Punctuator:
         return _funasr_text(res) or text
 
 
+_MARKS = "，。？！、；：,.?!;:"
+_SPACE_OR_MARK = re.compile(rf"[\s{_MARKS}]")
+
+
+def between_words(decoded: str, punctuated: str) -> str:
+    """The punctuation model's output, keeping only the marks that fall between two words as jieba (the
+    retrieval's segmenter, with its domain words) splits the sentence. ct-punc wrote "注，销账号以后": a
+    mark inside a word hides the word from retrieval. Output that changed anything but punctuation and
+    spacing is not used: the decoder's words are what the customer said."""
+    from ..textutil import jieba
+
+    words = _SPACE_OR_MARK.sub("", decoded)
+    if _SPACE_OR_MARK.sub("", punctuated) != words:
+        logger.warning("voice punctuation changed the words, not used: %r -> %r", decoded, punctuated)
+        return decoded
+    boundaries, at = set(), 0
+    for word in (jieba.lcut(words) if jieba is not None else list(words)):
+        at += len(word)
+        boundaries.add(at)
+    out, seen = [], 0
+    for ch in punctuated:
+        if ch in _MARKS:
+            if seen in boundaries:
+                out.append(ch)
+        else:
+            out.append(ch)
+            seen += not ch.isspace()
+    return "".join(out)
+
+
 def punctuate(result: ASRResult, punc: Callable[[str], str]) -> ASRResult:
-    """Punctuate the text handed on, and time it. The passes keep what the decoder wrote, so the
-    unpunctuated final pass is a second reading: punctuation that changes an order number or an amount
-    makes the passes disagree, and the entity is read back. A model error keeps the words unpunctuated."""
+    """Punctuate the text handed on, between words only, and time it. The passes keep what the decoder
+    wrote, so the unpunctuated final pass is a second reading: punctuation that changes an order number
+    or an amount makes the passes disagree, and the entity is read back. A model error keeps the words
+    unpunctuated."""
     if not result.text.strip():
         return result
     started = time.perf_counter()
     try:
-        text = punc(result.text)
+        text = between_words(result.text, punc(result.text))
     except Exception:
         logger.warning("voice punctuation failed, the transcript stays unpunctuated", exc_info=True)
         result.final_ms += (time.perf_counter() - started) * 1000
@@ -291,9 +323,17 @@ class PunctuatedASR:
 
     def __init__(self, engine: ASREngine, punc: Callable[[str], str]):
         self.engine, self.punc, self.name = engine, punc, engine.name
+        warm_segmenter()  # jieba loads its dictionary on first use: not in the first customer's turn
 
     def stream(self, hotwords: list[str]) -> _PunctuatedStream:
         return _PunctuatedStream(self.engine.stream(hotwords), self.punc)
+
+
+def warm_segmenter() -> None:
+    from ..textutil import jieba
+
+    if jieba is not None:
+        jieba.initialize()
 
 
 def with_punctuation(asr: ASREngine, settings: Settings) -> ASREngine:

@@ -144,8 +144,8 @@ class _Punctuator:
     """Stands in for FunASR ct-punc: Chinese characters joined (it reads SeACo's "我 要 退" token by
     token), a comma before 另外, a question mark at the end."""
 
-    def __init__(self, device="cpu"):
-        self.device = device
+    def __init__(self, device="cpu", model="default"):
+        self.device, self.model = device, model
 
     def __call__(self, text):
         import re
@@ -208,11 +208,14 @@ def test_earlier_transcripts_can_be_punctuated_without_decoding_audio_again(tmp_
         {**base, "id": "leon/a", "engine": "sensevoice", "final_nohw": "我要退货退款，另外发票怎么开？"},
     ]), encoding="utf-8")
     out = tmp_path / "out" / "asr-paraformer-punc.jsonl"
-    asr_run.main(["--repunctuate", str(tmp_path / "run1" / "*" / "*.jsonl"), "--out", str(out)])
+    asr_run.main(["--repunctuate", str(tmp_path / "run1" / "*" / "*.jsonl"), "--punc-model", "iic/other-punc",
+                  "--out", str(out)])
     rows = {r["id"]: r for r in map(json.loads, out.read_text(encoding="utf-8").splitlines())}
     assert set(rows) == {"leon/a", "leon/b"}  # Paraformer only
     assert rows["leon/a"]["final_hw_punc"] == "我要退货退款，另外发票怎么开？" and rows["leon/a"]["punc_ms"] >= 0
     assert rows["leon/a"]["final_hw"] == "我 要 退 货 退 款 另 外 发 票 怎 么 开" and rows["leon/a"]["repunctuated"] is True
+    assert rows["leon/a"]["punc_model"] == "iic/other-punc"
+    assert rows["leon/a"]["final_hw_punc_model"] == "我要退货退款，另外发票怎么开？"  # what the model wrote, before the word check
     assert rows["leon/b"]["final_hw_punc"] == "" and rows["leon/b"]["punc_ms"] is None
 
 

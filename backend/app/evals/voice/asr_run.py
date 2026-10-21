@@ -45,11 +45,13 @@ def _items(synth_dirs: list[str], noisy: set[str]) -> list[tuple[dict, Path, str
     return items
 
 
-def repunctuate(patterns: list[str], out: Path, punc) -> int:
+def repunctuate(patterns: list[str], out: Path, punc, model: str) -> int:
     """Earlier Paraformer records with their final pass punctuated (``final_hw_punc``, ``punc_ms``), by
-    the same code the live channel runs after the final pass."""
-    from ...voice.engines import ASRResult, punctuate
+    the same code the live channel runs after the final pass; ``final_hw_punc_model`` is what the model
+    wrote before the between-words check."""
+    from ...voice.engines import ASRResult, punctuate, warm_segmenter
 
+    warm_segmenter()
     out.parent.mkdir(parents=True, exist_ok=True)
     n = 0
     with out.open("w", encoding="utf-8") as fh:
@@ -57,8 +59,11 @@ def repunctuate(patterns: list[str], out: Path, punc) -> int:
             for row in read_jsonl(Path(path)):
                 if row.get("engine") != "paraformer" or row.get("final_hw") is None:
                     continue
-                result = punctuate(ASRResult(row["final_hw"], {"final": row["final_hw"]}), punc)
-                row.update(final_hw_punc=result.text, punc_ms=None if result.punc_ms is None else round(result.punc_ms, 2),
+                wrote: list[str] = []
+                result = punctuate(ASRResult(row["final_hw"], {"final": row["final_hw"]}),
+                                   lambda text: wrote.append(punc(text)) or wrote[-1])
+                row.update(final_hw_punc=result.text, final_hw_punc_model=wrote[0] if wrote else result.text,
+                           punc_model=model, punc_ms=None if result.punc_ms is None else round(result.punc_ms, 2),
                            repunctuated=True)
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
                 n += 1
@@ -72,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--synth", nargs="+", default=[])
     parser.add_argument("--repunctuate", nargs="+", default=[],
                         help="earlier Paraformer transcripts (jsonl globs): punctuate their final pass, decode nothing")
+    parser.add_argument("--punc-model", default=None, help="FunASR punctuation model (default: engines.PUNC_CT)")
     parser.add_argument("--noisy", default="")
     parser.add_argument("--shard", default="0/1")
     parser.add_argument("--device", default="cpu")
@@ -79,8 +85,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     from ...voice import engines
 
+    punc_model = args.punc_model or engines.PUNC_CT
     if args.repunctuate:
-        return repunctuate(args.repunctuate, Path(args.out), engines.Punctuator(args.device))
+        return repunctuate(args.repunctuate, Path(args.out), engines.Punctuator(args.device, model=punc_model), punc_model)
     if not args.engine or not args.synth:
         parser.error("--engine and --synth are required (or --repunctuate)")
     index, count = (int(x) for x in args.shard.split("/"))
@@ -88,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     hotwords = tenant_hotwords()
     if args.engine == "paraformer":
         engine = engines.ParaformerASR(args.device, two_pass=True)
-        punctuated = engines.PunctuatedASR(engine, engines.Punctuator(args.device))  # what LOOPDESK_VOICE_PUNC serves
+        punctuated = engines.PunctuatedASR(engine, engines.Punctuator(args.device, model=punc_model))  # LOOPDESK_VOICE_PUNC
     elif args.engine == "sensevoice":
         engine = engines.SenseVoiceASR(args.device)
     else:
@@ -116,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                 started = time.perf_counter()
                 without = engine.decode_final(audio, [])
                 record.update(streaming=result.passes["streaming"], final_hw=result.passes["final"],
-                              final_hw_punc=result.text, final_nohw=without,
+                              final_hw_punc=result.text, punc_model=punc_model, final_nohw=without,
                               chunk_ms=[round(c, 1) for c in result.chunk_ms],
                               final_hw_ms=round(result.final_ms - punc_ms, 1),  # as before: without punctuation
                               punc_ms=None if result.punc_ms is None else round(result.punc_ms, 2),

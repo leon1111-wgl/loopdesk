@@ -688,10 +688,35 @@ def test_an_amount_the_punctuation_split_is_read_back():
     from app.voice.engines import PunctuatedASR
     from app.voice.session import understand
 
-    asr = PunctuatedASR(_Unpunctuated("先退我一百九十八块"), lambda text: text.replace("一百", "一百，"))
+    asr = PunctuatedASR(_Unpunctuated("先退我九块九"), lambda text: text.replace("九块", "九块，"))
     transcript = understand(asr.stream([]).finish(), Lexicon([]))
     amount = next(e for e in transcript.entities if e.kind == "amount")
-    assert amount.value == "98" and amount.confidence < 0.6 and "passes_disagree" in amount.notes
+    assert amount.value == "9" and amount.confidence < 0.6 and "passes_disagree" in amount.notes
+
+
+@pytest.mark.parametrize("decoded,punctuated,kept", [
+    # ct-punc wrote "注，销账号" (voice-eval run 39517864436): retrieval then never saw 注销.
+    ("注销账号以后会员时长还在吗", "注，销账号以后，会员时长还在吗", "注销账号以后，会员时长还在吗"),
+    ("注 销 账 号 以 后 会 员 时 长 还 在 吗", "注，销账号以后会员时长还在吗？", "注销账号以后会员时长还在吗？"),
+    ("先退我一百九十八块", "先退我一百，九十八块", "先退我一百九十八块"),
+    # Between words, and around Latin letters, marks and spacing stay as the model wrote them.
+    ("s o 二 零 二 六 零 九 一 八 零 零 一 我 要 退 货 退 款 另 外 发 票 怎 么 开",
+     "s o二零二六零九一八零零一，我要退货退款。另外发票怎么开", "s o二零二六零九一八零零一，我要退货退款。另外发票怎么开"),
+    ("，帮我查一下物流", "，，帮我查一下物流", "帮我查一下物流"),  # nothing before the first word
+])
+def test_punctuation_only_between_words(decoded, punctuated, kept):
+    from app.voice.engines import PunctuatedASR
+
+    result = PunctuatedASR(_Unpunctuated(decoded), lambda text: punctuated).stream([]).finish()
+    assert result.text == kept
+
+
+def test_a_punctuation_model_that_changes_words_is_not_used():
+    from app.voice.engines import PunctuatedASR
+
+    result = PunctuatedASR(_Unpunctuated("注销账号以后会员时长还在吗"),
+                           lambda text: "注销帐号以后，会员时长还在吗").stream([]).finish()
+    assert result.text == "注销账号以后会员时长还在吗"  # 账 -> 帐: the decoder's words are kept, unpunctuated
 
 
 def test_punctuation_setting_wraps_only_engines_that_write_none(monkeypatch, caplog):

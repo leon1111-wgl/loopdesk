@@ -23,6 +23,10 @@ on:
         description: "Earlier run ids, comma-separated: punctuate their Paraformer transcripts (set synth to none)"
         default: ""
         required: false
+      punc_model:
+        description: "FunASR punctuation model for reuse (empty: the channel's default, engines.PUNC_CT)"
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -174,11 +178,12 @@ jobs:
           done
           find ../prev -name '*.jsonl' | sort
       - uses: actions/cache@v4
-        with: {path: ~/.cache/modelscope, key: punc-ct-v1}
-      - env: {REUSE: "${{ inputs.reuse }}"}
+        with: {path: ~/.cache/modelscope, key: "punc-${{ inputs.punc_model || 'default' }}-v1"}
+      - env: {REUSE: "${{ inputs.reuse }}", PUNC_MODEL: "${{ inputs.punc_model }}"}
         run: |
           for id in ${REUSE//,/ }; do
-            python -m app.evals.voice.asr_run --repunctuate "../prev/$id/*/*.jsonl" --out "../out/asr/asr-paraformer-punc-$id.jsonl"
+            python -m app.evals.voice.asr_run --repunctuate "../prev/$id/*/*.jsonl" ${PUNC_MODEL:+--punc-model "$PUNC_MODEL"} \
+              --out "../out/asr/asr-paraformer-punc-$id.jsonl"
           done
       - uses: actions/upload-artifact@v4
         with: {name: asr-paraformer-punc, path: out/asr}
