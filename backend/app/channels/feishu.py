@@ -190,10 +190,17 @@ def _claim(db: Session, event_id: str, now: datetime, stale_before: datetime):
     return row
 
 
-def _settle(event_id: str, status: str) -> None:
+def _without_text(payload: dict) -> dict:
+    """What a settled event keeps: enough to recognise a redelivery, not the customer's words. The
+    text is unmasked (the runtime masks it, and needs to see what it masked); the conversation
+    keeps the masked copy, and the event row outlives the run by a day (N-083)."""
+    return {k: v for k, v in payload.items() if k != "text"}
+
+
+def _settle(event_id: str, status: str, payload: dict) -> None:
     with new_session() as db:
         db.execute(update(ChannelEvent).where(ChannelEvent.channel == "feishu", ChannelEvent.event_id == event_id)
-                   .values(status=status).execution_options(synchronize_session=False))
+                   .values(status=status, payload=_without_text(payload)).execution_options(synchronize_session=False))
         db.commit()
 
 
@@ -210,7 +217,7 @@ def process_event(services, event_id: str, now: datetime | None = None) -> dict 
         return None
     payload = claimed.payload
     result = handle_message(services, payload["tenant"], payload)
-    _settle(event_id, "failed" if result.get("fallback") else "done")
+    _settle(event_id, "failed" if result.get("fallback") else "done", payload)
     return result
 
 
@@ -237,6 +244,9 @@ def retry_stuck(services, now: datetime | None = None) -> dict[str, int]:
                 update(ChannelEvent).where(ChannelEvent.channel == "feishu", ChannelEvent.event_id == event_id, stuck)
                 .values(status="failed").returning(ChannelEvent.payload).execution_options(synchronize_session=False)
             ).scalar_one_or_none()
+            if payload:
+                db.execute(update(ChannelEvent).where(ChannelEvent.channel == "feishu", ChannelEvent.event_id == event_id)
+                           .values(payload=_without_text(payload)).execution_options(synchronize_session=False))
             db.commit()
         if payload:
             logger.error("feishu event %s gave up after %d attempts", event_id, attempts)

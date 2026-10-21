@@ -13,7 +13,7 @@ from ..db import get_db
 from ..models import Approval, Conversation, Refund, Run, Tenant, User
 from ..security import Principal, require_staff
 from ..services import get_services
-from .common import get_owned, iso
+from .common import get_owned, iso, masked
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
@@ -91,7 +91,7 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"金额超过 ¥{threshold:.0f}，需要管理员审批（坐席可以驳回）")
     services = get_services()
     try:
-        events = services.runtime(db).resume(approval, body.decision, principal.user, body.comment)
+        events = services.runtime(db).resume(approval, body.decision, principal.user, masked(body.comment))
     except ResumeError as exc:  # the approval is pending again and can be retried
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except ValueError as exc:  # another reviewer decided first

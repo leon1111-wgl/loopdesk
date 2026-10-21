@@ -20,7 +20,7 @@ from ..flywheel.service import FlywheelError, submit_feedback
 from ..models import Conversation, Feedback, Message, Tenant, User
 from ..security import Principal, get_principal, rate_limiter
 from ..services import get_services
-from .common import get_owned, iso
+from .common import get_owned, iso, masked
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -86,7 +86,7 @@ def list_conversations(scope: str = "mine", principal: Principal = Depends(get_p
 @router.post("/conversations")
 def create_conversation(body: ConversationIn, principal: Principal = Depends(get_principal),
                         db: Session = Depends(get_db)) -> dict:
-    conversation = Conversation(tenant_id=principal.tenant.id, user_id=principal.user.id, title=body.title or "新对话")
+    conversation = Conversation(tenant_id=principal.tenant.id, user_id=principal.user.id, title=masked(body.title or "新对话"))
     db.add(conversation)
     db.commit()
     return conversation_out(conversation)
@@ -208,8 +208,8 @@ def feedback(message_id: int, body: FeedbackIn, principal: Principal = Depends(g
     services = get_services()
     try:
         return submit_feedback(
-            db, user=principal.user, message=message, rating=body.rating, correction=body.correction,
-            reason_category=body.reason_category, comment=body.comment,
+            db, user=principal.user, message=message, rating=body.rating, correction=masked(body.correction),
+            reason_category=body.reason_category, comment=masked(body.comment),
             provider=services.provider, model=services.settings.llm_model_strong,
         )
     except FlywheelError as exc:

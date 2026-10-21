@@ -15,7 +15,7 @@ from ..audit import record
 from ..db import get_db
 from ..models import Conversation, Message, Tenant, Ticket, User
 from ..security import Principal, require_staff
-from .common import as_utc, get_owned, iso
+from .common import as_utc, get_owned, iso, masked
 from .handoffs import _deliver
 
 router = APIRouter(prefix="/api/tickets", tags=["tickets"])
@@ -98,7 +98,7 @@ def claim(ticket_id: int, principal: Principal = Depends(require_staff), db: Ses
 def close(ticket_id: int, body: CloseIn, principal: Principal = Depends(require_staff),
           db: Session = Depends(get_db)) -> dict:
     """Close with what was done; the customer reads it in the conversation the ticket came from."""
-    resolution = body.resolution.strip()
+    resolution = masked(body.resolution.strip(), principal.tenant)
     if not resolution:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "请填写处理结果：顾客会在对话里看到它")
     now = datetime.now(timezone.utc)

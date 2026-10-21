@@ -65,6 +65,8 @@ def attribute_failure(db: Session, run: Run | None) -> str:
 
 
 def key_facts(correction: str) -> list[str]:
+    # A masked number or address is not a fact to look for (only its own characters: no spaces in Chinese).
+    correction = re.sub(r"[0-9A-Za-z@.+*-]*\*{3,}[0-9A-Za-z@.+*-]*", " ", correction)
     facts = [m.group(0) for m in _FACT_RE.finditer(correction) if len(m.group(0)) >= 2 or m.group(0).isdigit()]
     unique = list(dict.fromkeys(facts))
     if unique:

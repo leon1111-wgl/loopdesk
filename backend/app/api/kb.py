@@ -16,7 +16,7 @@ from ..rag.ingest import (StaleDocument, delete_document, edit_document, ingest_
 from ..rag.retrieval import cosine_gate, hybrid_search, index_manager, passes_gate
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
-from .common import get_owned, iso
+from .common import get_owned, iso, masked
 
 router = APIRouter(prefix="/api/kb", tags=["knowledge"])
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
@@ -235,13 +235,14 @@ def resolve_conflict(conflict_id: int, body: ResolveIn, principal: Principal = D
     from datetime import datetime, timezone
 
     conflict = get_owned(db, KnowledgeConflict, conflict_id, principal.tenant.id)
+    note = masked(body.note)
     # The audit entry takes the tenant row before the conflict row is touched: deleting a
     # document locks them in that order too.
     record(db, principal, "kb.conflict.resolve", f"conflict:{conflict.id}", sentence=conflict.sentence,
-           other_sentence=conflict.other_sentence, note=body.note)
+           other_sentence=conflict.other_sentence, note=note)
     resolved = db.execute(
         update(KnowledgeConflict).where(KnowledgeConflict.id == conflict.id, KnowledgeConflict.status == "open")
-        .values(status="resolved", note=body.note, resolved_by=principal.user.id,
+        .values(status="resolved", note=note, resolved_by=principal.user.id,
                 resolved_at=datetime.now(timezone.utc)).execution_options(synchronize_session=False)
     ).rowcount
     if resolved != 1:  # resolved by someone else, or its document was deleted meanwhile

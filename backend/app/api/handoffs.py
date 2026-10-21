@@ -18,7 +18,7 @@ from ..models import Conversation, Message, Ticket, User
 from ..security import Principal, require_staff
 from ..services import get_services
 from .chat import message_out
-from .common import as_utc, get_owned, iso
+from .common import as_utc, get_owned, iso, masked
 
 router = APIRouter(prefix="/api/handoffs", tags=["handoffs"])
 logger = logging.getLogger(__name__)
@@ -117,7 +117,7 @@ def reply(ticket_id: int, body: ReplyIn, principal: Principal = Depends(require_
     ticket, conversation = _active(db, principal, ticket_id)
     _transition(db, ticket, "in_progress", principal.user.id)
     message = Message(tenant_id=ticket.tenant_id, conversation_id=conversation.id, role="agent",
-                      content=body.content.strip(), meta={"agent": principal.user.name, "agent_id": principal.user.id})
+                      content=masked(body.content.strip(), principal.tenant), meta={"agent": principal.user.name, "agent_id": principal.user.id})
     conversation.updated_at = datetime.now(timezone.utc)
     db.add(message)
     db.flush()

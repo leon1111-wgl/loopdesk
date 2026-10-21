@@ -24,7 +24,7 @@ from ..models import Refund, User
 from ..ops.refund_reconcile import FOLLOW_DAYS, RESEND_WINDOW
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
-from .common import as_utc, get_owned, iso
+from .common import as_utc, get_owned, iso, masked
 
 router = APIRouter(prefix="/api/refunds", tags=["refunds"])
 LIMIT = 200
@@ -147,7 +147,7 @@ def settle(refund_id: int, body: SettleIn, principal: Principal = Depends(requir
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "这笔退款已经有结果，不能再次确认")
     record(db, principal, "refund.settle", f"refund:{refund.id}", order_id=refund.order_id, amount=refund.amount,
-           outcome=body.outcome, external_id=body.external_id, note=body.note)
+           outcome=body.outcome, external_id=body.external_id, note=masked(body.note))
     db.commit()
     db.refresh(refund)
     return {"id": refund.id, "order_id": refund.order_id, "amount": refund.amount, "status": refund.status,

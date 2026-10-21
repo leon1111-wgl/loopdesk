@@ -9,6 +9,7 @@ between digits. Over-masking a long digit run is the cheaper mistake.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 _RULES: list[tuple[str, re.Pattern[str]]] = [
@@ -38,10 +39,13 @@ def _mask(kind: str, value: str) -> str:
     return f"{digits[:4]}{'*' * (len(digits) - 8)}{digits[-4:]}"
 
 
-def mask_pii(text: str) -> PIIReport:
+def mask_pii(text: str, keep: Callable[[str, str], bool] | None = None) -> PIIReport:
+    """``keep(kind, value)`` leaves a match as it is (a tenant's own hotline or support mailbox)."""
     found: list[str] = []
     for kind, pattern in _RULES:
         def replace(match: re.Match[str], kind: str = kind) -> str:
+            if keep is not None and keep(kind, match.group(0)):
+                return match.group(0)
             found.append(kind)
             return _mask(kind, match.group(0))
 
