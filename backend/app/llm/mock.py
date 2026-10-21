@@ -17,21 +17,22 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..textutil import NEGATED_PERSON_RE, ORDER_ID_RE, estimate_tokens, expand_query, split_sentences, token_set
+from ..textutil import (NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, REFUND_APPLY_RE, REFUND_RE,
+                        estimate_tokens, expand_query, refund_requested, split_sentences, token_set)
 from .base import ChatResult, LLMMessage, LLMProvider, StreamEvent, ToolCall, ToolSpec, Usage
 
 _HANDOFF = re.compile(r"人工|真人|投诉|转接")
 # Negated requests ("不用转人工") are cut out before matching, the way a real model reads them;
 # otherwise the offline model (the demo path and the eval baseline) inflates the handoff rate.
 _NEGATED_HANDOFF = NEGATED_PERSON_RE
-_REFUND = re.compile(r"退款|退钱|退货|退掉|退我|refund", re.IGNORECASE)
+_REFUND = REFUND_RE
 _SHIPMENT = re.compile(r"物流|快递|到哪|发货了吗|配送|运单|什么时候到|送到|where is|track|arrive|deliver|shipping",
                        re.IGNORECASE)
 # "退款到哪一步了", "退款进度查一下", "SO… 的退款多久到账": a question about a refund, read-only (N-056).
 # An explicit request in the same sentence ("我要退款，多久到账") still files one.
 _PROGRESS = re.compile(r"进度|到哪一?步|退款到哪了|怎么样了|处理得?怎么样|到账了?(?:吗|没)|到没到账|退回来了?(?:吗|没)"
                        r"|(?:多久|几天|什么时候|啥时候)(?:能|才能|可以)?到账|status|progress", re.IGNORECASE)
-_APPLY = re.compile(r"我要退|申请退|帮我退|给我退|退我|想退|要退|退一下|退掉")
+_APPLY = REFUND_APPLY_RE
 # "我的快递咋还没到", "我最近买的那个扫地机器人到哪了", "快递到哪了": about one of the customer's
 # own orders even without its number, so look their orders up instead of searching policy (N-057).
 # "我的银行卡号…能退到这张卡吗" is a policy question: "我的" counts only before an order word.
@@ -74,6 +75,18 @@ def split_intents(text: str) -> tuple[str, str | None]:
 
 def asks_refund_status(text: str) -> bool:
     return bool(_REFUND.search(text) or "到账" in text) and bool(_PROGRESS.search(text)) and not _APPLY.search(text)
+
+
+_ASKING_WORDS = re.compile(r"如果|要是|假如|假设|万一|的话|只是问问|就问问|问问而已|随便问问|先问问|咨询一下|想?问一?下"
+                           r"|just\s+asking|just\s+wondering|what\s+if|(?<![A-Za-z])if(?![A-Za-z])", re.IGNORECASE)
+_FILLER = re.compile(r"^[，,\s]*(?:我|先)?|[啊哈呀吧呢嘛]+(?=[\s，,！!。]|$)|我?就?问问|\bI\b")
+
+
+def refund_question(text: str) -> str:
+    """What to look up for a question about refunds: the words without the order number or the "别退" part."""
+    question = _ASKING_WORDS.sub(" ", ORDER_ID_RE.sub(" ", NEGATED_REFUND_RE.sub(" ", text)))
+    question = _FILLER.sub(" ", question)
+    return re.sub(r"\s+", " ", question).strip(" ，,。！!？?:：") or "退款 到账 工作日"
 
 
 def about_my_order(text: str) -> bool:
@@ -208,7 +221,7 @@ class MockLLM(LLMProvider):
                 return "list_my_orders", {}
             listing = (results.get("list_my_orders") or [{}])[-1]
             # Read-only questions may follow a single match; money never moves on an order we picked.
-            picked = None if (_REFUND.search(text) and not asks_refund_status(text)) else pick_my_order(text, listing)
+            picked = None if (refund_requested(text) and not asks_refund_status(text)) else pick_my_order(text, listing)
             if picked is None:
                 return None  # list the orders and ask which one
             order_ids = [picked]
@@ -228,6 +241,11 @@ class MockLLM(LLMProvider):
                 return None
             if _REFUND.search(text):
                 if not order.get("refundable", False):
+                    return None
+                # "先别退款，如果退款的话钱退到哪" asks about a refund: answer it, never file one (N-091).
+                if not refund_requested(text):
+                    if can("search_knowledge"):
+                        return "search_knowledge", {"query": refund_question(text)}
                     return None
                 if can("search_knowledge"):
                     return "search_knowledge", {"query": "退款 到账 工作日"}
@@ -315,8 +333,12 @@ class MockLLM(LLMProvider):
 
         ticket = last("create_ticket")
         knowledge = last("search_knowledge")
+        # A question about refunds on one of the customer's orders, answered without filing one (N-091).
+        inquiry = (len(orders) == 1 and not refund and not orders[0].get("error") and orders[0].get("refundable")
+                   and bool(_REFUND.search(text)) and not refund_requested(text))
         if knowledge:
-            query = "退款 到账 工作日" if (refund and not refund_failed) or progress else expand_query(text)
+            query = ("退款 到账 工作日" if (refund and not refund_failed) or progress
+                     else expand_query(refund_question(text) if inquiry else text))
             if not refund_failed:
                 limit = 1 if (refund or ticket or progress) else 3
                 sentences = self._extract(query, knowledge.get("results") or [], limit)
@@ -325,6 +347,9 @@ class MockLLM(LLMProvider):
                 elif not parts and not ticket:
                     down = knowledge.get("error") or knowledge.get("degraded")
                     parts.append(SEARCH_DOWN if down else REFUSAL)
+        if inquiry:
+            oid = orders[0]["order_id"]
+            parts.append(f"如需退款，可以直接回复“{oid} 申请退款”，这次只解答问题、不会为您发起退款。")
         if ticket:
             parts.append(ticket.get("message") or f"工单创建失败：{ticket.get('error', '')}。")
 

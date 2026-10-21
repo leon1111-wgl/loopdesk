@@ -70,6 +70,51 @@ def asks_for_person(text: str) -> bool:
     stripped = re.sub(r"[\s，,。.！!？?~～]+", "", NEGATED_PERSON_RE.sub("，", normalize_width(text)))
     return bool(stripped) and bool(_EXPLICIT_PERSON_RE.search(stripped))
 
+
+# A refund is filed only when the customer asks for one (N-091). Declines ("先别退款", "我不想退款", "不退款，我要换货",
+# "退款就算了", "No refund") are cut out first. Then an explicit request ("帮我退", "申请退款", "如果不能换货就退款",
+# "please refund") files one, unless the message says it is only asking ("就问问", "假如", "what if"); any other
+# question about refunds ("如果退款的话…", "退款是原路退回吗", "refund rules?") is answered, not filed; a bare
+# statement ("SO… 退货退款") is still a request.
+REFUND_RE = re.compile(r"退款|退钱|退货|退掉|退我|refund", re.IGNORECASE)
+REFUND_APPLY_RE = re.compile(
+    r"我要退|申请退|帮我退|给我退|想退|要退|退一下|退掉|请(?:帮我|直接)?退|直接退|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退"
+    r"|退我(?!的)|(?:给|帮|为)(?:客户|顾客|他|她|这位顾客)退"
+    r"|(?:want|need|request|issue|process|like|get)\s+(?:a\s+|my\s+|the\s+)?refund|refund\s+(?:me|it|my|this|the|order)"
+    r"|please\s+refund",
+    re.IGNORECASE)
+NEGATED_REFUND_RE = re.compile(
+    r"(?:不是要?|不是想|不想要?|不要|不需要|不用|不打算|没打算|没说要|没想|并不想|先别|别|暂时不|暂不|先不)(?:给我|帮我)?"
+    r"(?:申请|开|发起)?(?:退款|退钱|退费|退货|退掉|退了|退我的钱)"
+    r"|(?<!为什么)(?<!怎么)(?<!凭什么)(?<!还)不退(?:款|货|钱)(?!.{0,2}就)了?|(?:先|就|还是)?不退了"
+    r"|(?:退款|退货)(?:就|先|还是)?(?:算了|不必了|不用了|不要了|放一放)|取消(?:这笔|这个)?退款(?:申请)?"
+    r"|(?:don'?t|do\s+not|didn'?t|did\s+not|haven'?t|have\s+not|never)\s+(?:want(?:ed)?|need(?:ed)?|ask(?:ed)?\s+for"
+    r"|request(?:ed)?)\s+(?:a\s+|any\s+|the\s+)?refunds?"
+    r"|not\s+(?:asking\s+for|requesting|wanting|looking\s+for|a)\s+(?:a\s+)?refunds?|(?<![A-Za-z])no\s+refunds?",
+    re.IGNORECASE)
+# Only asking, even next to request words ("我没说要退款，就问问", "What if I want a refund…").
+_ONLY_ASKING_RE = re.compile(r"只是问问|就问问|问问而已|随便问问|先问问|假如|假设|万一|just\s+asking|just\s+wondering|what\s+if",
+                             re.IGNORECASE)
+# Asking about refunds, unless a request is made too ("如果不能换货就退款").
+REFUND_INQUIRY_RE = re.compile(
+    _ONLY_ASKING_RE.pattern + r"|如果|要是|(?:退款|退货|退)的话|咨询一下|想?问一?下|规则|政策|流程|吗|[？?]|多久|多长时间|怎么|如何"
+    r"|是否|能不能|可不可以|会不会|有没有|(?<![A-Za-z])(?:if|how|what|when|does|do|is|can|will)(?![A-Za-z])",
+    re.IGNORECASE)
+
+
+def refund_requested(text: str) -> bool:
+    """True when the message asks for a refund, not when it asks about one or declines one."""
+    kept = NEGATED_REFUND_RE.sub("，", normalize_width(text or ""))
+    if not REFUND_RE.search(kept) or _ONLY_ASKING_RE.search(kept):
+        return False
+    return bool(REFUND_APPLY_RE.search(kept)) or not REFUND_INQUIRY_RE.search(kept)
+
+
+def refund_declined(text: str) -> bool:
+    """The message mentions a refund but does not ask for one: filing one would go against it."""
+    text = normalize_width(text or "")
+    return bool(REFUND_RE.search(text) or NEGATED_REFUND_RE.search(text)) and not refund_requested(text)
+
 # Full-width digits and Latin letters (and ＋ －, which appear in phone numbers) become ASCII:
 # "ＳＯ２０２６…" is the same order number. Chinese full-width punctuation (，？！) is left alone,
 # so what the customer typed still reads the same in the transcript.

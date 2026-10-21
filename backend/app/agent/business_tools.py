@@ -27,7 +27,7 @@ from ..localtime import local_date, zone_of
 from ..models import Approval, Conversation, Refund, Tenant, Ticket, User
 from ..rag.conflicts import disputed
 from ..rag.retrieval import cosine_gate, hybrid_search
-from ..textutil import normalize_width
+from ..textutil import normalize_width, refund_declined
 from . import handoff
 from .tools import ApprovalNeed, ApprovalRequired, ToolContext, ToolDef, ToolError, ToolRegistry, ToolUnavailable
 
@@ -466,6 +466,11 @@ def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     done = _refund_for_approval(ctx)
     if done is not None:  # already filed; the order is held now, so skip re-validation
         return {"order_id": done.order_id, "amount": done.amount}
+    # Whatever the model makes of it, "先别退款" or "如果退款的话…" does not move money (N-091). A turn that
+    # does not mention refunds at all ("是的，退吧" after the model asked) is left to the model.
+    if ctx.approval_id is None and refund_declined(ctx.customer_text):
+        raise ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。"
+                        "请回答顾客的问题；顾客明确要求退款时再申请。")
     order, amount = _validated(ctx, args)
     return {"order_id": order.order_id, "amount": amount}
 
