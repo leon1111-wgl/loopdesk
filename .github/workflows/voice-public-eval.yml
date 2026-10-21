@@ -28,26 +28,15 @@ jobs:
   prepare-aishell:
     name: AISHELL-1 test speakers
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    defaults: {run: {shell: bash}}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: pip install -r backend/requirements.txt
-      - name: Stream the test speakers out of the corpus tarball (about 15 GB; only they are kept)
-        run: |
-          mkdir -p /tmp/aishell
-          for url in https://us.openslr.org/resources/33/data_aishell.tgz https://www.openslr.org/resources/33/data_aishell.tgz; do
-            if curl -sSfL --retry 3 "$url" | tar -xz -C /tmp/aishell --wildcards \
-                'data_aishell/transcript/*' 'data_aishell/wav/S076*' 'data_aishell/wav/S077*' 'data_aishell/wav/S09*'; then
-              break
-            fi
-            rm -rf /tmp/aishell && mkdir -p /tmp/aishell
-          done
-          ls /tmp/aishell/data_aishell/wav
-      - working-directory: backend
-        run: python -m app.evals.voice.public_set --corpus aishell1 --src /tmp/aishell --n ${{ inputs.aishell }} --out ../out/synth-aishell1
+      - run: pip install -r backend/requirements.txt huggingface_hub
+      - name: The sampled test-speaker files only, from an Apache-2.0 mirror of OpenSLR 33
+        working-directory: backend
+        run: python -m app.evals.voice.public_set --corpus aishell1 --download --src /tmp/aishell --n ${{ inputs.aishell }} --out ../out/synth-aishell1
       - uses: actions/upload-artifact@v4
         with: {name: synth-aishell1, path: out/synth-aishell1, retention-days: 7}
 

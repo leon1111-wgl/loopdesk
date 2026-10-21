@@ -91,3 +91,22 @@ def test_float_wav_from_fleurs_is_read_as_16_bit():
     audio = public_set._pcm(b"RIFF" + struct.pack("<I", len(riff)) + riff)
     assert audio.dtype == np.int16 and len(audio) == 1600
     assert abs(int(audio.max()) - 16383) < 50  # 0.5 of full scale
+
+
+def test_aishell_from_loose_files_as_the_mirror_stores_them(tmp_path):
+    (tmp_path / "data_aishell" / "transcript").mkdir(parents=True)
+    (tmp_path / "data_aishell" / "transcript" / "aishell_transcript_v0.8.txt").write_text(
+        "BAC009S0764W0121 甚至 出现 交易 几乎 停滞 的 情况\nBAC009S0916W0130 一 月 成交 一百二十 万 元\n"
+        "BAC009S0002W0122 而 对 楼市 成交\n", encoding="utf-8")
+    for spk, utt in (("S0764", "BAC009S0764W0121"), ("S0916", "BAC009S0916W0130")):
+        (tmp_path / "data_aishell" / "wav" / "test" / spk).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "data_aishell" / "wav" / "test" / spk / f"{utt}.wav").write_bytes(wav_bytes())
+    rows = public_set.aishell(tmp_path, 0, tmp_path / "out")
+    assert sorted(r["key"] for r in rows) == ["BAC009S0764W0121", "BAC009S0916W0130"]
+
+
+def test_the_download_sample_is_test_speakers_only_and_fixed():
+    refs = {f"BAC009S{spk}W{i:04d}": "句子" for spk in ("0764", "0916", "0002", "0724") for i in range(100, 130)}
+    first = public_set.aishell_sample(refs, 10)
+    assert len(first) == 10 and first == public_set.aishell_sample(refs, 10)
+    assert all(utt[6:11] in public_set.AISHELL_TEST for utt in first)

@@ -5,7 +5,8 @@
 
 - AISHELL-1 (Apache-2.0, OpenSLR 33): 400 speakers from different accent areas reading news (finance,
   technology, sports), quiet room, 16 kHz. Only the official test speakers are used: the standard
-  benchmark split, so the engines can be compared with their published numbers.
+  benchmark split, so the engines can be compared with their published numbers. The sampled files are
+  fetched one by one from an Apache-2.0 mirror (--download); the 15 GB OpenSLR tarball streamed too slowly.
 - FLEURS cmn_hans_cn (CC BY 4.0, Google): volunteers reading Wikipedia sentences on their own
   microphones; the test split.
 
@@ -89,16 +90,51 @@ def _pick(ids: list[str], n: int, corpus: str) -> set[str]:
     return set(sorted(ids, key=lambda i: seed_of(corpus, i))[:n]) if n else set(ids)
 
 
+AISHELL_MIRROR = "shenyunhang/AISHELL-1"  # Apache-2.0 copy of OpenSLR 33 with the WAVs as single files
+TRANSCRIPT = "data_aishell/transcript/aishell_transcript_v0.8.txt"
+
+
+def aishell_sample(refs: dict[str, str], n: int) -> list[str]:
+    """The fixed sample of test-speaker utterances (the same on every run)."""
+    test = [u for u in refs if u[6:11] in AISHELL_TEST]
+    return sorted(test, key=lambda u: seed_of("aishell1", u))[: n or None]
+
+
+def aishell_download(dest: Path, n: int) -> None:
+    """Fetch the transcript and only the sampled test files from the mirror, not the 15 GB tarball."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from huggingface_hub import hf_hub_download
+
+    def get(path: str) -> None:
+        hf_hub_download(AISHELL_MIRROR, path, repo_type="dataset", local_dir=str(dest))
+
+    get(TRANSCRIPT)
+    refs = aishell_transcripts((dest / TRANSCRIPT).read_text(encoding="utf-8"))
+    paths = [f"data_aishell/wav/test/{u[6:11]}/{u}.wav" for u in aishell_sample(refs, n)]
+    with ThreadPoolExecutor(16) as pool:
+        list(pool.map(get, paths))
+
+
 def aishell(src: Path, n: int, out: Path) -> list[dict]:
-    refs = aishell_transcripts((src / "data_aishell" / "transcript" / "aishell_transcript_v0.8.txt").read_text(encoding="utf-8"))
+    refs = aishell_transcripts((src / TRANSCRIPT).read_text(encoding="utf-8"))
     audio: dict[str, bytes] = {}
-    for speaker in AISHELL_TEST:  # each speaker is a tar inside the corpus tar: read members, never extract
-        tar_path = src / "data_aishell" / "wav" / f"{speaker}.tar.gz"
-        with tarfile.open(tar_path) as tar:
-            for member in tar:
-                name = member.name.rsplit("/", 1)[-1]
-                if member.isfile() and name.endswith(".wav") and "/test/" in f"/{member.name}" and name[:-4] in refs:
-                    audio[name[:-4]] = tar.extractfile(member).read()
+    loose = src / "data_aishell" / "wav" / "test"
+    if loose.exists():  # the mirror's layout: one file per utterance
+        for utt in aishell_sample(refs, 0):
+            path = loose / utt[6:11] / f"{utt}.wav"
+            if path.exists():
+                audio[utt] = path.read_bytes()
+    else:  # OpenSLR's layout: a tar per speaker inside the corpus tar; read members, never extract
+        for speaker in AISHELL_TEST:
+            tar_path = src / "data_aishell" / "wav" / f"{speaker}.tar.gz"
+            if not tar_path.exists():
+                continue
+            with tarfile.open(tar_path) as tar:
+                for member in tar:
+                    name = member.name.rsplit("/", 1)[-1]
+                    if member.isfile() and name.endswith(".wav") and "/test/" in f"/{member.name}" and name[:-4] in refs:
+                        audio[name[:-4]] = tar.extractfile(member).read()
     keep = _pick(list(audio), n, "aishell1")
     return _write("aishell1-test", {u: (audio[u], refs[u], u[6:11]) for u in keep}, out)
 
@@ -135,8 +171,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--corpus", required=True, choices=["aishell1", "fleurs"])
     parser.add_argument("--src", required=True, type=Path, help="where the corpus files were downloaded")
     parser.add_argument("--n", type=int, default=0, help="utterances to sample (0 = all)")
+    parser.add_argument("--download", action="store_true", help="AISHELL-1: fetch the sample from the mirror into --src first")
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
+    if args.download and args.corpus == "aishell1":
+        aishell_download(args.src, args.n)
     rows = (aishell if args.corpus == "aishell1" else fleurs)(args.src, args.n, args.out)
     print(f"{args.corpus}: {len(rows)} utterances, {sum(r['seconds'] for r in rows) / 60:.1f} minutes")
     return 0 if rows else 1
