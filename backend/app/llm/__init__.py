@@ -15,6 +15,7 @@ def build_provider(settings: Settings) -> LLMProvider:
         return OpenAICompatProvider(
             settings.llm_base_url or "", settings.llm_api_key or "",
             timeout=settings.llm_timeout, stream_usage=settings.llm_stream_usage,
+            stall_timeout=settings.llm_stall_timeout,
         )
     if settings.llm_provider == "anthropic":
         from .anthropic_provider import AnthropicProvider

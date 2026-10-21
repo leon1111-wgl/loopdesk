@@ -78,15 +78,16 @@ class OpenAICompatProvider(LLMProvider):
     name = "openai_compat"
 
     def __init__(self, base_url: str, api_key: str, timeout: float = 60.0, stream_usage: bool = True,
-                 max_retries: int = 2, transport: httpx.BaseTransport | None = None):
+                 max_retries: int = 2, transport: httpx.BaseTransport | None = None, stall_timeout: float = 0.0):
         if not base_url or not api_key:
             raise LLMError("openai_compat provider needs LOOPDESK_LLM_BASE_URL (or LLM_PRESET) and LOOPDESK_LLM_API_KEY")
         self.base_url = base_url.rstrip("/")
         self.stream_usage = stream_usage
         self.max_retries = max_retries
         self.timeout = timeout
+        self.stall_timeout = stall_timeout if 0 < stall_timeout < timeout else timeout
         self.client = httpx.Client(
-            timeout=httpx.Timeout(timeout, connect=10.0),
+            timeout=httpx.Timeout(timeout, connect=10.0, read=self.stall_timeout),
             headers={"Authorization": f"Bearer {api_key}"},
             transport=transport,
         )
@@ -107,25 +108,36 @@ class OpenAICompatProvider(LLMProvider):
 
     def _post_with_retry(self, payload: dict[str, Any], deadline: float | None = None) -> httpx.Response:
         """Retries transient failures, but never past the run's deadline (a monotonic time):
-        each attempt's timeout is capped to the time left, and no retry starts after it."""
+        each attempt's timeout is capped to the time left, and no retry starts after it.
+
+        A model that sends nothing for ``stall_timeout`` is not retried (N-077): a hanging service
+        would hang again, and three attempts would spend the whole run deadline on one tier. The
+        runtime moves on to the other tier, then to the quoted-policy answer."""
         delay = 1.0
         for attempt in range(self.max_retries + 1):
             left = None if deadline is None else deadline - time.monotonic()
             if left is not None and left <= 0:
                 raise LLMRetryableError("run deadline reached")
             try:
-                timeout = None if left is None else httpx.Timeout(min(self.timeout, left), connect=min(10.0, left))
+                timeout = None if left is None else httpx.Timeout(min(self.timeout, left), connect=min(10.0, left),
+                                                                  read=min(self.stall_timeout, left))
                 request = self.client.build_request("POST", f"{self.base_url}/chat/completions", json=payload,
                                                     **({"timeout": timeout} if timeout else {}))
                 response = self.client.send(request, stream=bool(payload.get("stream")))
+            except httpx.ReadTimeout as exc:
+                raise LLMRetryableError(self._stalled(deadline)) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 if attempt == self.max_retries:
                     raise LLMRetryableError(f"network error: {exc}") from exc
             else:
                 if response.status_code < 400:
                     return response
-                body = response.read().decode("utf-8", "replace")[:500]
-                response.close()
+                try:  # an error status whose body then hangs is still that error, not a crash
+                    body = response.read().decode("utf-8", "replace")[:500]
+                except httpx.HTTPError:
+                    body = "(body not received)"
+                finally:
+                    response.close()
                 if response.status_code not in RETRYABLE_STATUS:
                     raise LLMError(f"HTTP {response.status_code}: {body}")
                 if attempt == self.max_retries:
@@ -135,6 +147,11 @@ class OpenAICompatProvider(LLMProvider):
             time.sleep(delay)
             delay *= 2
         raise LLMRetryableError("unreachable")
+
+    def _stalled(self, deadline: float | None) -> str:
+        if deadline is not None and time.monotonic() >= deadline - 0.05:  # cut short by the run's deadline
+            return "run deadline reached while waiting for the model"
+        return f"stall timeout: the model sent nothing for {self.stall_timeout:g} s"
 
     def chat(self, messages, tools, model, options=None) -> ChatResult:
         final: ChatResult | None = None
@@ -146,7 +163,8 @@ class OpenAICompatProvider(LLMProvider):
 
     def stream(self, messages, tools, model, options=None) -> Iterator[StreamEvent]:
         payload = self._payload(messages, tools, model, options, stream=True)
-        response = self._post_with_retry(payload, deadline=(options or {}).get("deadline"))
+        deadline = (options or {}).get("deadline")
+        response = self._post_with_retry(payload, deadline=deadline)
         content_parts: list[str] = []
         calls: dict[int, dict[str, str]] = {}
         usage: Usage | None = None
@@ -175,6 +193,8 @@ class OpenAICompatProvider(LLMProvider):
                         slot["arguments"] += fn.get("arguments") or ""
                     if choice.get("finish_reason"):
                         finish_reason = choice["finish_reason"]
+        except httpx.ReadTimeout as exc:
+            raise LLMRetryableError(self._stalled(deadline)) from exc
         except httpx.HTTPError as exc:
             raise LLMRetryableError(f"stream interrupted: {exc}") from exc
         finally:

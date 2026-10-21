@@ -191,8 +191,9 @@ def test_a_model_refusal_hands_over_too(ask, login, monkeypatch):
 
 def test_a_run_past_its_deadline_hands_over_instead_of_waiting(settings, client, ask, login):
     # Review round 2, N-018: no budget for the whole run (6 steps x 2 tiers x 3 attempts x 60 s).
+    # A question about an order has no policy text to fall back on (N-077), so a person takes it.
     settings.run_deadline_seconds = 1e-9  # already spent when the first model call would start
-    conversation_id, events = ask(login("customer@leon.demo"), "退款多久能到账？")
+    conversation_id, events = ask(login("customer@leon.demo"), "SO20261008002 怎么还没发货？")
     final = by_type(events, "final")[0]
     assert final["status"] == "handoff" and "处理时间过长" in final["text"]
     run_id = events[0]["run_id"]

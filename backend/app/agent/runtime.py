@@ -370,10 +370,12 @@ class AgentRuntime:
                 ctx.approval_id = None
                 if not outcome.is_error:
                     executed = outcome
+                    state["acted"] = True
                     # If the model then fails, the degraded reply is what was done, not a guess.
                     state["executed_message"] = str(outcome.output.get("message") or APPROVED_FALLBACK_TEXT)
             else:
                 outcome = ToolOutcome("result", rejected_result(call.name, comment))
+                state["acted"] = True  # the customer must hear "rejected", not a quoted refund policy
                 ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
             messages.append(self._tool_message(call, outcome))
             events.append({"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
@@ -451,6 +453,8 @@ class AgentRuntime:
                 # channel (N-078), is never cached: the next customer gets a full search.
                 if outcome.is_error or outcome.output.get("degraded"):
                     state["tool_errors"] = state.get("tool_errors", 0) + 1
+                elif (tool := self.registry.get(call.name)) and tool.risk != "read":
+                    state["acted"] = True  # something changed: a policy quote would not say so
                 if outcome.output.get("degraded") and not run.error:
                     # Counted as a failure (dashboard, loopdesk_run_errors_total, not "resolved"):
                     # otherwise an embedding outage would only show in a log line.
@@ -601,9 +605,23 @@ class AgentRuntime:
         return deadline is not None and time.monotonic() >= deadline
 
     def _deadline_handoff(self, run, tracer, ctx, state, started) -> Iterator[dict[str, Any]]:
+        """Out of time, usually because the model hung (N-077). A knowledge question still gets the
+        policy text quoted, as when the model is down; only what that cannot answer goes to a person,
+        so a minute-long outage does not fill the queue with FAQ tickets."""
         with tracer.span("guardrail", "run_deadline", {"seconds": self.settings.run_deadline_seconds}) as span:
             span.status = "error"
             span.set(steps=state["steps"])
+        if not run.error:  # tools ran out the clock, not the model: still a failure, never "resolved"
+            run.error = "run deadline reached"
+        state["cache_key"] = None
+        if state.get("executed_message"):  # an approved action already ran (money moved): say so
+            yield from self._finish(run, tracer, ctx, state, state["executed_message"], started, status="completed",
+                                    extra_meta={"degraded": True})
+            return
+        if (answer := self._quoted_policy(tracer, ctx, state)) is not None:
+            yield from self._finish(run, tracer, ctx, state, answer, started, status="completed",
+                                    extra_meta={"degraded": True})
+            return
         text = DEADLINE_TEXT + self._fallback_handoff(tracer, ctx, "处理超时")
         yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
 
@@ -639,23 +657,31 @@ class AgentRuntime:
             yield from self._finish(run, tracer, ctx, state, state["executed_message"], started, status="completed",
                                     extra_meta={"degraded": True})
             return
-        question = state.get("question") or state["user_text"]
-        quoted: list[dict[str, Any]] = []
-        if not ORDER_ID_RE.search(question):
-            call = ToolCall(id="degraded_search", name="search_knowledge", arguments={"query": question})
-            outcome = self._run_tool(tracer, ctx, call)
-            if not outcome.is_error and not outcome.output.get("disputed"):
-                quoted = outcome.output.get("results", [])[:DEGRADED_QUOTES]
-        if quoted:
-            refs = {q["ref"] for q in quoted}
-            ctx.evidence[:] = [e for e in ctx.evidence if e.kind != "kb" or e.ref in refs]
-            quotes = "\n".join(f"「{_plain(q['text'])}」[{q['ref']}]" for q in quoted)
-            yield from self._finish(run, tracer, ctx, state, DEGRADED_ANSWER.format(quotes=quotes), started,
-                                    status="completed", extra_meta={"degraded": True})
+        if (answer := self._quoted_policy(tracer, ctx, state)) is not None:
+            yield from self._finish(run, tracer, ctx, state, answer, started, status="completed",
+                                    extra_meta={"degraded": True})
             return
         text = DEGRADED_HANDOFF_TEXT + self._fallback_handoff(tracer, ctx, "智能客服暂时不可用")
         yield from self._finish(run, tracer, ctx, state, text, started, status="handoff",
                                 extra_meta={"degraded": True})
+
+    def _quoted_policy(self, tracer: Tracer, ctx: ToolContext, state: dict[str, Any]) -> str | None:
+        """The answer that needs no model: the best knowledge chunks, quoted and cited. None for a
+        question about an order, after a tool changed something in this run (the customer must hear
+        what happened, not a policy), when the knowledge disagrees, or when nothing relevant is found."""
+        question = state.get("question") or state["user_text"]
+        if ORDER_ID_RE.search(question) or state.get("acted"):
+            return None
+        call = ToolCall(id="degraded_search", name="search_knowledge", arguments={"query": question})
+        outcome = self._run_tool(tracer, ctx, call)
+        if outcome.is_error or outcome.output.get("disputed"):
+            return None
+        quoted = outcome.output.get("results", [])[:DEGRADED_QUOTES]
+        if not quoted:
+            return None
+        refs = {q["ref"] for q in quoted}
+        ctx.evidence[:] = [e for e in ctx.evidence if e.kind != "kb" or e.ref in refs]
+        return DEGRADED_ANSWER.format(quotes="\n".join(f"「{_plain(q['text'])}」[{q['ref']}]" for q in quoted))
 
     def _conflict_handoff(self, run, tracer, ctx, state, disputed, started) -> Iterator[dict[str, Any]]:
         """The knowledge this answer would rest on contradicts itself and nobody has checked which

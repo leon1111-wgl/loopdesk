@@ -146,6 +146,11 @@ class Settings:
     llm_model_fast: str = "mock-fast"
     llm_model_strong: str = "mock-strong"
     llm_timeout: float = 60.0
+    # OpenAI-compatible streaming: the longest the model may send nothing (before the first token,
+    # or between chunks). A hanging model then fails in seconds, without retries, and the other tier
+    # or the quoted-policy answer takes over, instead of every customer waiting out the run deadline
+    # (N-077). 0 falls back to llm_timeout.
+    llm_stall_timeout: float = 10.0
     otlp_endpoint: str | None = None  # OTLP/HTTP traces endpoint, e.g. http://otel-collector:4318/v1/traces
     otlp_service_name: str = "loopdesk"
     # Whole run (all steps, retries, both model tiers); 0 disables. A customer is handed to a person
@@ -263,6 +268,7 @@ class Settings:
         s.llm_model_strong = _env("LLM_MODEL_STRONG", default_strong)
         s.llm_model_fast = _env("LLM_MODEL_FAST", default_fast if s.llm_provider in ("mock", "anthropic") else s.llm_model_strong)
         s.llm_timeout = _env_float("LLM_TIMEOUT", s.llm_timeout)
+        s.llm_stall_timeout = _env_float("LLM_STALL_TIMEOUT", s.llm_stall_timeout)
         s.run_deadline_seconds = _env_float("RUN_DEADLINE_SECONDS", s.run_deadline_seconds)
         s.llm_breaker_failures = _env_int("LLM_BREAKER_FAILURES", s.llm_breaker_failures)
         s.llm_breaker_cooldown_seconds = _env_float("LLM_BREAKER_COOLDOWN_SECONDS", s.llm_breaker_cooldown_seconds)
