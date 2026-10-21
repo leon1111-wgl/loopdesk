@@ -43,7 +43,8 @@ _ORDER = re.compile(r"(?<![A-Za-z0-9])(?P<prefix>[A-Za-z](?:[\s,，、]?[A-Za-z]
 # A punctuation model may put a comma between the two ("爱思欧，二零二六…").
 _SO_SPOKEN = re.compile(r"(?:[爱艾埃Ii][斯思四死丝司Cc4]?[欧偶哦鸥Oo]|[爱艾埃][斯思四死丝司]|[搜骚嗖])"
                         r"(?=\s*[,，、:：]?\s*20\d{9}(?!\d))")
-_ORDER_CONTEXT = re.compile(r"(?:订单号?|单号|SO\d{11}\s*(?:和|跟|与|还有|、|，|,))(?:是|为)?[,，:：]?\s*$")
+# A punctuation model may put a comma after either ("订单号，是…", "SO…，和…").
+_ORDER_CONTEXT = re.compile(r"(?:(?:订单号?|单号)[,，]?|SO\d{11}\s*[,，]?\s*(?:和|跟|与|还有|、|，|,))(?:是|为)?[,，:：]?\s*$")
 # Money: a numeral (spoken or written) and 块/元, optionally a trailing 毛/角 digit ("九块九", "三块五毛").
 _MONEY = re.compile(rf"(?P<num>[{_NUMERAL_CHARS}点0-9.]+|\d+(?:\.\d+)?万)(?P<unit>块钱|块|元)(?P<tail>[{_DIGIT_CHARS}](?:毛|角)?)?")
 _PERCENT = re.compile(rf"百分之(?P<num>[{_NUMERAL_CHARS}点]+)")

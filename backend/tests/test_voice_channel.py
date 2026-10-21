@@ -640,7 +640,7 @@ class _Unpunctuated:
 
 
 def _split_requests(text: str) -> str:
-    return text.replace("退款另外", "退款，另外") + "？"
+    return text.replace("退款另外", "退款，另外")  # the realtime ct-punc drops the final mark
 
 
 def test_punctuation_goes_on_the_final_text_only():
@@ -655,11 +655,11 @@ def test_punctuation_goes_on_the_final_text_only():
     assert stream.accept(silence(0.1)) == final[: len(final) // 2]  # partials are shown as decoded
     result = stream.finish()
     assert seen == [final]
-    assert result.text == "so二零二六零九一八零零一我要退货退款，另外发票怎么开？"
-    assert result.passes["final"] == final  # the decoder's own output stays a pass of its own
+    assert result.text == "so二零二六零九一八零零一我要退货退款，另外发票怎么开"
+    assert result.passes["final"] == result.unpunctuated == final  # the decoder's own output stays a pass
     assert result.punc_ms is not None and result.final_ms == pytest.approx(100.0 + result.punc_ms)
     transcript = understand(result, Lexicon([]))
-    assert transcript.text == "SO20260918001我要退货退款，另外发票怎么开？"
+    assert transcript.text == "SO20260918001我要退货退款，另外发票怎么开"
     assert [(e.kind, e.value, e.confidence) for e in transcript.entities] == [("order_id", "SO20260918001", 0.95)]
 
 
@@ -679,19 +679,74 @@ def test_a_failing_punctuation_model_keeps_the_words(caplog):
 
     with caplog.at_level("WARNING", logger="app.voice.engines"):
         result = PunctuatedASR(_Unpunctuated("帮我查一下物流"), broken).stream([]).finish()
-    assert result.text == "帮我查一下物流" and result.punc_ms is None  # the turn goes on, unpunctuated
+    assert result.text == "帮我查一下物流" and result.unpunctuated is None  # the turn goes on, unpunctuated
+    assert result.punc_ms is not None and result.final_ms == pytest.approx(100.0 + result.punc_ms)  # the attempt took time
     assert "punctuation failed" in caplog.text
 
 
-def test_an_amount_the_punctuation_split_is_read_back():
-    # The unpunctuated final pass is a second reading: punctuation that changes an entity is caught.
-    from app.voice.engines import PunctuatedASR
+@pytest.mark.parametrize("punctuated,decoded,expected", [
+    # A sentence end inside an order number: ITN no longer sees eleven digits.
+    ("订单二零二六一零零八。零零二到哪了", "订单二零二六一零零八零零二到哪了", "订单SO20261008002到哪了"),
+    ("先退我九块，九", "先退我九块九", "先退我9.9块"),
+    ("下载的歌能导出成mp，三吗", "下载的歌能导出成mp三吗", "下载的歌能导出成MP3吗"),  # a tenant term
+])
+def test_punctuation_that_changes_an_entity_is_not_used(punctuated, decoded, expected):
+    from app.voice.engines import ASRResult
     from app.voice.session import understand
 
-    asr = PunctuatedASR(_Unpunctuated("先退我九块九"), lambda text: text.replace("九块", "九块，"))
-    transcript = understand(asr.stream([]).finish(), Lexicon([]))
-    amount = next(e for e in transcript.entities if e.kind == "amount")
-    assert amount.value == "9" and amount.confidence < 0.6 and "passes_disagree" in amount.notes
+    result = ASRResult(punctuated, {"final": decoded, "streaming": decoded}, unpunctuated=decoded)
+    assert understand(result, Lexicon(["MP3"])).text == expected
+
+
+def test_punctuation_that_hides_a_phone_number_from_masking_is_not_used():
+    from app.voice.engines import ASRResult
+    from app.voice.session import understand
+
+    decoded = "我的手机号是一三八一二三四五六七八"
+    transcript = understand(ASRResult("我的手机号是一三八。一二三四五六七八", {"final": decoded}, unpunctuated=decoded),
+                            Lexicon([]))
+    assert transcript.pii == ["phone"] and "1234" not in transcript.text
+
+
+def test_retrying_engines_keeps_the_punctuated_asr(monkeypatch):
+    from app.config import Settings
+    from app.voice import engines
+
+    class FakeParaformer(ScriptedASR):
+        name, punctuates = "paraformer", False
+
+        def __init__(self, device="cpu"):
+            super().__init__()
+
+    loaded = []
+
+    class FakePunctuator:
+        model_id = "fake-punc"
+
+        def __init__(self, device="cpu"):
+            loaded.append(device)
+
+        def __call__(self, text):
+            return text
+
+    def down(url, speaker=None):
+        raise ConnectionError("sidecar down")
+
+    monkeypatch.setattr(engines, "ParaformerASR", FakeParaformer)
+    monkeypatch.setattr(engines, "Punctuator", FakePunctuator)
+    monkeypatch.setattr(engines, "CosyVoiceTTS", down)
+    clock = [1000.0]
+    monkeypatch.setattr(engines, "_clock", lambda: clock[0])
+    engines.set_engines(None, None)
+    s = Settings()
+    s.voice_asr, s.voice_tts, s.voice_punc = "paraformer", "cosyvoice", True
+    assert engines.get_engines(s)[0] is None
+    clock[0] += engines.RETRY_SECONDS + 1
+    monkeypatch.setattr(engines, "CosyVoiceTTS", lambda url, speaker=None: engines.ToneTTS())
+    built, _ = engines.get_engines(s)
+    assert isinstance(built.asr, engines.PunctuatedASR) and loaded == ["cpu"]  # loaded once, still punctuating
+    assert built.describe()["punctuation"] == "fake-punc"
+    engines.set_engines(None, None)
 
 
 @pytest.mark.parametrize("decoded,punctuated,kept", [
@@ -703,6 +758,10 @@ def test_an_amount_the_punctuation_split_is_read_back():
     ("s o 二 零 二 六 零 九 一 八 零 零 一 我 要 退 货 退 款 另 外 发 票 怎 么 开",
      "s o二零二六零九一八零零一，我要退货退款。另外发票怎么开", "s o二零二六零九一八零零一，我要退货退款。另外发票怎么开"),
     ("，帮我查一下物流", "，，帮我查一下物流", "帮我查一下物流"),  # nothing before the first word
+    # The large ct-punc capitalises a sentence's first Latin word (voice-eval run 39519873004): the
+    # marks are taken, the decoder's letters kept.
+    ("so 二 零 二 六 零 九 一 八 零 零 一 我 要 退 货 退 款 另 外 发 票 怎 么 开",
+     "So二零二六零九一八零零一，我要退货退款，另外发票怎么开？", "so二零二六零九一八零零一，我要退货退款，另外发票怎么开？"),
 ])
 def test_punctuation_only_between_words(decoded, punctuated, kept):
     from app.voice.engines import PunctuatedASR
@@ -738,6 +797,8 @@ def test_punctuation_setting_wraps_only_engines_that_write_none(monkeypatch, cap
     loaded = []
 
     class FakePunctuator:
+        model_id = "fake-punc"
+
         def __init__(self, device="cpu"):
             loaded.append(device)
 
@@ -752,16 +813,17 @@ def test_punctuation_setting_wraps_only_engines_that_write_none(monkeypatch, cap
     assert s.voice_punc is False  # off by default
     built, problem, _ = engines.build_engines(s)
     assert problem is None and isinstance(built.asr, FakeParaformer) and loaded == []
-    assert built.describe()["punctuation"] is False
+    assert built.describe()["punctuation"] is None
 
     s.voice_punc = True
     built, problem, _ = engines.build_engines(s)
     assert isinstance(built.asr, engines.PunctuatedASR) and built.asr.name == "paraformer" and loaded == ["cpu"]
-    assert built.describe()["punctuation"] is True
+    assert built.describe()["punctuation"] == "fake-punc"
 
     s.voice_asr = "sensevoice"  # writes its own punctuation: nothing to add, no model loaded
     built, _, _ = engines.build_engines(s)
     assert isinstance(built.asr, FakeSenseVoice) and loaded == ["cpu"]
+    assert built.describe()["punctuation"] == "engine"
 
     def missing(device="cpu"):
         raise ImportError("No module named 'funasr'")

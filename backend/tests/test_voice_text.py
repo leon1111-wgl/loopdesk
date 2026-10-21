@@ -316,6 +316,9 @@ def test_sou_elsewhere_is_left_alone():
     ("搜，二零二六一零一五一零二帮我查一下", "SO20261015102帮我查一下"),
     ("订单号是，二零二六一零零八零零二。", "订单号是SO20261008002。"),
     ("一百九十八块，另外能开发票吗？", "198块，另外能开发票吗？"),
+    # The second of two order numbers, and 订单号 with a comma after it (Fable review of 3172ff6).
+    ("SO20261008002，和 20261012003", "SO20261008002，和SO20261012003"),
+    ("订单号，是二零二六一零零八零零二", "订单号，是SO20261008002"),
     ("我的手机号是，一三八，一二三四，五六七八。", "我的手机号是，13812345678。"),
     ("下载的歌能导出成 M P 三吗？", "下载的歌能导出成MP3吗？"),
     # English stays English; numbers keep their own separators.

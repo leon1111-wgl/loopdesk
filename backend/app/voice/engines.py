@@ -40,6 +40,7 @@ class ASRResult:
     final_ms: float = 0.0  # compute time of finish() after the end of the utterance
     chunk_ms: list[float] = field(default_factory=list)  # compute time of each streaming chunk
     punc_ms: float | None = None  # the punctuation step's share of final_ms (None: no punctuation step)
+    unpunctuated: str | None = None  # the text before punctuation was added (None: none was added)
 
 
 class ASRStream(Protocol):
@@ -108,7 +109,9 @@ class _BufferedStream:
 PARAFORMER_STREAMING = "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online"
 PARAFORMER_SEACO = "iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
 SENSEVOICE = "iic/SenseVoiceSmall"
-# The punctuation model FunASR's own 2-pass server puts after the final pass.
+# The punctuation model FunASR's own 2-pass server puts after the final pass; of the three FunASR
+# CT-Transformers compared in docs/EVALUATION.md it was the only one that cost the agent no task. The large
+# cn-en model also loads its 11 MB jieba user dictionary into the process-wide jieba retrieval uses.
 PUNC_CT = "iic/punc_ct-transformer_zh-cn-common-vad_realtime-vocab272727"
 CHUNK_SIZE = [0, 10, 5]  # 600 ms chunks, 300 ms look-ahead
 CHUNK_SAMPLES = CHUNK_SIZE[1] * 960
@@ -247,6 +250,7 @@ class Punctuator:
     utterance starts with an empty cache: a turn is punctuated on its own, not as the previous one's tail."""
 
     def __init__(self, device: str = "cpu", model: str = PUNC_CT):
+        self.model_id = model
         self.model = _funasr(model, device)
         self.lock = threading.Lock()
 
@@ -267,8 +271,8 @@ def between_words(decoded: str, punctuated: str) -> str:
     spacing is not used: the decoder's words are what the customer said."""
     from ..textutil import jieba
 
-    words = _SPACE_OR_MARK.sub("", decoded)
-    if _SPACE_OR_MARK.sub("", punctuated) != words:
+    words, heard = _SPACE_OR_MARK.sub("", decoded), _SPACE_OR_MARK.sub("", punctuated)
+    if len(heard) != len(words) or heard.lower() != words.lower():  # the large model capitalises "So"
         logger.warning("voice punctuation changed the words, not used: %r -> %r", decoded, punctuated)
         return decoded
     boundaries, at = set(), 0
@@ -276,21 +280,22 @@ def between_words(decoded: str, punctuated: str) -> str:
         at += len(word)
         boundaries.add(at)
     out, seen = [], 0
-    for ch in punctuated:
+    for ch in punctuated:  # the model's marks and spacing, the decoder's characters
         if ch in _MARKS:
             if seen in boundaries:
                 out.append(ch)
-        else:
+        elif ch.isspace():
             out.append(ch)
-            seen += not ch.isspace()
+        else:
+            out.append(words[seen])
+            seen += 1
     return "".join(out)
 
 
 def punctuate(result: ASRResult, punc: Callable[[str], str]) -> ASRResult:
-    """Punctuate the text handed on, between words only, and time it. The passes keep what the decoder
-    wrote, so the unpunctuated final pass is a second reading: punctuation that changes an order number
-    or an amount makes the passes disagree, and the entity is read back. A model error keeps the words
-    unpunctuated."""
+    """Punctuate the text handed on, between words only, and time it. The text before is kept
+    (``unpunctuated``): understand() falls back to it when the punctuation changed an order number, an
+    amount or what PII masking finds. A model error keeps the words unpunctuated."""
     if not result.text.strip():
         return result
     started = time.perf_counter()
@@ -298,10 +303,11 @@ def punctuate(result: ASRResult, punc: Callable[[str], str]) -> ASRResult:
         text = between_words(result.text, punc(result.text))
     except Exception:
         logger.warning("voice punctuation failed, the transcript stays unpunctuated", exc_info=True)
-        result.final_ms += (time.perf_counter() - started) * 1000
-        return result
-    result.text, result.punc_ms = text, (time.perf_counter() - started) * 1000
+        text = None
+    result.punc_ms = (time.perf_counter() - started) * 1000
     result.final_ms += result.punc_ms
+    if text is not None:
+        result.unpunctuated, result.text = result.text, text
     return result
 
 
@@ -483,8 +489,12 @@ class VoiceEngines:
     vad: Callable[[], VAD] = EnergyVAD  # a fresh detector per session: model VADs keep state
 
     def describe(self) -> dict:
+        if isinstance(self.asr, PunctuatedASR):  # which punctuation model is live, if any
+            punctuation = getattr(self.asr.punc, "model_id", "custom")
+        else:
+            punctuation = "engine" if getattr(self.asr, "punctuates", False) else None
         return {"asr": self.asr.name, "tts": self.tts.name, "tts_sample_rate": self.tts.sample_rate,
-                "punctuation": getattr(self.asr, "punctuates", False)}
+                "punctuation": punctuation}
 
 
 def build_engines(settings: Settings, asr: ASREngine | None = None

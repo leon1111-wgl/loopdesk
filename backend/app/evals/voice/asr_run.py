@@ -51,14 +51,17 @@ def repunctuate(patterns: list[str], out: Path, punc, model: str) -> int:
     wrote before the between-words check."""
     from ...voice.engines import ASRResult, punctuate, warm_segmenter
 
+    timings = ("final_hw_ms", "final_nohw_ms", "chunk_ms")  # the decoding run's, on another runner
+
     warm_segmenter()
     out.parent.mkdir(parents=True, exist_ok=True)
     n = 0
     with out.open("w", encoding="utf-8") as fh:
         for path in sorted({f for p in patterns for f in glob.glob(p)}):
             for row in read_jsonl(Path(path)):
-                if row.get("engine") != "paraformer" or row.get("final_hw") is None:
+                if row.get("engine") != "paraformer" or row.get("final_hw") is None or row.get("repunctuated"):
                     continue
+                row = {k: v for k, v in row.items() if k not in timings}
                 wrote: list[str] = []
                 result = punctuate(ASRResult(row["final_hw"], {"final": row["final_hw"]}),
                                    lambda text: wrote.append(punc(text)) or wrote[-1])
@@ -95,7 +98,11 @@ def main(argv: list[str] | None = None) -> int:
     hotwords = tenant_hotwords()
     if args.engine == "paraformer":
         engine = engines.ParaformerASR(args.device, two_pass=True)
-        punctuated = engines.PunctuatedASR(engine, engines.Punctuator(args.device, model=punc_model))  # LOOPDESK_VOICE_PUNC
+        try:  # LOOPDESK_VOICE_PUNC; as in the live channel, a model that will not load leaves the rest working
+            punctuated = engines.PunctuatedASR(engine, engines.Punctuator(args.device, model=punc_model))
+        except Exception as exc:
+            print(f"punctuation model {punc_model} not loaded ({type(exc).__name__}: {exc}): no final_hw_punc", flush=True)
+            punctuated = engine
     elif args.engine == "sensevoice":
         engine = engines.SenseVoiceASR(args.device)
     else:
@@ -122,8 +129,9 @@ def main(argv: list[str] | None = None) -> int:
                 punc_ms = result.punc_ms or 0.0
                 started = time.perf_counter()
                 without = engine.decode_final(audio, [])
-                record.update(streaming=result.passes["streaming"], final_hw=result.passes["final"],
-                              final_hw_punc=result.text, punc_model=punc_model, final_nohw=without,
+                if punctuated is not engine:
+                    record.update(final_hw_punc=result.text, punc_model=punc_model)
+                record.update(streaming=result.passes["streaming"], final_hw=result.passes["final"], final_nohw=without,
                               chunk_ms=[round(c, 1) for c in result.chunk_ms],
                               final_hw_ms=round(result.final_ms - punc_ms, 1),  # as before: without punctuation
                               punc_ms=None if result.punc_ms is None else round(result.punc_ms, 2),

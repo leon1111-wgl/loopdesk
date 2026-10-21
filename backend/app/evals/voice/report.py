@@ -40,6 +40,21 @@ CONFIGS = {  # name: (engine, hypothesis field)
     "whisper+prompt": ("whisper", "final_hw"),
 }
 TEXT_MODES = ("raw", "itn", "itn+lexicon")
+# A punctuated transcript and the decoder's own output it was made from: the live channel keeps the
+# latter (ASRResult.unpunctuated and the "final" pass) and falls back to it when punctuation changed an entity.
+DECODED_FROM = {"final_hw_punc": "final_hw"}
+READBACK_CONFIGS = ("paraformer-2pass+hotwords", "paraformer-2pass+hotwords+punc")
+
+
+def unique(records: list[dict]) -> list[dict]:
+    """One record per utterance and engine. A run's transcripts and their re-punctuated copy can be
+    globbed together; the copy (it has more fields) is kept, so configs compare the same utterances."""
+    kept: dict[tuple, dict] = {}
+    for r in records:
+        key = (r["id"], r.get("variant"), r.get("condition"), r.get("engine"))
+        if key not in kept or len(r) > len(kept[key]):
+            kept[key] = r
+    return list(kept.values())
 
 
 def edits(a: str, b: str) -> int:
@@ -61,8 +76,15 @@ def pct(values: list[float], q: float) -> float | None:
     return round(ordered[min(len(ordered) - 1, max(0, round(q * (len(ordered) - 1))))], 1)
 
 
-def agent_text(hyp: str, mode: str, lexicon: Lexicon) -> str:
-    result = ASRResult(hyp, {"final": hyp})
+def as_received(hyp: str, decoded: str | None = None, streaming: str | None = None) -> ASRResult:
+    """The ASR result the live channel would hand to understand(); ``decoded``: the text before punctuation."""
+    punctuated = decoded is not None and decoded != hyp
+    passes = {"final": decoded if punctuated else hyp, **({"streaming": streaming} if streaming else {})}
+    return ASRResult(hyp, passes, unpunctuated=decoded if punctuated else None)
+
+
+def agent_text(hyp: str, mode: str, lexicon: Lexicon, decoded: str | None = None) -> str:
+    result = as_received(hyp, decoded)
     if mode == "raw":
         return understand(result, Lexicon([]), use_itn=False, correct=False).text
     return understand(result, lexicon, correct=mode == "itn+lexicon").text
@@ -93,7 +115,7 @@ def asr_tables(records: list[dict], hotwords: dict[str, list[str]]) -> dict:
     lexicons = {t: Lexicon(words) for t, words in hotwords.items()}
     groups: dict[tuple, dict] = defaultdict(lambda: {"edits": 0, "chars": 0, "n": 0, "exact": 0,
                                                      "entities": defaultdict(lambda: [0, 0])})
-    readback = defaultdict(lambda: {"wrong": 0, "wrong_flagged": 0, "right": 0, "right_flagged": 0})
+    readback = defaultdict(lambda: defaultdict(lambda: {"wrong": 0, "wrong_flagged": 0, "right": 0, "right_flagged": 0}))
     aliases: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for r in records:
         terms = hotwords.get(r["tenant"], [])
@@ -102,10 +124,10 @@ def asr_tables(records: list[dict], hotwords: dict[str, list[str]]) -> dict:
         for config, (engine, field) in CONFIGS.items():
             if r["engine"] != engine or r.get(field) is None:
                 continue
-            hyp = r[field]
+            hyp, decoded = r[field], r.get(DECODED_FROM.get(field, field))
             ref_c, hyp_c = canonical(r["question"]), canonical(hyp)
             for mode in TEXT_MODES:
-                text = agent_text(hyp, mode, lexicons.get(r["tenant"], Lexicon([])))
+                text = agent_text(hyp, mode, lexicons.get(r["tenant"], Lexicon([])), decoded)
                 for scope in ((config, r["condition"], "all", mode), (config, r["condition"], r["variant"], mode)):
                     g = groups[scope]
                     if mode == "itn+lexicon":
@@ -116,15 +138,16 @@ def asr_tables(records: list[dict], hotwords: dict[str, list[str]]) -> dict:
                     for kind, (hit, total) in entity_hits(r["question"], text, terms).items():
                         g["entities"][kind][0] += hit
                         g["entities"][kind][1] += total
-            if config == "paraformer-2pass+hotwords":
-                text = agent_text(hyp, "itn+lexicon", lexicons.get(r["tenant"], Lexicon([])))
+            if config in READBACK_CONFIGS:
+                text = agent_text(hyp, "itn+lexicon", lexicons.get(r["tenant"], Lexicon([])), decoded)
                 want = {e.value for e in extract_entities(r["question"]) if e.kind == "order_id"}
+                received = as_received(hyp, decoded, r.get("streaming"))
                 got = assess([e for e in extract_entities(text) if e.kind == "order_id"],
-                             other_passes=[r.get("streaming") or ""])
+                             other_passes=[v for v in received.passes.values() if v and v != hyp])
                 if want and got:
                     flagged = any(e.confidence < 0.6 for e in got)
                     right = {e.value for e in got} == want
-                    stats = readback[r["condition"]]
+                    stats = readback[config][r["condition"]]
                     stats["right" if right else "wrong"] += 1
                     stats["right_flagged" if right else "wrong_flagged"] += flagged
             if config in ("paraformer-2pass+hotwords", "sensevoice", "whisper+prompt") and not respelled(r):
@@ -140,9 +163,10 @@ def asr_tables(records: list[dict], hotwords: dict[str, list[str]]) -> dict:
         row["entities"] = {k: {"hit": h, "total": t, "accuracy": round(h / t, 4)} for k, (h, t) in g["entities"].items()}
         table.append(row)
     return {"asr": table,
-            "readback": {c: {**s, "recall": round(s["wrong_flagged"] / s["wrong"], 4) if s["wrong"] else None,
-                             "false_alarm": round(s["right_flagged"] / s["right"], 4) if s["right"] else None}
-                         for c, s in readback.items()},
+            "readback": {config: {c: {**s, "recall": round(s["wrong_flagged"] / s["wrong"], 4) if s["wrong"] else None,
+                                      "false_alarm": round(s["right_flagged"] / s["right"], 4) if s["right"] else None}
+                                  for c, s in by_condition.items()}
+                         for config, by_condition in readback.items()},
             "alias_suggestions": {t: dict(sorted(v.items(), key=lambda kv: -kv[1])[:8]) for t, v in aliases.items()}}
 
 
@@ -163,20 +187,27 @@ def latency_tables(records: list[dict], vad: list[dict], tts: list[dict], synth:
     asr = {}
     for engine, field in (("paraformer", "final_hw_ms"), ("sensevoice", "final_nohw_ms"), ("whisper", "final_hw_ms")):
         rows = [r for r in records if r["engine"] == engine and r.get(field) is not None]
-        if not rows:
-            continue
-        finals = [r[field] for r in rows]
-        rtf = [r[field] / 1000 / r["seconds"] for r in rows if r["seconds"]]
-        entry = {"n": len(rows), "final_ms_p50": pct(finals, 0.5), "final_ms_p95": pct(finals, 0.95),
-                 "final_rtf_p50": round(statistics.median(rtf), 3) if rtf else None}
-        chunks = [c for r in rows for c in (r.get("chunk_ms") or [])]
-        if chunks:
-            entry.update(chunk_ms_p50=pct(chunks, 0.5), chunk_ms_p95=pct(chunks, 0.95), chunk_audio_ms=600,
-                         streaming_rtf_p50=round(statistics.median(chunks) / 600, 3))
-        punc = [r["punc_ms"] for r in rows if r.get("punc_ms") is not None]
-        if punc:  # what the punctuation step adds to the final pass
+        entry: dict = {}
+        if rows:
+            finals = [r[field] for r in rows]
+            rtf = [r[field] / 1000 / r["seconds"] for r in rows if r["seconds"]]
+            entry = {"n": len(rows), "final_ms_p50": pct(finals, 0.5), "final_ms_p95": pct(finals, 0.95),
+                     "final_rtf_p50": round(statistics.median(rtf), 3) if rtf else None}
+            chunks = [c for r in rows for c in (r.get("chunk_ms") or [])]
+            if chunks:
+                entry.update(chunk_ms_p50=pct(chunks, 0.5), chunk_ms_p95=pct(chunks, 0.95), chunk_audio_ms=600,
+                             streaming_rtf_p50=round(statistics.median(chunks) / 600, 3))
+        # What the punctuation step adds. Re-punctuated transcripts carry no ASR timings (another runner
+        # decoded the audio); the total is only given for records timed end to end on one runner.
+        punc_rows = [r for r in records if r["engine"] == engine and r.get("punc_ms") is not None]
+        if punc_rows:
+            punc = [r["punc_ms"] for r in punc_rows]
             entry.update(punc_n=len(punc), punc_ms_p50=pct(punc, 0.5), punc_ms_p95=pct(punc, 0.95))
-        asr[engine] = entry
+            total = [r[field] + r["punc_ms"] for r in punc_rows if r.get(field) is not None]
+            if total:
+                entry.update(final_with_punc_ms_p50=pct(total, 0.5), final_with_punc_ms_p95=pct(total, 0.95))
+        if entry:
+            asr[engine] = entry
     endpoint = defaultdict(list)
     for row in vad:
         endpoint[(row["detector"], row["condition"], row["end_silence_ms"])].append(row)
@@ -247,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     def rows(patterns: list[str]) -> list[dict]:
         return [r for p in patterns for f in sorted(glob.glob(p)) for r in read_jsonl(Path(f))]
 
-    records = [r for r in rows(args.asr) if r["id"] not in excluded]
+    records = unique([r for r in rows(args.asr) if r["id"] not in excluded])
     if not records:
         print("no ASR records: did the ASR jobs fail?")
         return 1

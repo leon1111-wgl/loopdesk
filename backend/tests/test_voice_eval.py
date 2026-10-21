@@ -203,7 +203,10 @@ def test_earlier_transcripts_can_be_punctuated_without_decoding_audio_again(tmp_
     (tmp_path / "run1" / "asr-paraformer-0").mkdir(parents=True)
     (tmp_path / "run1" / "asr-paraformer-0" / "asr-paraformer-0.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in [
         {**base, "id": "leon/a", "engine": "paraformer", "streaming": "我要退货退款另外发票怎么开",
-         "final_hw": "我 要 退 货 退 款 另 外 发 票 怎 么 开", "final_nohw": "我 要 退 货 退 款 另 外 发 票 怎 么 开"},
+         "final_hw": "我 要 退 货 退 款 另 外 发 票 怎 么 开", "final_nohw": "我 要 退 货 退 款 另 外 发 票 怎 么 开",
+         "final_hw_ms": 500.0, "final_nohw_ms": 480.0, "chunk_ms": [120.0]},
+        # an earlier re-punctuation: not punctuated a second time
+        {**base, "id": "leon/c", "engine": "paraformer", "final_hw": "x", "final_hw_punc": "x", "repunctuated": True},
         {**base, "id": "leon/b", "engine": "paraformer", "streaming": "", "final_hw": "", "final_nohw": ""},
         {**base, "id": "leon/a", "engine": "sensevoice", "final_nohw": "我要退货退款，另外发票怎么开？"},
     ]), encoding="utf-8")
@@ -217,6 +220,8 @@ def test_earlier_transcripts_can_be_punctuated_without_decoding_audio_again(tmp_
     assert rows["leon/a"]["punc_model"] == "iic/other-punc"
     assert rows["leon/a"]["final_hw_punc_model"] == "我要退货退款，另外发票怎么开？"  # what the model wrote, before the word check
     assert rows["leon/b"]["final_hw_punc"] == "" and rows["leon/b"]["punc_ms"] is None
+    # The ASR timings belong to the run that decoded the audio, on another runner: not carried over.
+    assert not {"final_hw_ms", "final_nohw_ms", "chunk_ms"} & set(rows["leon/a"])
 
 
 def test_report_scores_the_punctuated_final_pass_as_its_own_config():
@@ -232,6 +237,28 @@ def test_report_scores_the_punctuated_final_pass_as_its_own_config():
     assert punc["cer"] == plain["cer"] == 0.0 and punc["entities"] == plain["entities"]  # punctuation is not recognition
     latency = report.latency_tables([record], [], [], [])["asr_latency"]["paraformer"]
     assert latency["punc_ms_p50"] == 12.5 and latency["punc_ms_p95"] == 12.5 and latency["punc_n"] == 1
+    assert latency["final_with_punc_ms_p50"] == 412.5  # what the customer waits for, measured on one runner
+    repunctuated = {k: v for k, v in record.items() if k not in ("final_hw_ms", "chunk_ms")}
+    latency = report.latency_tables([repunctuated], [], [], [])["asr_latency"]["paraformer"]
+    assert latency == {"punc_n": 1, "punc_ms_p50": 12.5, "punc_ms_p95": 12.5}
+
+
+def test_report_reads_back_on_the_punctuated_config_too():
+    # The read-back is measured on what the punctuated channel receives, with the decoded passes as the
+    # second readings, as understand() sees them live.
+    record = {"id": "leon/a", "tenant": "leon", "key": "a", "question": "SO20261008002 的快递到哪了？", "variant": "v",
+              "condition": "clean", "engine": "paraformer", "seconds": 2.0,
+              "streaming": "so二零二六一零零八零零二的快递到哪了", "final_hw": "so二零二六一零零八零零二的快递到哪了",
+              "final_hw_punc": "so二零二六一零零八零零二的快递到哪了"}
+    tables = report.asr_tables([record], {"leon": []})
+    assert set(tables["readback"]) == {"paraformer-2pass+hotwords", "paraformer-2pass+hotwords+punc"}
+    assert tables["readback"]["paraformer-2pass+hotwords+punc"]["clean"]["right"] == 1
+
+
+def test_records_are_counted_once_when_files_overlap():
+    original = {"id": "leon/a", "variant": "v", "condition": "clean", "engine": "paraformer", "final_hw": "x"}
+    copy = {**original, "final_hw_punc": "x。", "repunctuated": True}
+    assert report.unique([original, copy, dict(original)]) == [copy]
 
 
 def test_agent_eval_measures_what_punctuation_changes(tmp_path, settings, monkeypatch):
@@ -246,11 +273,14 @@ def test_agent_eval_measures_what_punctuation_changes(tmp_path, settings, monkey
             {**base, "engine": "whisper", "final_hw": "ISO 2026-0918-001,我要退货退款"}]
     path = tmp_path / "asr.jsonl"
     path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    # The run that decoded the audio, globbed together with its re-punctuated copy: still one utterance.
+    original = {k: v for k, v in rows[0].items() if k != "final_hw_punc"}
+    (tmp_path / "asr-original.jsonl").write_text(json.dumps(original, ensure_ascii=False) + "\n", encoding="utf-8")
     monkeypatch.setattr("app.config.get_settings", lambda: settings)
     results = {}
     for config in ("paraformer-2pass+hotwords", "paraformer-2pass+hotwords+punc"):
         out = tmp_path / f"{config}.json"
-        agent_eval.main(["--asr", str(path), "--config", config, "--report", str(out)])
+        agent_eval.main(["--asr", str(tmp_path / "asr*.jsonl"), "--config", config, "--report", str(out)])
         result = json.loads(out.read_text(encoding="utf-8"))
         assert result["summary"]["config"] == config and len(result["voice"]) == 1
         results[config] = result["voice"][0]

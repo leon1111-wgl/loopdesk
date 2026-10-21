@@ -174,7 +174,7 @@ jobs:
         run: |
           for id in ${REUSE//,/ }; do
             [[ "$id" =~ ^[0-9]+$ ]] || { echo "not a run id: $id"; exit 1; }
-            gh run download "$id" --repo "$GITHUB_REPOSITORY" --pattern 'asr-paraformer-*' --dir "../prev/$id"
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" --pattern 'asr-paraformer-[0-9]*' --dir "../prev/$id"
           done
           find ../prev -name '*.jsonl' | sort
       - uses: actions/cache@v4

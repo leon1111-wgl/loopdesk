@@ -47,11 +47,7 @@ from ...voice.lexicon import lexicon_for
 from ...voice.session import understand
 from ..runner import _resolve_user, build_sandbox, score_case
 from .dataset import read_jsonl
-from .report import CONFIGS
-
-# A punctuated transcript and the decoder's own output it was made from: the live channel keeps the
-# latter as a pass, so a read-back can catch punctuation that changed an entity.
-DECODED_FROM = {"final_hw_punc": "final_hw"}
+from .report import CONFIGS, DECODED_FROM, as_received, unique
 
 
 class _Run:
@@ -136,8 +132,7 @@ class Evaluator:
         sandbox, tenant, lexicon = self._sandbox(slug)
         case = self.cases[(slug, key)]
         user = _resolve_user(sandbox, tenant, case)
-        passes = {"final": decoded if decoded is not None else hyp, "streaming": record.get("streaming") or hyp}
-        transcript = understand(ASRResult(hyp, passes), lexicon)
+        transcript = understand(as_received(hyp, decoded, record.get("streaming") or hyp), lexicon)
         conversation = self._conversation(sandbox, tenant, user, case)
         confirmations = Confirmations()
         registry = gate_registry(self.services.registry, confirmations, lambda: transcript.text)
@@ -216,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     records = [r for p in args.asr for f in sorted(glob.glob(p)) for r in read_jsonl(Path(f))
                if r.get(field) is not None and (engine is None or r.get("engine") == engine) and r["condition"] in conditions
                and (not variants or r["variant"] in variants) and r["id"] not in excluded]
+    records = unique(records)
     with new_session() as db:
         seed_demo(db, services.embedder)
         evaluator = Evaluator(db, services)
