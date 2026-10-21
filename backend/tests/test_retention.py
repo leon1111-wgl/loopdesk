@@ -122,3 +122,129 @@ def test_retention_clears_the_text_of_long_closed_tickets(client, ask, login):
         assert (closed.title, closed.description, closed.resolution) == (REDACTED, REDACTED, REDACTED)
         assert db.get(Ticket, still_open).title != REDACTED, "someone still has to act on an open ticket"
         assert apply_retention(db, 90)["tickets"] == 0, "idempotent"
+
+
+def test_erasure_withdraws_the_customers_pending_approval_and_closes_their_handoffs(client, ask, login):
+    # N-103: erasure cleared the paused run's state, so the pending approval could never be decided
+    # (approve and reject both failed with 503 and reopened it, KeyError 'pending'), it stayed in
+    # "待审批" forever, and the erased customer's handoffs kept their places in the queue.
+    from app.models import AuditLog, Conversation, Ticket, User
+    from app.ops.retention import ERASED_APPROVAL_COMMENT, ERASED_TICKET_RESOLUTION
+
+    jack = login("customer2@leon.demo")
+    _, events = ask(jack, "SO20261003005 我要退款 东西坏了")
+    approval_id = by_type(events, "approval_required")[0]["approval_id"]
+    handoff_conversation, _ = ask(jack, "转人工")
+    emma_conversation, _ = ask(login("customer@leon.demo"), "转人工")
+    agent, admin = login("agent@leon.demo"), login("admin@leon.demo")
+    assert len(client.get("/api/handoffs", headers=agent).json()) == 2
+    with new_session() as db:
+        jack_id = db.query(User).filter(User.email == "customer2@leon.demo").one().id
+    erased = client.delete(f"/api/admin/users/{jack_id}/personal-data", headers=admin).json()["erased"]
+    assert erased["approvals_withdrawn"] == 1 and erased["tickets_closed"] == 1
+
+    approval = client.get(f"/api/approvals/{approval_id}", headers=admin).json()
+    assert approval["status"] == "rejected" and approval["comment"] == ERASED_APPROVAL_COMMENT
+    assert not [a for a in client.get("/api/approvals", headers=admin).json() if a["id"] == approval_id]
+    r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "approve"}, headers=admin)
+    assert r.status_code == 409, r.text
+    refunds = client.get("/api/refunds?status=all", headers=admin).json()
+    assert all(f["order_id"] != "SO20261003005" for f in refunds), "withdrawn, so no money moved"
+    queue = client.get("/api/handoffs", headers=agent).json()
+    assert [h["conversation_id"] for h in queue] == [emma_conversation], "only the live customer still waits"
+    with new_session() as db:
+        run = db.get(Run, by_type(events, "done")[0]["run_id"])
+        assert run.status == "completed", "not left waiting for a decision that cannot come"
+        ticket = db.query(Ticket).filter(Ticket.conversation_id == handoff_conversation).one()
+        assert ticket.status == "closed" and ticket.closed_at and ticket.resolution == ERASED_TICKET_RESOLUTION
+        assert ticket.title == REDACTED, "the customer's words still go"
+        assert db.get(Conversation, handoff_conversation).status == "bot"
+        entry = db.query(AuditLog).filter(AuditLog.target == f"approval:{approval_id}").one()
+        assert entry.action == "approval.reject" and entry.detail["comment"] == ERASED_APPROVAL_COMMENT
+    assert client.get("/api/audit/verify", headers=admin).json()["ok"] is True
+
+
+def test_an_approval_whose_run_state_is_gone_is_refused_not_reopened(client, ask, login):
+    # The guard behind the fix above: a paused run with no state left (an erasure from before the
+    # fix) is refused with 409 instead of failing, reopening and logging approval.reopen each time.
+    from app.models import AuditLog
+
+    _, events = ask(login("customer@leon.demo"), "SO20261008002 我要退款")
+    approval_id = by_type(events, "approval_required")[0]["approval_id"]
+    with new_session() as db:
+        db.get(Run, by_type(events, "done")[0]["run_id"]).state = {}
+        db.commit()
+    admin = login("admin@leon.demo")
+    r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "reject", "comment": "x"}, headers=admin)
+    assert r.status_code == 409 and "无法恢复" in r.json()["detail"], r.text
+    with new_session() as db:
+        assert db.query(AuditLog).filter(AuditLog.action == "approval.reopen").count() == 0
+
+
+def _user_id(email: str) -> int:
+    from app.models import User
+
+    with new_session() as db:
+        return db.query(User).filter(User.email == email).one().id
+
+
+def test_erasure_waits_for_a_run_in_flight(client, ask, login):
+    # Review P2: a run (or an approval being carried out) saves its state and answer when it ends,
+    # which would write the customer's words back after the erasure.
+    _, events = ask(login("customer2@leon.demo"), "积分可以怎么抵扣？")
+    with new_session() as db:
+        db.get(Run, by_type(events, "done")[0]["run_id"]).status = "running"
+        db.commit()
+    r = client.delete(f"/api/admin/users/{_user_id('customer2@leon.demo')}/personal-data", headers=login("admin@leon.demo"))
+    assert r.status_code == 409 and "稍后重试" in r.json()["detail"], r.text
+    assert client.post("/api/auth/login", json={"email": "customer2@leon.demo", "password": "loopdesk-demo"}).status_code == 200
+
+
+def test_erasure_leaves_open_the_ticket_of_an_unsettled_refund(client, ask, login):
+    # Review P3: someone still has to confirm that money with the payment system; closing the ticket
+    # only made the reconcile job open a new one.
+    from app.models import Refund, Ticket
+
+    jack_id = _user_id("customer2@leon.demo")
+    ask(login("customer2@leon.demo"), BROKEN)
+    with new_session() as db:
+        repair = db.query(Ticket).filter(Ticket.customer_id == jack_id).one()
+        payment = Ticket(tenant_id=repair.tenant_id, customer_id=jack_id, kind="issue", priority="urgent",
+                         title="退款 #1 需要人工核实", description="支付系统一直没有确认")
+        db.add(payment)
+        db.flush()
+        db.add(Refund(tenant_id=repair.tenant_id, order_id="SO20261003005", customer_id=jack_id, amount=10.0,
+                      status="pending", idempotency_key="erase-test", ticket_id=payment.id))
+        db.commit()
+        repair_id, payment_id = repair.id, payment.id
+    erased = client.delete(f"/api/admin/users/{jack_id}/personal-data", headers=login("admin@leon.demo")).json()["erased"]
+    assert erased["tickets_closed"] == 1
+    with new_session() as db:
+        assert db.get(Ticket, repair_id).status == "closed"
+        assert db.get(Ticket, payment_id).status == "open"
+
+
+def test_retention_keeps_the_state_of_a_run_whose_approval_went_back_to_pending(client, ask, login, monkeypatch):
+    # Review P2: a failed execution reopens the approval and leaves the run "failed"; retention then
+    # wiped its state and the approval could never be decided again (409 for both decisions).
+    from app.agent import runtime as agent_runtime
+
+    _, events = ask(login("customer@leon.demo"), "SO20261008002 我要退款")
+    approval_id = by_type(events, "approval_required")[0]["approval_id"]
+    run_id = by_type(events, "done")[0]["run_id"]
+    admin = login("admin@leon.demo")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("model down")
+
+    with monkeypatch.context() as m:
+        m.setattr(agent_runtime.AgentRuntime, "_loop", broken)
+        r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "reject", "comment": "不符合"}, headers=admin)
+        assert r.status_code == 503, r.text
+    with new_session() as db:
+        assert db.get(Run, run_id).status == "failed" and db.get(Approval, approval_id).status == "pending"
+        _age(db, run_id, 120)
+        apply_retention(db, 90)
+        assert db.get(Run, run_id).state.get("pending"), "the decision still needs it"
+    r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "reject", "comment": "不符合"}, headers=admin)
+    assert r.status_code == 200, r.text

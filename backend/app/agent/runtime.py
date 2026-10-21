@@ -337,6 +337,10 @@ class AgentRuntime:
             self.db.rollback()
             raise ValueError("该审批单已处理")
         run = self.db.get(Run, approval.run_id)
+        if not (run.state or {}).get("pending"):
+            # Nothing to resume (the state was erased, N-103): failing and reopening would loop forever.
+            self.db.rollback()
+            raise ValueError("该审批单对应的运行已无法恢复（对话内容已清除），不能再审批")
         run.status = "running"
         tenant = self.db.get(Tenant, run.tenant_id)
         # The decision and its audit entry commit together (the approval row first, then the

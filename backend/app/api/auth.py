@@ -192,13 +192,16 @@ def patch_tenant(body: TenantPatch, principal: Principal = Depends(require_admin
 @router.delete("/admin/users/{user_id}/personal-data")
 def erase_personal_data(user_id: int, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
     """Right to erasure (PIPL / GDPR style) for one user of the admin's tenant."""
-    from ..ops.retention import erase_user
+    from ..ops.retention import RunInFlight, erase_user
     from .common import get_owned
 
     target = get_owned(db, User, user_id, principal.tenant.id)
     if target.id == principal.user.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "不能抹除自己的账号")
-    erased = erase_user(db, target.id)
+    try:
+        erased = erase_user(db, target.id, principal)
+    except RunInFlight as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     # The entry names the account by id only: its e-mail and name are what was just erased.
     record(db, principal, "user.erase", f"user:{target.id}", erased=erased)
     db.commit()
