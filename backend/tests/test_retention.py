@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.db import new_session
 from app.models import Approval, Message, Run, Span
-from app.ops.retention import REDACTED, apply_retention
+from app.ops.retention import ERASED, REDACTED, apply_retention
 from tests.conftest import by_type
 
 
@@ -58,7 +58,7 @@ def test_erase_user_personal_data(client, ask, login):
     assert erased["messages"] == 2 and erased["runs"] == 1 and erased["approvals"] == 1
     assert client.post("/api/auth/login", json={"email": "customer@leon.demo", "password": "loopdesk-demo"}).status_code == 401
     with new_session() as db:
-        assert db.get(Run, run_id).input_text == REDACTED
+        assert db.get(Run, run_id).input_text == ERASED
         approval = db.query(Approval).filter(Approval.run_id == run_id).one()
         assert approval.evidence == [] and approval.arguments["amount"] == 1299.0, "audit record kept, quotes removed"
         assert db.get(Order, "SO20261008002") is not None, "orders are accounting records"
@@ -99,9 +99,9 @@ def test_erasure_covers_the_customers_tickets(client, ask, login):
     assert erased["tickets"] == 1
     with new_session() as db:
         ticket = db.get(Ticket, emma_ticket)
-        assert (ticket.title, ticket.description, ticket.resolution) == (REDACTED, REDACTED, REDACTED)
+        assert (ticket.title, ticket.description, ticket.resolution) == (ERASED, ERASED, ERASED)
         assert ticket.status == "closed" and ticket.priority, "the record stays for reporting"
-        assert db.get(Ticket, jack_ticket).title != REDACTED, "other customers untouched"
+        assert db.get(Ticket, jack_ticket).title != ERASED, "other customers untouched"
 
 
 def test_retention_clears_the_text_of_long_closed_tickets(client, ask, login):
@@ -157,7 +157,7 @@ def test_erasure_withdraws_the_customers_pending_approval_and_closes_their_hando
         assert run.status == "completed", "not left waiting for a decision that cannot come"
         ticket = db.query(Ticket).filter(Ticket.conversation_id == handoff_conversation).one()
         assert ticket.status == "closed" and ticket.closed_at and ticket.resolution == ERASED_TICKET_RESOLUTION
-        assert ticket.title == REDACTED, "the customer's words still go"
+        assert ticket.title == ERASED, "the customer's words still go"
         assert db.get(Conversation, handoff_conversation).status == "bot"
         entry = db.query(AuditLog).filter(AuditLog.target == f"approval:{approval_id}").one()
         assert entry.action == "approval.reject" and entry.detail["comment"] == ERASED_APPROVAL_COMMENT
@@ -248,3 +248,106 @@ def test_retention_keeps_the_state_of_a_run_whose_approval_went_back_to_pending(
         assert db.get(Run, run_id).state.get("pending"), "the decision still needs it"
     r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "reject", "comment": "不符合"}, headers=admin)
     assert r.status_code == 200, r.text
+
+
+NAME, ADDRESS = "王建国", "文三路100号3单元502"
+
+
+def _rows_quoting(db, *needles: str) -> list[str]:
+    from sqlalchemy import select as sa_select
+
+    from app.models import Base
+    found = []
+    for table in Base.metadata.sorted_tables:
+        for row in db.execute(sa_select(table)).all():
+            text = str(tuple(row))
+            found += [f"{table.name}: {text[:160]}" for needle in needles if needle in text]
+    return found
+
+
+def test_erasure_leaves_none_of_the_customers_words_anywhere(client, ask, login):
+    # N-104: the model copies the customer's message into a refund's "reason" argument, and masking
+    # only covers phone, ID and card numbers, so a name and address survived the erasure in
+    # approvals.arguments (GET /approvals/{id}), in the refund ledger and in the flywheel's eval
+    # case and knowledge patch drafted from a correction. Every table is searched, not a list of them.
+    from app.models import EvalCase, KBPatch, Refund, User
+    from app.ops.retention import ERASED
+
+    emma = login("customer@leon.demo")
+    words = f"我叫{NAME} 住杭州市西湖区{ADDRESS}"
+    _, auto = ask(emma, f"SO20260918001 我要退款 {words} 不想要了")
+    _, paused = ask(emma, f"SO20261008002 我要退款 {words}")
+    approval_id = by_type(paused, "approval_required")[0]["approval_id"]
+    _, asked = ask(emma, f"{words} 退款多久能到账？")
+    message_id = by_type(asked, "final")[0]["message_id"]
+    feedback = client.post(f"/api/messages/{message_id}/feedback", json={
+        "rating": "correction", "reason_category": "knowledge_outdated",
+        "correction": "微信支付、支付宝退款预计1-2个工作日到账。"}, headers=login("agent@leon.demo")).json()
+    admin = login("admin@leon.demo")
+    _, again = ask(emma, f"{words} 退款要多久？")
+    rejected = client.post(f"/api/messages/{by_type(again, 'final')[0]['message_id']}/feedback", json={
+        "rating": "correction", "reason_category": "knowledge_outdated",
+        "correction": "退款审核通过后1-3个工作日原路到账。"}, headers=login("agent@leon.demo")).json()
+    assert client.post(f"/api/flywheel/patches/{rejected['patch_id']}/reject", headers=admin).status_code == 200
+    with new_session() as db:
+        assert _rows_quoting(db, NAME), "the scenario really stores the name"
+        # As filed (the demo payment system answers "processing"): looked up later, never sent again.
+        assert db.query(Refund).filter(Refund.order_id == "SO20260918001").one().status == "processing"
+        emma_id = db.query(User).filter(User.email == "customer@leon.demo").one().id
+
+    erased = client.delete(f"/api/admin/users/{emma_id}/personal-data", headers=admin).json()["erased"]
+    assert erased["refunds"] == 1 and erased["refunds_unsettled"] == 0
+    assert erased["eval_cases"] == 2 and erased["kb_patches"] == 2, "a rejected patch still quoted them"
+    with new_session() as db:
+        assert _rows_quoting(db, NAME, ADDRESS) == []
+        assert db.query(Refund).filter(Refund.order_id == "SO20260918001").one().reason == ERASED
+        case = db.get(EvalCase, feedback["eval_case_id"])
+        assert (case.question, case.status, case.as_user) == (ERASED, "archived", None)
+        assert db.get(KBPatch, feedback["patch_id"]).status == "rejected", "nobody may apply it any more"
+    approval = client.get(f"/api/approvals/{approval_id}", headers=admin).json()
+    assert approval["arguments"]["order_id"] == "SO20261008002" and approval["arguments"]["amount"] == 1299.0
+    assert set(approval["arguments"].values()) - {"SO20261008002", 1299.0} <= {ERASED}, "accounting fields only"
+    assert client.get("/api/audit/verify", headers=admin).json()["ok"] is True
+
+
+def test_an_unsettled_refund_keeps_its_request_until_it_settles(client, ask, login):
+    # The other side of N-104: every retry and the reconciliation must send the payment system the
+    # same request (one idempotency key, one body), so a refund still unsettled keeps its reason; the
+    # erasure says so, and erasing again after it settles clears it.
+    from app.models import Refund, User
+    from app.ops.retention import ERASED, erase_user
+
+    ask(login("customer@leon.demo"), f"SO20260918001 我要退款 我叫{NAME} 不想要了")
+    with new_session() as db:
+        refund = db.query(Refund).filter(Refund.order_id == "SO20260918001").one()
+        refund.status = "pending"  # no answer yet: the reconciliation sends this very request again
+        db.commit()
+        emma_id = db.query(User).filter(User.email == "customer@leon.demo").one().id
+        first = erase_user(db, emma_id)
+        assert first["refunds"] == 0 and first["refunds_unsettled"] == 1
+        assert NAME in db.query(Refund).filter(Refund.order_id == "SO20260918001").one().reason
+        db.query(Refund).filter(Refund.order_id == "SO20260918001").one().status = "failed"  # refused: never sent again
+        db.commit()
+        again = erase_user(db, emma_id)
+        db.expire_all()
+        assert again["refunds"] == 1 and again["refunds_unsettled"] == 0
+        assert db.query(Refund).filter(Refund.order_id == "SO20260918001").one().reason == ERASED
+
+
+def test_retention_does_not_relabel_what_an_erasure_removed(client, ask, login):
+    # N-104: erasure and expiry wrote the same "已过保留期" marker, so an erased conversation read as
+    # an expired one; and once erased text is marked ERASED, a later retention pass must keep it so.
+    from app.models import User
+    from app.ops.retention import ERASED, erase_user
+
+    _, events = ask(login("customer@leon.demo"), "积分可以怎么抵扣？")
+    run_id = by_type(events, "done")[0]["run_id"]
+    with new_session() as db:
+        erase_user(db, db.query(User).filter(User.email == "customer@leon.demo").one().id)
+        _age(db, run_id, 120)
+        dry = apply_retention(db, 90, dry_run=True)
+        assert (dry["runs"], dry["messages"]) == (0, 0)
+        apply_retention(db, 90)
+        run = db.get(Run, run_id)
+        assert run.input_text == ERASED
+        assert {m.content for m in db.query(Message).filter(Message.conversation_id == run.conversation_id)} == {ERASED}

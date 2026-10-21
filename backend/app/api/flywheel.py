@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -69,13 +71,21 @@ def apply(patch_id: int, body: ApplyIn | None = None, principal: Principal = Dep
                       "请先在「知识库」中编辑原文档，再确认发布。", "conflicts": exc.conflicts})
     except FlywheelError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    record(db, principal, "flywheel.patch.apply", f"patch:{patch.id}", content=patch.content[:500],
+    record(db, principal, "flywheel.patch.apply", f"patch:{patch.id}", **_content_digest(patch),
            document_version=document.version, acknowledged_conflicts=len(cited))
     db.commit()
     conflicts = open_conflict_counts(db, principal.tenant.id).get(document.id, 0)
     return {"patch_id": patch.id, "status": patch.status, "document_id": document.id,
             "document_version": document.version, "conflicts": conflicts,
             "cited_conflicts": len(cited), "eval_case_activated": not cited}
+
+
+def _content_digest(patch: KBPatch) -> dict:
+    """What the audit log keeps of a patch: a draft quotes the customer's question, and a signed audit
+    entry cannot be erased later with the rest of their data (N-104). The digest still proves which
+    text was decided on (compare it with the patch or the document version)."""
+    return {"feedback_id": patch.feedback_id, "content_chars": len(patch.content),
+            "content_sha256": hashlib.sha256(patch.content.encode()).hexdigest()}
 
 
 @router.post("/patches/{patch_id}/reject")
@@ -85,7 +95,7 @@ def reject(patch_id: int, principal: Principal = Depends(require_admin), db: Ses
         reject_patch(db, patch, principal.user)
     except FlywheelError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    record(db, principal, "flywheel.patch.reject", f"patch:{patch.id}", content=patch.content[:500])
+    record(db, principal, "flywheel.patch.reject", f"patch:{patch.id}", **_content_digest(patch))
     db.commit()
     return {"patch_id": patch.id, "status": patch.status}
 

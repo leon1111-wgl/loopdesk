@@ -192,7 +192,7 @@ LOOPDESK_COMMERCE_APIS='{"leon": {"base_url": "https://oms.example.com/loopdesk"
 
 订单对象：`{"order_id", "customer_ref", "status", "amount_fen", "items": [{"name", "qty", "price_fen"}], "paid_at", "delivered_at", "region"}`。`status` 用 `paid` / `shipped` / `delivered` / `refunding` / `refunded`，其他状态原样显示、不能在线退款；`delivered_at` 决定售后时效；`customer_ref` 是顾客的登录邮箱（LoopDesk 的账号就是邮箱；你们按手机号或会员号识别顾客的话，在实现这套接口的服务里做映射）。
 
-退款请求体：`{"order_id", "amount_fen", "reason", "approval_id", "loopdesk_refund_id"}`，只取自退款记录里不会再变的字段（不含顾客的账号信息：两次发送之间顾客改了邮箱或被执行删除权，同一个键也不会带着不同的请求体）。`status` 取 `processing`（已受理、未完成）、`succeeded` 或 `failed`。
+退款请求体：`{"order_id", "amount_fen", "reason", "approval_id", "loopdesk_refund_id"}`，只取自退款记录里不会再变的字段（不含顾客的账号信息：两次发送之间顾客改了邮箱或被执行删除权，同一个键也不会带着不同的请求体；所以删除权不清除未结清退款的 `reason`，结清后再执行一次才清除）。`status` 取 `processing`（已受理、未完成）、`succeeded` 或 `failed`。
 
 **拒绝只认这几个码**：`order_not_refundable`、`amount_exceeds_refundable`、`order_not_found`、`refund_declined`（风控等原因拒绝）。带着这些码的 409 / 422 表示没有付款：退款记录改为失败、订单释放，顾客收到对应的中文（`refund_declined` 和其他情况一律说“支付系统没有受理这笔退款，请转人工客服处理”）；`message` 只进链路，不给顾客看（里面可能有内部规则或商户号）。**其他任何 409 / 422**（例如同一个键的第一个请求还没处理完时的 `idempotency_key_in_use`、“稍后再试”）都不算拒绝：退款可能已经存在，记录保持“待确认”，之后用同一个键再发。
 
