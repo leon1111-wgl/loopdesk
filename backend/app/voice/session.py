@@ -125,9 +125,10 @@ class Turn:
         return "".join(parts), cut
 
 
-def _what_must_not_change(text: str, terms: list[str]) -> tuple:
-    normalized = itn(text).text
-    return {(e.kind, e.value) for e in extract_entities(normalized, terms)}, sorted(mask_pii(normalized).found)
+def _what_must_not_change(text: str, lexicon: Lexicon) -> tuple:
+    normalized, _ = lexicon.correct(itn(text).text)  # "好华，会员" is not corrected, "好华会员" is
+    return ({(e.kind, e.value) for e in extract_entities(normalized, lexicon.terms)},
+            sorted(mask_pii(normalized).found))
 
 
 def understand(result: ASRResult, lexicon: Lexicon, *, use_itn: bool = True, correct: bool = True) -> Transcript:
@@ -135,8 +136,8 @@ def understand(result: ASRResult, lexicon: Lexicon, *, use_itn: bool = True, cor
     The voice evaluation calls this too (with the switches off for its ablations). Added punctuation is
     only there to separate requests: when it changed an order number, an amount, a tenant term or what
     PII masking finds ("一三八。一二三四…" is no phone number any more), the text without it is used."""
-    if result.unpunctuated is not None and (_what_must_not_change(result.text, lexicon.terms)
-                                            != _what_must_not_change(result.unpunctuated, lexicon.terms)):
+    if result.unpunctuated is not None and (_what_must_not_change(result.text, lexicon)
+                                            != _what_must_not_change(result.unpunctuated, lexicon)):
         logger.info("voice punctuation changed an entity or PII, using the transcript without it")
         result = replace(result, text=result.unpunctuated, unpunctuated=None)
     normalized = itn(result.text) if use_itn else None

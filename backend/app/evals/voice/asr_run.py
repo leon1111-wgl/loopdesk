@@ -32,6 +32,17 @@ from .dataset import read_jsonl
 from .hotwords import tenant_hotwords
 
 
+class _Recording:
+    """The punctuation model, remembering what it wrote (before the between-words check)."""
+
+    def __init__(self, punc):
+        self.punc, self.wrote = punc, None
+
+    def __call__(self, text: str) -> str:
+        self.wrote = self.punc(text)
+        return self.wrote
+
+
 def _items(synth_dirs: list[str], noisy: set[str]) -> list[tuple[dict, Path, str]]:
     items = []
     for d in synth_dirs:
@@ -52,6 +63,8 @@ def repunctuate(patterns: list[str], out: Path, punc, model: str) -> int:
     from ...voice.engines import ASRResult, punctuate, warm_segmenter
 
     timings = ("final_hw_ms", "final_nohw_ms", "chunk_ms")  # the decoding run's, on another runner
+    hotwords = tenant_hotwords()  # kept whole, as the live stream keeps them
+    punc = _Recording(punc)
 
     warm_segmenter()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -62,10 +75,10 @@ def repunctuate(patterns: list[str], out: Path, punc, model: str) -> int:
                 if row.get("engine") != "paraformer" or row.get("final_hw") is None or row.get("repunctuated"):
                     continue
                 row = {k: v for k, v in row.items() if k not in timings}
-                wrote: list[str] = []
-                result = punctuate(ASRResult(row["final_hw"], {"final": row["final_hw"]}),
-                                   lambda text: wrote.append(punc(text)) or wrote[-1])
-                row.update(final_hw_punc=result.text, final_hw_punc_model=wrote[0] if wrote else result.text,
+                punc.wrote = None
+                result = punctuate(ASRResult(row["final_hw"], {"final": row["final_hw"]}), punc,
+                                   hotwords.get(row.get("tenant"), []))
+                row.update(final_hw_punc=result.text, final_hw_punc_model=punc.wrote if punc.wrote is not None else result.text,
                            punc_model=model, punc_ms=None if result.punc_ms is None else round(result.punc_ms, 2),
                            repunctuated=True)
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -99,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.engine == "paraformer":
         engine = engines.ParaformerASR(args.device, two_pass=True)
         try:  # LOOPDESK_VOICE_PUNC; as in the live channel, a model that will not load leaves the rest working
-            punctuated = engines.PunctuatedASR(engine, engines.Punctuator(args.device, model=punc_model))
+            recording = _Recording(engines.Punctuator(args.device, model=punc_model))
+            punctuated = engines.PunctuatedASR(engine, recording)
         except Exception as exc:
             print(f"punctuation model {punc_model} not loaded ({type(exc).__name__}: {exc}): no final_hw_punc", flush=True)
             punctuated = engine
@@ -122,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
                       "variant": row["variant"], "condition": name, "engine": args.engine,
                       "seconds": round(len(audio) / 16000, 3), "hotwords": len(words)}
             if args.engine == "paraformer":
+                if punctuated is not engine:
+                    recording.wrote = None
                 stream = punctuated.stream(words)
                 for start in range(0, len(audio), 1600):  # 100 ms frames, like the browser sends
                     stream.accept(audio[start:start + 1600])
@@ -130,7 +146,8 @@ def main(argv: list[str] | None = None) -> int:
                 started = time.perf_counter()
                 without = engine.decode_final(audio, [])
                 if punctuated is not engine:
-                    record.update(final_hw_punc=result.text, punc_model=punc_model)
+                    record.update(final_hw_punc=result.text, punc_model=punc_model,
+                                  final_hw_punc_model=recording.wrote if recording.wrote is not None else result.text)
                 record.update(streaming=result.passes["streaming"], final_hw=result.passes["final"], final_nohw=without,
                               chunk_ms=[round(c, 1) for c in result.chunk_ms],
                               final_hw_ms=round(result.final_ms - punc_ms, 1),  # as before: without punctuation

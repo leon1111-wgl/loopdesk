@@ -190,7 +190,7 @@ def test_asr_run_records_the_punctuated_final_pass(tmp_path, monkeypatch):
     asr_run.main(["--engine", "paraformer", "--synth", str(tmp_path), "--out", str(out)])
     [record] = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert record["final_hw"] == final  # unchanged: comparable with earlier runs
-    assert record["final_hw_punc"] == "我要退货退款，另外发票怎么开？"
+    assert record["final_hw_punc"] == record["final_hw_punc_model"] == "我要退货退款，另外发票怎么开？"
     assert record["punc_ms"] >= 0 and record["final_hw_ms"] == 50.0  # finish() without the punctuation step
 
 
@@ -199,6 +199,7 @@ def test_earlier_transcripts_can_be_punctuated_without_decoding_audio_again(tmp_
     from app.voice import engines
 
     monkeypatch.setattr(engines, "Punctuator", _Punctuator)
+    monkeypatch.setattr(asr_run, "tenant_hotwords", lambda: {"leon": ["退货退款"]})
     base = {"tenant": "leon", "key": "a", "question": "我要退货退款，另外发票怎么开？", "variant": "v", "condition": "clean"}
     (tmp_path / "run1" / "asr-paraformer-0").mkdir(parents=True)
     (tmp_path / "run1" / "asr-paraformer-0" / "asr-paraformer-0.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in [
@@ -256,9 +257,19 @@ def test_report_reads_back_on_the_punctuated_config_too():
 
 
 def test_records_are_counted_once_when_files_overlap():
+    import pytest
+
     original = {"id": "leon/a", "variant": "v", "condition": "clean", "engine": "paraformer", "final_hw": "x"}
     copy = {**original, "final_hw_punc": "x。", "repunctuated": True}
     assert report.unique([original, copy, dict(original)]) == [copy]
+    # A run that already punctuated (default model, with its timings) and its copy with another model: the
+    # copy is what was asked for, whatever the order and the number of fields (Fable re-review).
+    fresh = {**original, "final_hw_punc": "x，", "punc_model": "default", "punc_ms": 2.0, "final_hw_ms": 500.0,
+             "final_nohw_ms": 480.0, "chunk_ms": [120.0]}
+    other = {**original, "final_hw_punc": "x。", "punc_model": "other", "punc_ms": 3.0, "repunctuated": True}
+    assert report.unique([fresh, other]) == [other] and report.unique([other, fresh]) == [other]
+    with pytest.raises(ValueError):  # two models' copies of one utterance: score them separately
+        report.unique([other, {**other, "punc_model": "third"}])
 
 
 def test_agent_eval_measures_what_punctuation_changes(tmp_path, settings, monkeypatch):

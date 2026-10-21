@@ -48,11 +48,19 @@ READBACK_CONFIGS = ("paraformer-2pass+hotwords", "paraformer-2pass+hotwords+punc
 
 def unique(records: list[dict]) -> list[dict]:
     """One record per utterance and engine. A run's transcripts and their re-punctuated copy can be
-    globbed together; the copy (it has more fields) is kept, so configs compare the same utterances."""
+    globbed together: the copy is kept (it is what the run that made it was asked for), so every config
+    scores the same utterances. Copies by two punctuation models are scored separately, not mixed."""
     kept: dict[tuple, dict] = {}
     for r in records:
         key = (r["id"], r.get("variant"), r.get("condition"), r.get("engine"))
-        if key not in kept or len(r) > len(kept[key]):
+        old = kept.get(key)
+        if old is None:
+            kept[key] = r
+        elif old.get("repunctuated") and r.get("repunctuated"):
+            if old.get("punc_model") != r.get("punc_model"):
+                raise ValueError(f"{key} punctuated by {old.get('punc_model')} and {r.get('punc_model')}: "
+                                 "score each model's records separately")
+        elif r.get("repunctuated") or (not old.get("repunctuated") and len(r) > len(old)):
             kept[key] = r
     return list(kept.values())
 

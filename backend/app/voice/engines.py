@@ -261,38 +261,53 @@ class Punctuator:
 
 
 _MARKS = "，。？！、；：,.?!;:"
-_SPACE_OR_MARK = re.compile(rf"[\s{_MARKS}]")
+_NUMBER = re.compile(r"[零〇一二三四五六七八九幺两十百千万亿点\d]{2,}")  # a spoken or written number: one word
 
 
-def between_words(decoded: str, punctuated: str) -> str:
-    """The punctuation model's output, keeping only the marks that fall between two words as jieba (the
-    retrieval's segmenter, with its domain words) splits the sentence. ct-punc wrote "注，销账号以后": a
-    mark inside a word hides the word from retrieval. Output that changed anything but punctuation and
-    spacing is not used: the decoder's words are what the customer said."""
+def between_words(decoded: str, punctuated: str, protect: list[str] = ()) -> str:
+    """The punctuation model's output, keeping only the marks it added between two words: words as jieba
+    (the retrieval's segmenter, with its domain words) splits the sentence, with every number and every
+    term in ``protect`` (the tenant's hotwords) kept whole. ct-punc wrote "注，销账号以后": a mark inside
+    a word hides the word from retrieval. Output that changed anything but punctuation, spacing and
+    letter case ("So", the large model) is not used: the decoder's words are what the customer said."""
     from ..textutil import jieba
 
-    words, heard = _SPACE_OR_MARK.sub("", decoded), _SPACE_OR_MARK.sub("", punctuated)
-    if len(heard) != len(words) or heard.lower() != words.lower():  # the large model capitalises "So"
-        logger.warning("voice punctuation changed the words, not used: %r -> %r", decoded, punctuated)
-        return decoded
+    words = "".join(decoded.split())
     boundaries, at = set(), 0
     for word in (jieba.lcut(words) if jieba is not None else list(words)):
         at += len(word)
         boundaries.add(at)
-    out, seen = [], 0
-    for ch in punctuated:  # the model's marks and spacing, the decoder's characters
-        if ch in _MARKS:
-            if seen in boundaries:
-                out.append(ch)
-        elif ch.isspace():
+    spans = [m.span() for m in _NUMBER.finditer(words)]
+    lowered = words.lower()
+    for term in filter(None, (t.lower() for t in protect)):
+        start = lowered.find(term)
+        while start >= 0:
+            spans.append((start, start + len(term)))
+            start = lowered.find(term, start + 1)
+    for start, end in spans:  # one word: its two ends are word ends ("零零二|到", jieba glued "二到") ...
+        boundaries.update((start, end))
+    for start, end in spans:  # ... and nothing inside it is, also where two spans overlap
+        boundaries.difference_update(range(start + 1, end))
+    boundaries.discard(0)
+    out, i = [], 0
+    for ch in punctuated:  # the model's marks and spacing, the decoder's characters (and its own marks)
+        if ch.isspace():
             out.append(ch)
+        elif i < len(words) and ch.lower() == words[i].lower():
+            out.append(words[i])
+            i += 1
+        elif ch in _MARKS:
+            if i in boundaries:
+                out.append(ch)
         else:
-            out.append(words[seen])
-            seen += 1
+            break
+    if i != len(words):
+        logger.warning("voice punctuation changed the words, not used: %r -> %r", decoded, punctuated)
+        return decoded
     return "".join(out)
 
 
-def punctuate(result: ASRResult, punc: Callable[[str], str]) -> ASRResult:
+def punctuate(result: ASRResult, punc: Callable[[str], str], protect: list[str] = ()) -> ASRResult:
     """Punctuate the text handed on, between words only, and time it. The text before is kept
     (``unpunctuated``): understand() falls back to it when the punctuation changed an order number, an
     amount or what PII masking finds. A model error keeps the words unpunctuated."""
@@ -300,7 +315,7 @@ def punctuate(result: ASRResult, punc: Callable[[str], str]) -> ASRResult:
         return result
     started = time.perf_counter()
     try:
-        text = between_words(result.text, punc(result.text))
+        text = between_words(result.text, punc(result.text), protect)
     except Exception:
         logger.warning("voice punctuation failed, the transcript stays unpunctuated", exc_info=True)
         text = None
@@ -312,14 +327,14 @@ def punctuate(result: ASRResult, punc: Callable[[str], str]) -> ASRResult:
 
 
 class _PunctuatedStream:
-    def __init__(self, stream: ASRStream, punc: Callable[[str], str]):
-        self.inner, self.punc = stream, punc
+    def __init__(self, stream: ASRStream, punc: Callable[[str], str], hotwords: list[str]):
+        self.inner, self.punc, self.hotwords = stream, punc, hotwords
 
     def accept(self, pcm: np.ndarray) -> str | None:
         return self.inner.accept(pcm)
 
     def finish(self) -> ASRResult:
-        return punctuate(self.inner.finish(), self.punc)
+        return punctuate(self.inner.finish(), self.punc, self.hotwords)
 
 
 class PunctuatedASR:
@@ -332,7 +347,7 @@ class PunctuatedASR:
         warm_segmenter()  # jieba loads its dictionary on first use: not in the first customer's turn
 
     def stream(self, hotwords: list[str]) -> _PunctuatedStream:
-        return _PunctuatedStream(self.engine.stream(hotwords), self.punc)
+        return _PunctuatedStream(self.engine.stream(hotwords), self.punc, hotwords)
 
 
 def warm_segmenter() -> None:

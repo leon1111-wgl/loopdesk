@@ -689,13 +689,15 @@ def test_a_failing_punctuation_model_keeps_the_words(caplog):
     ("订单二零二六一零零八。零零二到哪了", "订单二零二六一零零八零零二到哪了", "订单SO20261008002到哪了"),
     ("先退我九块，九", "先退我九块九", "先退我9.9块"),
     ("下载的歌能导出成mp，三吗", "下载的歌能导出成mp三吗", "下载的歌能导出成MP3吗"),  # a tenant term
+    # Misheard: only hotword correction finds the term, and only without the comma.
+    ("好华，会员连续包月多少钱", "好华会员连续包月多少钱", "豪华会员连续包月多少钱"),
 ])
 def test_punctuation_that_changes_an_entity_is_not_used(punctuated, decoded, expected):
     from app.voice.engines import ASRResult
     from app.voice.session import understand
 
     result = ASRResult(punctuated, {"final": decoded, "streaming": decoded}, unpunctuated=decoded)
-    assert understand(result, Lexicon(["MP3"])).text == expected
+    assert understand(result, Lexicon(["MP3", "豪华会员"])).text == expected
 
 
 def test_punctuation_that_hides_a_phone_number_from_masking_is_not_used():
@@ -757,7 +759,12 @@ def test_retrying_engines_keeps_the_punctuated_asr(monkeypatch):
     # Between words, and around Latin letters, marks and spacing stay as the model wrote them.
     ("s o 二 零 二 六 零 九 一 八 零 零 一 我 要 退 货 退 款 另 外 发 票 怎 么 开",
      "s o二零二六零九一八零零一，我要退货退款。另外发票怎么开", "s o二零二六零九一八零零一，我要退货退款。另外发票怎么开"),
-    ("，帮我查一下物流", "，，帮我查一下物流", "帮我查一下物流"),  # nothing before the first word
+    ("帮我查一下物流", "，帮我查一下物流", "帮我查一下物流"),  # nothing before the first word
+    # Numbers are one word: a mark inside a spoken order or phone number is dropped.
+    ("订单二零二六一零零八零零二到哪了", "订单二零二六，一零零八，零零二。到哪了", "订单二零二六一零零八零零二。到哪了"),
+    ("我的手机号是一三八一二三四五六七八", "我的手机号是一三八。一二三四五六七八", "我的手机号是一三八一二三四五六七八"),
+    # The decoder's own marks stay; only the model's are checked.
+    ("hi-res 音 质 v2.0 版", "hi-res音质v2.0版。", "hi-res音质v2.0版。"),
     # The large ct-punc capitalises a sentence's first Latin word (voice-eval run 39519873004): the
     # marks are taken, the decoder's letters kept.
     ("so 二 零 二 六 零 九 一 八 零 零 一 我 要 退 货 退 款 另 外 发 票 怎 么 开",
@@ -768,6 +775,15 @@ def test_punctuation_only_between_words(decoded, punctuated, kept):
 
     result = PunctuatedASR(_Unpunctuated(decoded), lambda text: punctuated).stream([]).finish()
     assert result.text == kept
+
+
+def test_a_tenant_term_is_one_word_for_punctuation():
+    # jieba splits 扫地|机器人; a comma there made the entity fallback drop every mark, the one that
+    # separates the two requests too (Fable re-review). The hotwords the stream gets are kept whole.
+    from app.voice.engines import PunctuatedASR
+
+    asr = PunctuatedASR(_Unpunctuated("扫地机器人坏了另外发票怎么开"), lambda text: "扫地，机器人坏了，另外发票怎么开")
+    assert asr.stream(["扫地机器人"]).finish().text == "扫地机器人坏了，另外发票怎么开"
 
 
 def test_a_punctuation_model_that_changes_words_is_not_used():
