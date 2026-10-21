@@ -447,8 +447,14 @@ class AgentRuntime:
                 if outcome.kind == "approval":
                     yield from self._pause(run, tracer, ctx, state, messages, call, queue, outcome, started)
                     return
-                if outcome.is_error:  # an answer built around a failed tool is never cached
+                # An answer built around a failed tool, or a search that ran without its vector
+                # channel (N-078), is never cached: the next customer gets a full search.
+                if outcome.is_error or outcome.output.get("degraded"):
                     state["tool_errors"] = state.get("tool_errors", 0) + 1
+                if outcome.output.get("degraded") and not run.error:
+                    # Counted as a failure (dashboard, loopdesk_run_errors_total, not "resolved"):
+                    # otherwise an embedding outage would only show in a log line.
+                    run.error = f"embedding unavailable: {outcome.output.get('vector_error') or ''}"[:2000]
                 messages.append(self._tool_message(call, outcome))
                 yield {"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
                        "is_error": outcome.is_error}

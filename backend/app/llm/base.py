@@ -118,3 +118,7 @@ class Embedder(ABC):
 
     @abstractmethod
     def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+    def embed_query(self, text: str) -> list[float]:
+        """One search's query vector; a remote embedder gives it a shorter timeout than ingest."""
+        return self.embed([text])[0]

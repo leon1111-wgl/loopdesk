@@ -14,7 +14,8 @@ from array import array
 from collections import Counter
 
 from ..config import Settings
-from ..llm.base import Embedder
+from ..llm.base import Embedder, LLMError
+from ..llm.breaker import CircuitBreaker
 from ..textutil import tokenize
 
 
@@ -54,14 +55,44 @@ def unpack(blob: bytes) -> list[float]:
     return values.tolist()
 
 
+class GuardedEmbedder(Embedder):
+    """A remote embedder behind the same circuit breaker as the models (N-078): while the service
+    is down, a search fails over to BM25 at once instead of waiting out a timeout per question."""
+
+    def __init__(self, inner: Embedder, breaker: CircuitBreaker, key: str):
+        self.inner = inner
+        self.breaker = breaker
+        self.key = key
+        self.dim = inner.dim
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self._guarded(lambda: self.inner.embed(texts))
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._guarded(lambda: self.inner.embed_query(text))
+
+    def _guarded(self, call):
+        if not self.breaker.allow(self.key):
+            raise LLMError(f"embedding {self.key}: circuit open")
+        try:
+            result = call()
+        except Exception:
+            self.breaker.record(self.key, False)
+            raise
+        self.breaker.record(self.key, True)
+        return result
+
+
 def build_embedder(settings: Settings) -> Embedder:
     if settings.embedding_provider == "openai_compat":
         from ..llm.openai_compat import OpenAICompatEmbedder
 
-        return OpenAICompatEmbedder(
+        remote = OpenAICompatEmbedder(
             settings.embedding_base_url or "",
             settings.embedding_api_key or "",
             settings.embedding_model or "",
             settings.embedding_dim,
+            query_timeout=settings.embedding_timeout,
         )
+        return GuardedEmbedder(remote, CircuitBreaker(settings), f"embedding:{settings.embedding_model}")
     return HashingEmbedder(settings.embedding_dim)

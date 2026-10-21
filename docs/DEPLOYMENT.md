@@ -129,6 +129,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowl
 | `OUTPUT_GUARD` | `rules` | `rules` / `llm`：`llm` 时，规则放过、带诈骗线索的模型回答再由快模型判断，回答不再流式输出；模型失败时以规则结果为准 |
 | `EMBEDDING_PROVIDER` | `hashing` | `hashing`（离线）/ `openai_compat` |
 | `EMBEDDING_MODEL` / `EMBEDDING_DIM` | — / `512` | 向量模型；远程模型返回的维度必须等于 `EMBEDDING_DIM`，否则建索引时报错 |
+| `EMBEDDING_TIMEOUT` | `5` | 一次检索等查询向量的秒数，超时就只用 BM25（入库仍是 30 秒）；向量服务故障时看板的故障类别是 `embedding` |
 | `EVIDENCE_MODE` | `annotate` | `annotate`：流式输出并标注；`strict`：缓冲输出，校验不通过就拦截 |
 | `VERIFIER` | `lexical` | `lexical` / `llm`：`llm` 时由快模型判定措辞是否有依据（数字仍按规则核对）；带思考过程的模型（如 DeepSeek V4.1 Flash）会让 p95 从约 13 秒升到约 40 秒，门禁没有提高，见 EVALUATION |
 | `MIN_RELEVANCE` | `0.3` | 检索相关度阈值（IDF 加权词覆盖率） |

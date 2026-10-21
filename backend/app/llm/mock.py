@@ -50,6 +50,8 @@ REFUSAL = (
     "抱歉，知识库中没有找到与该问题直接相关的依据。"
     "为避免给出不准确的信息，建议您转人工客服确认。"
 )
+# The search itself failed or ran partly (N-078): say so instead of "the knowledge base has nothing".
+SEARCH_DOWN = "抱歉，知识库检索暂时出了故障，这次没能查到相关规定，并不代表没有。请稍后再试，或回复“转人工”。"
 
 
 # "SO… 我要退货退款，另外发票怎么开？" carries two requests. The clause after a connector is
@@ -321,7 +323,8 @@ class MockLLM(LLMProvider):
                 if sentences:
                     parts.extend(sentences)
                 elif not parts and not ticket:
-                    parts.append(REFUSAL)
+                    down = knowledge.get("error") or knowledge.get("degraded")
+                    parts.append(SEARCH_DOWN if down else REFUSAL)
         if ticket:
             parts.append(ticket.get("message") or f"工单创建失败：{ticket.get('error', '')}。")
 

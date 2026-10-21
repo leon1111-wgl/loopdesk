@@ -166,6 +166,9 @@ class Settings:
     embedding_api_key: str | None = None
     embedding_model: str | None = None
     embedding_dim: int = 512
+    # One search waits at most this long for the query vector before going on with BM25 (N-078);
+    # ingest keeps the client's 30 s.
+    embedding_timeout: float = 5.0
 
     # Agent behaviour
     max_agent_steps: int = 6
@@ -275,6 +278,7 @@ class Settings:
         s.embedding_api_key = _env("EMBEDDING_API_KEY", s.llm_api_key)
         s.embedding_model = _env("EMBEDDING_MODEL")
         s.embedding_dim = _env_int("EMBEDDING_DIM", s.embedding_dim)
+        s.embedding_timeout = _env_float("EMBEDDING_TIMEOUT", s.embedding_timeout)
 
         s.max_agent_steps = _env_int("MAX_AGENT_STEPS", s.max_agent_steps)
         s.history_turns = _env_int("HISTORY_TURNS", s.history_turns)

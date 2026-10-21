@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
@@ -81,6 +82,7 @@ class SearchDebug:
     vector: list[dict] = field(default_factory=list)
     dropped_flagged: int = 0
     filtered_low_relevance: int = 0
+    vector_error: str | None = None  # the embedding service failed: this search was BM25 only (N-078)
 
 
 class TenantIndex:
@@ -102,6 +104,7 @@ class TenantIndex:
         self.matrix = (np.asarray(vectors, dtype=np.float32).reshape(self.n, -1)
                        if self.n and vectors is not None else None)
         self.visibility = np.array([c.visibility for c in chunks], dtype=object)
+        self.pending = 0  # chunks stored without a vector (N-078); a working embedder backfills them
 
     def idf(self, token: str) -> float:
         df = self.df.get(token, 0)
@@ -254,6 +257,7 @@ class IndexManager:
             )
             blobs.append(chunk.embedding)
         index = TenantIndex(chunks, _matrix(blobs))
+        index.pending = sum(1 for b in blobs if not b)
         with self._lock:
             self._cache[tenant_id] = (signature, index)
             self._tokens[tenant_id] = seen  # chunks that no longer exist drop out
@@ -269,7 +273,10 @@ def _matrix(blobs: list[bytes]):
     model was changed without re-indexing) are left at zero, i.e. never similar."""
     if not blobs:
         return None
-    width = max(set(map(len, blobs)), key=[len(b) for b in blobs].count)  # the usual row size
+    widths = [len(b) for b in blobs if b]  # empty: stored while the embedding service was down (N-078)
+    if not widths:
+        return None
+    width = max(set(widths), key=widths.count)  # the usual row size
     if all(len(b) == width for b in blobs):
         return np.frombuffer(b"".join(blobs), dtype=np.float32).reshape(len(blobs), -1).copy()
     matrix = np.zeros((len(blobs), width // 4), dtype=np.float32)
@@ -315,6 +322,45 @@ class Prewarm:
 prewarm = Prewarm()
 
 
+class Backfill:
+    """Embeds the chunks stored without vectors (N-078) in the background, one run at a time and at
+    most once per ``interval`` seconds, so a search never waits for it."""
+
+    def __init__(self, interval: float = 30.0) -> None:
+        self.interval = interval
+        self._lock = threading.Lock()
+        self._running = False
+        self._last = float("-inf")
+        self.filled = 0
+
+    def kick(self, embedder: Embedder, wait: bool = False) -> None:
+        with self._lock:
+            if self._running or time.monotonic() - self._last < self.interval:
+                return
+            self._running = True
+            self._last = time.monotonic()
+        thread = threading.Thread(target=self._run, args=(embedder,), name="embed-backfill", daemon=True)
+        thread.start()
+        if wait:
+            thread.join()
+
+    def _run(self, embedder: Embedder) -> None:
+        from ..db import new_session
+        from .ingest import embed_pending
+
+        try:
+            with new_session() as db:
+                self.filled += embed_pending(db, embedder)
+        except Exception:  # pragma: no cover - the next search kicks it again
+            logger.exception("embedding backfill failed")
+        finally:
+            with self._lock:
+                self._running = False
+
+
+backfill = Backfill()
+
+
 def cosine_gate(settings) -> float | None:
     """The cosine a chunk needs to pass on vector similarity alone; None: it never does (N-030).
     The offline hashing embedder's cosine is lexical, so it shares the coverage threshold. A
@@ -352,9 +398,19 @@ def hybrid_search(
     if index.n == 0:
         return [], debug
 
-    qvec = embedder.embed([query])[0]
+    # The embedding service is a separate dependency: when it fails, BM25 and the coverage gate
+    # still work on their own, so the search degrades to them instead of failing (N-078). The
+    # caller tells the customer the search was partial rather than "the knowledge base has nothing".
+    try:
+        qvec = embedder.embed_query(query)
+    except Exception as exc:
+        qvec = None
+        debug.vector_error = f"{type(exc).__name__}: {exc}"[:200]
+        logger.warning("embedding failed, searching with BM25 only: %s", debug.vector_error)
+    if qvec is not None and index.pending:
+        backfill.kick(embedder)  # the service answers again: embed what was stored without vectors
     bm25 = index.bm25(q_tokens, visibility, candidate_k)
-    vec = index.vector(qvec, visibility, candidate_k)
+    vec = index.vector(qvec, visibility, candidate_k) if qvec is not None else []
     debug.bm25 = [{"chunk_id": index.chunks[i].chunk_id, "score": round(s, 4)} for i, s in bm25]
     debug.vector = [{"chunk_id": index.chunks[i].chunk_id, "score": round(s, 4)} for i, s in vec]
 

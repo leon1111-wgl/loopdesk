@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select, update
@@ -14,6 +16,8 @@ from .chunking import chunk_markdown, chunk_pages
 from .conflicts import detect_conflicts
 from .embeddings import pack
 from .retrieval import index_manager
+
+logger = logging.getLogger(__name__)
 
 
 def ingest_document(
@@ -48,7 +52,15 @@ def ingest_document(
 
     drafts = chunk_pages(pages) if pages else chunk_markdown(content)
     channels = tenant_channels(db, tenant_id)
-    vectors = embedder.embed([f"{d.heading}\n{d.text}" for d in drafts]) if drafts else []
+    try:
+        vectors = [pack(v) for v in embedder.embed([f"{d.heading}\n{d.text}" for d in drafts])] if drafts else []
+    except Exception as exc:
+        if not transient(exc):  # a wrong key, model or dimension: fail loudly, as before
+            raise
+        # The embedding service is down: store the chunks without vectors (BM25 finds them at once)
+        # and let embed_pending fill them in, instead of failing the upload or the startup (N-078).
+        logger.warning("embedding failed for %r, stored without vectors: %s", title, exc)
+        vectors = [b""] * len(drafts)
     flagged = 0
     for ord_, (draft, vector) in enumerate(zip(drafts, vectors)):
         reasons = scan_chunk(draft.heading, draft.text, visibility, channels)
@@ -61,7 +73,7 @@ def ingest_document(
                 heading=draft.heading,
                 text=draft.text,
                 page=draft.page,
-                embedding=pack(vector),
+                embedding=vector,
                 flagged_injection=bool(reasons),
                 flag_reasons=reasons,
             )
@@ -110,6 +122,56 @@ def recount_flagged(db: Session, document_ids: list[int]) -> None:
             .scalar_subquery())
     db.execute(update(Document).where(Document.id.in_(document_ids)).values(flagged_chunks=held)
                .execution_options(synchronize_session="fetch"))
+
+
+def transient(exc: Exception) -> bool:
+    """An embedding failure worth waiting out: the service is down, slow or rate-limited. A refused
+    request (wrong key, model, dimension) is a configuration error and is raised as before."""
+    text = str(exc)
+    if "LOOPDESK_EMBEDDING_DIM" in text:  # OpenAICompatEmbedder: the model returned another width
+        return False
+    status = re.search(r"HTTP (\d{3})", text)
+    return not status or int(status.group(1)) >= 500 or int(status.group(1)) in (408, 429)
+
+
+def embed_pending(db: Session, embedder: Embedder, batch: int = 256) -> int:
+    """Embed the chunks stored without vectors while the embedding service was down (N-078).
+    Returns how many were filled in; stops at the first failure (the service is still down).
+
+    Each vector is written with a conditional UPDATE on the text it was made from: a document
+    edited meanwhile replaced its chunks (SQLite may reuse the ids), and those are left pending
+    rather than given the old text's vectors. No tenant row is locked while chunk rows are held,
+    and the knowledge version is bumped once per tenant at the end, in its own transaction."""
+    filled, tenants, after = 0, set(), 0
+    while True:
+        rows = db.execute(select(Chunk.id, Chunk.tenant_id, Chunk.heading, Chunk.text)
+                          .where(func.length(Chunk.embedding) == 0, Chunk.id > after)
+                          .order_by(Chunk.id).limit(batch)).all()
+        db.rollback()  # no snapshot or lock held while waiting for the embedding service
+        if not rows:
+            break
+        after = rows[-1].id
+        try:
+            vectors = embedder.embed([f"{r.heading}\n{r.text}" for r in rows])
+            if len(vectors) != len(rows):
+                raise ValueError(f"embedding returned {len(vectors)} vectors for {len(rows)} texts")
+        except Exception as exc:
+            logger.warning("embedding %d pending chunks failed, will retry: %s", len(rows), exc)
+            break
+        for r, vector in zip(rows, vectors):
+            result = db.execute(update(Chunk)
+                                .where(Chunk.id == r.id, Chunk.heading == r.heading, Chunk.text == r.text,
+                                       func.length(Chunk.embedding) == 0)
+                                .values(embedding=pack(vector)).execution_options(synchronize_session=False))
+            if result.rowcount:
+                filled += 1
+                tenants.add(r.tenant_id)
+        db.commit()
+    for tenant_id in sorted(tenants):
+        _bump_kb_version(db, tenant_id)
+        db.commit()
+        index_manager.invalidate(tenant_id)
+    return filled
 
 
 def _bump_kb_version(db: Session, tenant_id: int) -> None:

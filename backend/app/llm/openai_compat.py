@@ -200,19 +200,27 @@ class OpenAICompatProvider(LLMProvider):
 
 class OpenAICompatEmbedder(Embedder):
     def __init__(self, base_url: str, api_key: str, model: str, dim: int, timeout: float = 30.0,
-                 transport: httpx.BaseTransport | None = None):
+                 transport: httpx.BaseTransport | None = None, query_timeout: float | None = None):
         if not (base_url and api_key and model):
             raise LLMError("openai_compat embeddings need LOOPDESK_EMBEDDING_BASE_URL / _API_KEY / _MODEL")
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.dim = dim
         self.client = httpx.Client(timeout=timeout, headers={"Authorization": f"Bearer {api_key}"}, transport=transport)
+        # A search waits this long for its query vector, then goes on with BM25 (N-078);
+        # ingest and the backfill keep the longer timeout.
+        self.query_timeout = query_timeout or timeout
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed([text], timeout=self.query_timeout)[0]
+
+    def embed(self, texts: list[str], timeout: float | None = None) -> list[list[float]]:
         vectors: list[list[float]] = []
+        extra = {"timeout": timeout} if timeout is not None else {}
         for start in range(0, len(texts), 16):
             batch = texts[start : start + 16]
-            response = self.client.post(f"{self.base_url}/embeddings", json={"model": self.model, "input": batch})
+            response = self.client.post(f"{self.base_url}/embeddings", json={"model": self.model, "input": batch},
+                                        **extra)
             if response.status_code >= 400:
                 raise LLMError(f"embedding HTTP {response.status_code}: {response.text[:300]}")
             data = sorted(response.json()["data"], key=lambda d: d["index"])

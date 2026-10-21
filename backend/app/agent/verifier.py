@@ -46,6 +46,8 @@ _CLAIMLESS_CLAUSE = re.compile(
     r"|^(我们?|这边)(可以|能|来|会|很乐意|乐意)?(先|再|马上|立即|这就)?为您(?!.*[了已])"
     r"|^(有其他问题|如有其他|还有什么|欢迎|期待|祝您)"
     r"|^(我们?|这类要求我?|该要求我?)(暂时)?(不能|无法|不会|不可以)"
+    # Saying the search itself failed (N-078); per clause, so a claim next to it is still checked.
+    r"|^(知识库)?检索(服务)?暂时(出了?)?故障[。！!]?$|^这次没能查到相关规定[。！!]?$|^并不代表没有[。！!]?$"
 )
 _CLAUSE_SPLIT = re.compile(r"[，,；;：:—]+")
 

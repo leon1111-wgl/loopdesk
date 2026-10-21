@@ -190,8 +190,14 @@ def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             "text": hit.text, "relevance": round(hit.relevance, 3), "page": hit.page,
         })
     output: dict[str, Any] = {"query": query, "results": results}
+    if debug.vector_error:
+        # Distinct from "nothing relevant": the model must not tell the customer the knowledge
+        # base has no answer when only part of the search ran (N-078).
+        output["degraded"] = "语义检索暂不可用，本次只用关键词检索"
+        output["vector_error"] = debug.vector_error
     if not results:
-        output["note"] = "知识库中没有足够相关的内容"
+        output["note"] = ("检索服务部分故障，这次没有查到，不代表知识库里没有；请顾客稍后再试或转人工"
+                          if debug.vector_error else "知识库中没有足够相关的内容")
     # Open conflicts with both sides in this evidence: the runtime hands over instead of
     # letting the model state both versions.
     conflicts = disputed(ctx.db, ctx.tenant.id, [hit.text for hit in hits])
@@ -203,6 +209,7 @@ def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         "query_tokens": debug.query_tokens,
         "dropped_injection_chunks": debug.dropped_flagged,
         "filtered_low_relevance": debug.filtered_low_relevance,
+        "vector_error": debug.vector_error,
         "hits": [h.as_dict() for h in hits],
     }
     return output

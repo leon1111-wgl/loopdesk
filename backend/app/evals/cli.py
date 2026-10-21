@@ -3,6 +3,7 @@
     python -m app.evals.cli --tenant leon --gate 0.9            # against LOOPDESK_DATABASE_URL
     python -m app.evals.cli --fresh --gate 0.9 --report out.json  # throwaway DB seeded from scratch
     python -m app.evals.cli --fresh --compare 1.00,2.00           # offline A/B of two prompt versions
+    python -m app.evals.cli --fresh --embedding-down              # the embedding service fails after seeding
 """
 
 from __future__ import annotations
@@ -17,6 +18,21 @@ from sqlalchemy import select
 from .scratch import scratch_database_url
 
 
+class _DownEmbedder:
+    """An embedding service that answers every call with HTTP 500."""
+
+    def __init__(self, dim: int):
+        self.dim = dim
+
+    def embed(self, texts):
+        from ..llm.base import LLMError
+
+        raise LLMError("embedding HTTP 500: simulated outage (--embedding-down)")
+
+    def embed_query(self, text):
+        return self.embed([text])[0]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="LoopDesk offline eval")
     parser.add_argument("--tenant", default="leon")
@@ -26,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report", help="write the metrics and per-case results as JSON")
     parser.add_argument("--prompt-version", help="evaluate this prompt version instead of the configured default")
     parser.add_argument("--compare", help="baseline,candidate prompt versions; fails on any regression")
+    parser.add_argument("--embedding-down", action="store_true",
+                        help="every embedding call fails after seeding (N-078: how the suite does in an outage)")
     args = parser.parse_args(argv)
 
     from ..config import get_settings, prompt_version_name
@@ -44,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     set_services(services)
     with new_session() as db:
         seed_demo(db, services.embedder)
+        if args.embedding_down:
+            services.embedder = _DownEmbedder(services.embedder.dim)
         tenant = db.execute(select(Tenant).where(Tenant.slug == args.tenant)).scalar_one()
         if args.compare:
             return compare(db, services, tenant, args.suite, args.compare.split(","), args.gate)
