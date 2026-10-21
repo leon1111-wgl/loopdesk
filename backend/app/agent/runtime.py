@@ -255,7 +255,8 @@ class AgentRuntime:
             # Answer cache: only for self-contained, PII-free, injection-free first questions.
             cache_key = None
             if (self.settings.answer_cache_ttl_hours > 0 and not history and not pii.found
-                    and not injection.suspicious and not options.dry_run and not options.inject_hallucination):
+                    and not injection.suspicious and not options.dry_run and not options.inject_hallucination
+                    and answer_cache.cacheable(text)):
                 cache_key = answer_cache.make_key(self.db, self.settings, tenant, user, text, prompt_version)
                 entry = answer_cache.lookup(self.db, cache_key)
                 if entry is not None:
@@ -832,7 +833,8 @@ class AgentRuntime:
             status = "handoff" if "handoff_to_human" in tools_used else "completed"
         cache_key = state.get("cache_key")
         if (cache_key and status == "completed" and verification is not None and verification.verdict == "pass"
-                and tools_used and set(tools_used) == {"search_knowledge"} and not state.get("tool_errors")):
+                and tools_used and set(tools_used) == {"search_knowledge"} and not state.get("tool_errors")
+                and not answer_cache.is_refusal(final_text)):  # a refusal is cheap to redo, costly to replay (N-116)
             answer_cache.store(self.db, answer_cache.CacheKey(**cache_key), final_text,
                                {"evidence": [e.to_dict() for e in ctx.evidence], "verification": verification.to_dict()},
                                self.settings.answer_cache_ttl_hours)
