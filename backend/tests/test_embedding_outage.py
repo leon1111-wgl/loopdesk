@@ -198,16 +198,28 @@ def test_a_document_edited_during_the_backfill_keeps_no_stale_vectors(client, mo
         assert _pending(db) == 1
 
     class EditsWhileEmbedding(HashingEmbedder):
+        edited = False
+
         def embed(self, texts):
-            with new_session() as other:  # an admin saves a new version meanwhile
-                ingest_document(other, tenant_id=tenant_id, title="以旧换新", content="# 以旧换新\n\n可抵扣 500 元。",
-                                embedder=DownEmbedder(), document=other.get(Document, doc_id))
+            if not self.edited:  # an admin saves a new version while the first batch is embedded
+                self.edited = True
+                with new_session() as other:
+                    ingest_document(other, tenant_id=tenant_id, title="以旧换新",
+                                    content="# 以旧换新\n\n可抵扣 500 元。", embedder=DownEmbedder(),
+                                    document=other.get(Document, doc_id))
             return super().embed(texts)
 
+    embedder = EditsWhileEmbedding(512)
     with new_session() as db:
-        assert embed_pending(db, EditsWhileEmbedding(512)) == 0, "the vector of the old text is not written"
-        assert _pending(db) == 1
-        assert embed_pending(db, HashingEmbedder(512)) == 1 and _pending(db) == 0
+        embed_pending(db, embedder)
+        # SQLite reuses the chunk id (the new chunk stays pending); PostgreSQL gives it a new id,
+        # which the same run then embeds. Either way no chunk holds the old text's vector.
+        for chunk in db.execute(select(Chunk).where(Chunk.document_id == doc_id)).scalars():
+            assert "500" in chunk.text
+            if chunk.embedding:
+                assert chunk.embedding == pack(HashingEmbedder(512).embed([f"{chunk.heading}\n{chunk.text}"])[0])
+        embed_pending(db, HashingEmbedder(512))
+        assert _pending(db) == 0
 
 
 def test_a_short_answer_from_the_service_does_not_loop(client):
