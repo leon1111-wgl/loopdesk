@@ -34,7 +34,7 @@ patches:
         path: /data/LOOPDESK_LLM_MODEL
   - target: {kind: Deployment, name: loopdesk}
     patch: |-
-      - op: replace
+      - op: add
         path: /spec/replicas
         value: 1
   - target: {kind: HorizontalPodAutoscaler, name: loopdesk}

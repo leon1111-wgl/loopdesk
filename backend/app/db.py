@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -103,13 +104,40 @@ def current_revision() -> str | None:
         return conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
 
 
-def head_revision() -> str:
+@functools.lru_cache(maxsize=1)
+def _revisions() -> tuple[str, frozenset[str]]:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     config = Config(str(BACKEND_DIR / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
-    return ScriptDirectory.from_config(config).get_current_head()
+    script = ScriptDirectory.from_config(config)
+    return script.get_current_head(), frozenset(r.revision for r in script.walk_revisions())
+
+
+def head_revision() -> str:
+    return _revisions()[0]
+
+
+def schema_status(current: str | None) -> str:
+    """"ok" when this version's code can use a database at ``current``: at this version's latest
+    migration, or at one this version does not know, which a newer release's migration job wrote
+    (a rolling update: the old replicas keep serving while the new ones start; migrations stay
+    backward compatible for one release). Otherwise what is wrong: not migrated yet, or behind."""
+    head, known = _revisions()
+    if current == head:
+        return "ok"
+    if current is not None and current not in known:
+        # Newer only if this version's tables are all there (a newer release adds, it does not drop):
+        # another application's database, or a garbage version row, must not pass.
+        from sqlalchemy import inspect
+
+        from . import models  # noqa: F401  (register tables)
+
+        if set(Base.metadata.tables) <= set(inspect(get_engine()).get_table_names()):
+            return "ok"
+        return f"at {current}, unknown to this version, and its tables are missing"
+    return f"at {current}, expected {head}"
 
 
 def prepare_database(database_url: str, auto_migrate: bool = True, external: bool = False) -> str:

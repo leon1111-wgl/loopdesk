@@ -22,7 +22,7 @@ from .api import answer_cache as answer_cache_api
 from .api import (approvals, audit, auth, channels, chat, evals, exports, flywheel, handoffs, kb, metrics, refunds,
                   tickets, traces, voice)
 from .config import Settings, get_settings, set_settings
-from .db import current_revision, head_revision, init_engine, new_session, prepare_database
+from .db import current_revision, init_engine, new_session, prepare_database, schema_status
 from .observability import configure_logging
 from .observability import install as install_observability
 from .ops.rescan_knowledge import rescan_knowledge
@@ -139,8 +139,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 checks["database"] = "ok"
             if settings.auto_migrate or settings.external_migrations:
                 checks["migrations"] = "not checked"
-                current = current_revision()
-                checks["migrations"] = "ok" if current == head_revision() else f"at {current}, expected {head_revision()}"
+                checks["migrations"] = schema_status(current_revision())
         except Exception as exc:  # report, do not raise: probes need a status code, not a stack trace
             checks.setdefault("database", f"error: {type(exc).__name__}")
         # A failed prewarm does not keep the instance out of service: a search builds the index.

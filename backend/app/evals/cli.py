@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     from ..config import get_settings, prompt_version_name
-    from ..db import create_all, init_engine, new_session
+    from ..db import create_all, current_revision, init_engine, new_session, prepare_database, schema_status
     from ..models import EvalResult, Tenant
     from ..seed import seed_demo
     from ..services import Services, set_services
@@ -57,14 +57,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.fresh:
         settings.database_url = scratch_database_url("eval")
     init_engine(settings.database_url)
-    create_all()
+    if args.fresh:
+        create_all()  # a throwaway database
+    else:  # the configured database: the app's schema rules (a release job may own the migrations)
+        prepare_database(settings.database_url, settings.auto_migrate, settings.external_migrations)
+        status = schema_status(current_revision()) if settings.external_migrations else "ok"
+        if status != "ok":
+            print(f"the database schema is not ready ({status}); run the migration job, or use --fresh")
+            return 2
     services = Services(settings)
     set_services(services)
     with new_session() as db:
-        seed_demo(db, services.embedder)
+        if args.fresh or settings.seed_demo:  # never the demo tenants and their public password in production
+            seed_demo(db, services.embedder)
         if args.embedding_down:
             services.embedder = _DownEmbedder(services.embedder.dim)
-        tenant = db.execute(select(Tenant).where(Tenant.slug == args.tenant)).scalar_one()
+        tenant = db.execute(select(Tenant).where(Tenant.slug == args.tenant)).scalar_one_or_none()
+        if tenant is None:
+            print(f"no tenant {args.tenant!r} in this database; use --fresh for the demo tenants")
+            return 2
         if args.compare:
             return compare(db, services, tenant, args.suite, args.compare.split(","), args.gate)
         run = run_suite(db, services, tenant, args.suite, triggered_by="cli",

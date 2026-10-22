@@ -77,3 +77,15 @@ def test_the_command_writes_the_choice_and_says_why(tmp_path, capsys):
     assert "admin@harbour.demo" in capsys.readouterr().out
     assert demo_fixtures.main(["--offline", str(tmp_path / "offline.json"), "--real", str(tmp_path / "missing.json"),
                                "--out", str(out)]) == 0, "a fork without a real recording deploys the offline one"
+
+
+def test_a_field_inside_a_list_of_records_counts_but_map_keys_do_not():
+    """A trace's spans are records with a fixed shape: a new span field the console reads must make a
+    stale recording fall back. Keys of a nested dict are often data (counts per tool), so they never do."""
+    offline, real = _fixtures(), _fixtures("openai_compat")
+    real["bodies"]["r1"] = {"id": "x", "spans": [{"name": "chat", "ms": 3}], "by_tool": {"search_knowledge": 1}}
+    offline["bodies"]["r1"] = {"id": "x", "spans": [{"name": "chat", "ms": 3}], "by_tool": {"get_order": 2}}
+    assert demo_fixtures.choose(offline, real)[0] is real, "different tools used: not a shape change"
+    offline["bodies"]["r1"]["spans"] = [{"name": "chat", "ms": 3, "cached_tokens": 0}]
+    chosen, reasons = demo_fixtures.choose(offline, real)
+    assert chosen is offline and any("spans[].cached_tokens" in r for r in reasons)

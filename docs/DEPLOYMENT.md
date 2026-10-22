@@ -49,9 +49,9 @@ python3 backend/app/ops/smoke.py http://localhost:8000 --provider openai_compat 
 
 | 资源 | 作用 |
 |---|---|
-| Deployment `loopdesk` | 2 个副本，每个 Pod 一个 uvicorn 进程（扩容靠副本数，不靠 worker 数）；就绪探针 `/api/ready`，存活和启动探针 `/api/health`；init container 等表结构迁移完成；非 root（10001）、只读根文件系统（`/tmp` 用 emptyDir，给 jieba 的词典缓存）、去掉全部 capabilities；滚动发布不减少可用副本，`preStop` 先等 5 秒让 Service 摘掉流量，`terminationGracePeriodSeconds` 60 秒留给正在流式输出的回答（运行时限 45 秒） |
+| Deployment `loopdesk` | 副本数交给 HPA（清单里不写 `replicas`，否则每次 `kubectl apply` 都会把 HPA 扩出来的副本砍回去）；每个 Pod 一个 uvicorn 进程（扩容靠副本数，不靠 worker 数）；就绪探针 `/api/ready`，存活和启动探针 `/api/health`；init container 等表结构迁移完成（它只拿到数据库地址，拿不到其他密钥）；非 root（10001）、只读根文件系统（`/tmp` 用 emptyDir，给 jieba 的词典缓存）、去掉全部 capabilities；滚动发布不减少可用副本，`preStop` 先等 5 秒让 Service 摘掉流量，`terminationGracePeriodSeconds` 60 秒留给正在流式输出的回答（运行时限 45 秒） |
 | Service、HPA、PodDisruptionBudget | HPA 按 CPU 70% 在 2–10 个副本之间伸缩。回答真实模型时副本大多在等模型，CPU 只是近似指标，要同时看 `/api/chat` 的 p95（见 PERFORMANCE） |
-| ConfigMap `loopdesk-config` | 不保密的配置：`SEED_DEMO=0`、`AUTO_MIGRATE=0`、模型地址和模型名、`FORWARDED_ALLOW_IPS`（只信任 Ingress 控制器转发的 `X-Forwarded-For`，不要写 `*`） |
+| ConfigMap `loopdesk-config` | 不保密的配置：`SEED_DEMO=0`、`AUTO_MIGRATE=0`、模型地址和模型名、`FORWARDED_ALLOW_IPS`（信任哪些代理的 `X-Forwarded-For`）：默认是 Pod 网段 `10.0.0.0/8`，请改成自己集群的。uvicorn 取最右边一个不受信任的地址，也就是 Ingress 控制器追加的真实客户端地址，所以集群外的人选不了自己的 IP；集群内直接连过来的 Pod 可以。能做到的话缩小到 Ingress 控制器的 Pod，或用 NetworkPolicy 只让它访问这些 Pod。不要写 `*`；也不要用 `127.0.0.1`：那样所有顾客在登录限流里都是 Ingress 控制器这一个地址，任何人每分钟输错 30 次密码就能让所有人登录不了（评审复核时发现） |
 | Secret `loopdesk-secrets` | 清单只引用、不创建：数据库地址、JWT 密钥、审计密钥、模型 Key |
 | Job `loopdesk-migrate` | 每次发布执行一次 `python -m app.ops.migrate` |
 | CronJob ×4 | `stale_runs`、`channel_retry`（每分钟）、`refund_reconcile`（每 5 分钟）、`retention --days 90`（每天）；都可以多实例同时执行，`concurrencyPolicy: Forbid` 只是避免在数据库变慢时堆积 |
@@ -70,7 +70,7 @@ kubectl -n loopdesk wait --for=condition=complete job/loopdesk-migrate --timeout
 kubectl -n loopdesk rollout status deployment/loopdesk
 ```
 
-**发布新版本**：Job 不可修改，先删掉上一次的迁移 Job 再应用：`kubectl -n loopdesk delete job loopdesk-migrate --ignore-not-found && kubectl apply -k deploy/k8s/base`。新副本的 init container 等新迁移完成才启动，旧副本继续服务（注意“升级注意”里需要先停旧实例的迁移）。
+**发布新版本**：Job 不可修改，先删掉上一次的迁移 Job 再应用：`kubectl -n loopdesk delete job loopdesk-migrate --ignore-not-found && kubectl apply -k deploy/k8s/base`（用 Argo CD 这类 GitOps 工具时，改成按镜像版本给 Job 起名，或用它们的 hook）。之前按带 `replicas: 2` 的旧清单部署过的，第一次重新应用时副本数会短暂回到 1，HPA 下一次同步（约 15 秒）再拉回 2。新副本的 init container 等新迁移完成才启动；旧副本继续服务：表结构处在旧代码不认识的版本时，`/api/ready` 和 `schema_wait` 认为是新版本迁移过了，照常就绪，所以回滚到上一个镜像也能启动。前提是迁移对上一个版本向后兼容（先加列、下个版本再删，即 expand / contract）；做不到的迁移（例如“升级注意”里的 0013）要先停旧实例。以前就绪检查要求版本完全相等，迁移 Job 一跑完，旧副本全部变成未就绪、被摘掉流量，而新副本还在启动，整个服务短暂不可用（W7 第二模型评审发现）。
 
 **验证到什么程度**：CI 每次推送用 kubeconform 按 Kubernetes 1.31 的 schema 严格校验 base 和每个 overlay（`k8s` 任务）；`k8s.yml` 把 `overlays/kind`（base 加集群内的 PostgreSQL、演示数据、离线模型）部署到 GitHub Actions 上的 kind 集群，等迁移 Job 完成、副本就绪，经 Service 问一个问题，再手动触发一次 CronJob。没有在真实的云上集群和真实流量下运行过；PostgreSQL 请用托管服务或有持久卷和备份的部署，kind overlay 里的 emptyDir 只用于测试。
 
@@ -153,7 +153,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowl
 
 - 修改模型后生成迁移：`cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/alembic revision --autogenerate -m "说明"`。生成后先人工检查，再和代码一起提交。CI 中的 `tests/test_migrations.py` 会校验模型与迁移完全一致，漏写迁移会直接失败。
 - 由旧版本用 `create_all` 创建的数据库（没有 `alembic_version` 表）：启动时会补齐缺失的表，并标记为最新版本。
-- 多副本部署时，把迁移放进发布流程中的一次性任务，并对应用设置 `LOOPDESK_AUTO_MIGRATE=0`，避免多个副本同时执行迁移。发布任务执行 `python -m app.ops.migrate`（Kubernetes 里是 `deploy/k8s` 的 Job）；`LOOPDESK_AUTO_MIGRATE=0` 的实例完全不动表结构，表结构到最新版本之前 `/api/ready` 返回 503（`checks.migrations` 写着当前版本和期望版本）。每个副本的 init container 执行 `python -m app.ops.schema_wait --timeout 600`，等迁移完成再启动。以前 `AUTO_MIGRATE=0` 的实例会改为执行 `create_all()`：升级时新加的表先被副本建出来（迁移里的其他改动没有执行），迁移任务随后因为“表已存在”失败（W7 写 Kubernetes 清单时发现）。
+- 多副本部署时，把迁移放进发布流程中的一次性任务，并对应用设置 `LOOPDESK_AUTO_MIGRATE=0`，避免多个副本同时执行迁移。发布任务执行 `python -m app.ops.migrate`（Kubernetes 里是 `deploy/k8s` 的 Job）；`LOOPDESK_AUTO_MIGRATE=0` 的实例完全不动表结构，表结构落后于这个版本的最新迁移时 `/api/ready` 返回 503（`checks.migrations` 写着当前版本和期望版本；处在更新版本写入的、这个版本不认识的版本时算就绪，见 Kubernetes 一节的“发布新版本”）。`python -m app.seed --reset` 本身就是表结构操作，在 `AUTO_MIGRATE=0` 下也会重新执行迁移；评测 CLI 不带 `--fresh` 时按同样的规则对待配置的数据库，并且只在 `SEED_DEMO=1` 时写入演示租户。每个副本的 init container 执行 `python -m app.ops.schema_wait --timeout 600`，等迁移完成再启动。以前 `AUTO_MIGRATE=0` 的实例会改为执行 `create_all()`：升级时新加的表先被副本建出来（迁移里的其他改动没有执行），迁移任务随后因为“表已存在”失败（W7 写 Kubernetes 清单时发现）。
 
 ## 环境变量
 

@@ -6,7 +6,7 @@ metadata:
     app.kubernetes.io/name: loopdesk
     app.kubernetes.io/component: api
 spec:
-  replicas: 2
+  # No replicas here: the HPA owns the count (2-10), and every `kubectl apply` would reset it.
   revisionHistoryLimit: 5
   selector:
     matchLabels:
@@ -45,11 +45,12 @@ spec:
         - name: wait-for-schema
           image: loopdesk
           command: ["python", "-m", "app.ops.schema_wait", "--timeout", "600"]
-          envFrom:
-            - configMapRef:
-                name: loopdesk-config
-            - secretRef:
-                name: loopdesk-secrets
+          env:  # only the database address: it needs none of the other secrets
+            - name: LOOPDESK_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: loopdesk-secrets
+                  key: LOOPDESK_DATABASE_URL
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

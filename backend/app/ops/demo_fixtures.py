@@ -29,12 +29,32 @@ def page(url: str) -> str:
     return ID_SEGMENT.sub("/{id}", url)
 
 
+def _records(value: Any) -> list[dict]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
 def _fields(body: Any) -> set[str]:
-    if isinstance(body, dict):
-        return set(body)
-    if isinstance(body, list):
-        return {key for item in body if isinstance(item, dict) for key in item}
-    return set()
+    """The fields the console can read: an object's keys (or those of the records in a list) and the
+    keys of the records in a list one level down, such as a trace's spans ("spans[].ms"). The keys of
+    a nested object are left out: they are often data, such as counts per tool."""
+    prefix, records = ("", [body]) if isinstance(body, dict) else ("[].", _records(body))
+    fields: set[str] = set()
+    for record in records:
+        for key, value in record.items():
+            fields.add(prefix + key)
+            fields.update(f"{prefix}{key}[].{inner}" for item in _records(value) for inner in item)
+    return fields
+
+
+def _lacking(ours: Any, theirs: Any) -> list[str]:
+    """Fields the offline recording has and the real one does not. A list that is empty in the real
+    recording (no approvals pending, say) says nothing about the shape of its records."""
+    have = _fields(theirs)
+    if not have:
+        return []
+    lists = {field.rpartition("[].")[0] for field in have if "[]." in field}
+    return sorted(field for field in _fields(ours) - have
+                  if "[]." not in field.lstrip("[].") or field.rpartition("[].")[0] in lists)
 
 
 def choose(offline: dict, real: dict | None) -> tuple[dict, list[str]]:
@@ -52,12 +72,9 @@ def choose(offline: dict, real: dict | None) -> tuple[dict, list[str]]:
             if page(url) not in their_pages:
                 missing.append(f"{email}: page {page(url)}")
             elif url in theirs:
-                ours_body = offline["bodies"][offline["responses"][email][url]]
-                their_body = real["bodies"][theirs[url]]
-                if _fields(ours_body) and _fields(their_body):  # an empty list says nothing about fields
-                    lacking = sorted(_fields(ours_body) - _fields(their_body))
-                    if lacking:
-                        missing.append(f"{email}: {url} lacks {', '.join(lacking)}")
+                lacking = _lacking(offline["bodies"][offline["responses"][email][url]], real["bodies"][theirs[url]])
+                if lacking:
+                    missing.append(f"{email}: {url} lacks {', '.join(lacking)}")
         asked = {chat["question"] for chat in real["chats"].get(email, [])}
         missing += [f"{email}: question {chat['question']}" for chat in offline["chats"].get(email, [])
                     if chat["question"] not in asked]

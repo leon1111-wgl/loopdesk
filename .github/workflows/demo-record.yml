@@ -83,7 +83,8 @@ jobs:
           git commit -m "Record the demo with $LOOPDESK_LLM_MODEL ($(date -u +%Y-%m-%d))" \
             -m "Recorded by the workflow \"Record the demo with the real model\" from ${GITHUB_SHA::7}, run $GITHUB_RUN_ID."
           for attempt in 1 2 3 4 5; do
-            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            git fetch -q origin main && git rebase origin/main && git push origin HEAD:main && exit 0
+            git rebase --abort 2>/dev/null || true  # a stopped rebase would fail every later attempt the same way
             sleep $((attempt * 5))
           done
           exit 1

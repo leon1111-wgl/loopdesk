@@ -293,7 +293,7 @@ def seed_demo_traffic(db: Session, services) -> None:
                                                             conversation=conversation))
 
 
-def main() -> None:  # pragma: no cover - CLI
+def main(argv: list[str] | None = None) -> None:
     from .config import get_settings
     from .db import get_engine, init_engine, new_session, prepare_database
     from .db import Base
@@ -301,7 +301,7 @@ def main() -> None:  # pragma: no cover - CLI
 
     parser = argparse.ArgumentParser(description="Seed LoopDesk demo data")
     parser.add_argument("--reset", action="store_true", help="drop all tables first")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     settings = get_settings()
     init_engine(settings.database_url)
     if args.reset:
@@ -310,7 +310,9 @@ def main() -> None:  # pragma: no cover - CLI
 
         with get_engine().begin() as conn:
             conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
-    prepare_database(settings.database_url, settings.auto_migrate, settings.external_migrations)
+    # A reset is itself a schema operation: it migrates even where a release job normally does.
+    auto_migrate = settings.auto_migrate or (args.reset and settings.external_migrations)
+    prepare_database(settings.database_url, auto_migrate, settings.external_migrations and not args.reset)
     with new_session() as db:
         created = seed_demo(db, build_embedder(settings))
     print("seeded demo data" if created else "database already has data; use --reset to rebuild")

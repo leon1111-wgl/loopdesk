@@ -13,6 +13,11 @@ data:
   LOOPDESK_LLM_BASE_URL: https://api.deepseek.com/v1
   LOOPDESK_LLM_MODEL: replace-with-the-model-id
   LOOPDESK_RUN_DEADLINE_SECONDS: "45"
-  # uvicorn trusts X-Forwarded-For only from these addresses (the ingress controller's pods), so the
-  # login limit sees the customer's IP. Never "*": anyone could then pick an IP and skip the limit.
+  # Proxies whose X-Forwarded-For uvicorn believes, so the login limit counts each customer's IP: your
+  # cluster's pod network, which the ingress controller connects from (set your own CIDR). uvicorn takes
+  # the rightmost address not in this list, the one the controller appended, so clients outside the
+  # cluster cannot pick their IP; a pod inside it that connects directly could. Narrow this to the
+  # controller's pods, or let only the controller reach these pods (a NetworkPolicy), where you can.
+  # Not 127.0.0.1 behind an ingress: every customer would share the controller's address, and anyone
+  # sending 30 wrong passwords a minute would lock everyone out. Never "*".
   FORWARDED_ALLOW_IPS: 10.0.0.0/8
