@@ -10,6 +10,9 @@ on:
       duration:
         description: Seconds per concurrency level
         default: "10"
+      concurrency:
+        description: Concurrent clients, one level after another
+        default: "1,4,16,32,64"
 
 jobs:
   bench:
@@ -31,6 +34,7 @@ jobs:
     env:
       PG_BASE: postgresql+psycopg://loopdesk:loopdesk@localhost:5432
       DURATION: ${{ inputs.duration }}
+      LEVELS: ${{ inputs.concurrency }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,29 +44,32 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt "psycopg[binary]>=3.2"
       - name: SQLite (WAL), 1 worker
-        run: python -m app.evals.load_bench --concurrency 1,4,16 --duration "$DURATION" --report sqlite-w1.json
+        run: python -m app.evals.load_bench --concurrency "$LEVELS" --duration "$DURATION" --report sqlite-w1.json
       - name: Separate PostgreSQL databases per setup
         run: |
           for db in bench_w1_per_span bench_w1 bench_w4; do PGPASSWORD=loopdesk psql -h localhost -U loopdesk -d loopdesk_bench -c "CREATE DATABASE $db"; done
       - name: PostgreSQL, 1 worker, per-span trace commits (for comparison)
         env:
           LOOPDESK_TRACE_WRITES: per_span
-        run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w1_per_span" --workers 1 --concurrency 1,4,16 --duration "$DURATION" --report pg-w1-per-span.json
+        run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w1_per_span" --workers 1 --concurrency "$LEVELS" --duration "$DURATION" --report pg-w1-per-span.json
       - name: PostgreSQL, 1 worker
-        run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w1" --workers 1 --concurrency 1,4,16 --duration "$DURATION" --report pg-w1.json
+        run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w1" --workers 1 --concurrency "$LEVELS" --duration "$DURATION" --report pg-w1.json
       - name: PostgreSQL, 4 workers
-        run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w4" --workers 4 --concurrency 1,4,16 --duration "$DURATION" --report pg-w4.json
+        run: python -m app.evals.load_bench --database-url "$PG_BASE/bench_w4" --workers 4 --concurrency "$LEVELS" --duration "$DURATION" --report pg-w4.json
       - name: Summary
         run: |
           python - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-          import json
-          print("| Setup | Concurrency | RPS | p50 ms | p99 ms | In-app p50 ms | In-app p99 ms | Errors |")
-          print("|---|---|---|---|---|---|---|---|")
+          import json, os
+          cpu = next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), "?")
+          print(f"Offline model (measures the platform, not a model). Runner: {os.cpu_count()} vCPU, {cpu}; "
+                f"the load generator shares it. {os.environ['DURATION']} s per level after a warm-up.\n")
+          print("| Setup | Concurrency | RPS | p50 ms | p95 ms | p99 ms | In-app p50 ms | In-app p99 ms | Errors |")
+          print("|---|---|---|---|---|---|---|---|---|")
           for name, path in (("SQLite, 1 worker", "sqlite-w1.json"),
                              ("PostgreSQL, 1 worker, per-span trace commits", "pg-w1-per-span.json"), ("PostgreSQL, 1 worker", "pg-w1.json"),
                              ("PostgreSQL, 4 workers", "pg-w4.json")):
               for level in json.load(open(path))["levels"]:
-                  print(f"| {name} | {level['concurrency']} | {level['rps']} | {level['p50_ms']} | {level['p99_ms']} "
+                  print(f"| {name} | {level['concurrency']} | {level['rps']} | {level['p50_ms']} | {level['p95_ms']} | {level['p99_ms']} "
                         f"| {level['server_p50_ms']} | {level['server_p99_ms']} | {level['error_rate']} |")
           EOF
       - uses: actions/upload-artifact@v4
