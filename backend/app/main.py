@@ -22,7 +22,7 @@ from .api import answer_cache as answer_cache_api
 from .api import (approvals, audit, auth, channels, chat, evals, exports, flywheel, handoffs, kb, metrics, refunds,
                   tickets, traces, voice)
 from .config import Settings, get_settings, set_settings
-from .db import head_revision, init_engine, new_session, prepare_database
+from .db import current_revision, head_revision, init_engine, new_session, prepare_database
 from .observability import configure_logging
 from .observability import install as install_observability
 from .ops.rescan_knowledge import rescan_knowledge
@@ -96,7 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     check_audit_key(settings)
     set_settings(settings)
     init_engine(settings.database_url)
-    prepare_database(settings.database_url, settings.auto_migrate)
+    prepare_database(settings.database_url, settings.auto_migrate, settings.external_migrations)
     services = Services(settings)
     set_services(services)
     telemetry.configure(settings)
@@ -137,9 +137,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             with new_session() as db:
                 db.execute(text("SELECT 1"))
                 checks["database"] = "ok"
-                if settings.auto_migrate:
-                    current = db.execute(text("SELECT version_num FROM alembic_version")).scalar()
-                    checks["migrations"] = "ok" if current == head_revision() else f"at {current}, expected {head_revision()}"
+            if settings.auto_migrate or settings.external_migrations:
+                checks["migrations"] = "not checked"
+                current = current_revision()
+                checks["migrations"] = "ok" if current == head_revision() else f"at {current}, expected {head_revision()}"
         except Exception as exc:  # report, do not raise: probes need a status code, not a stack trace
             checks.setdefault("database", f"error: {type(exc).__name__}")
         # A failed prewarm does not keep the instance out of service: a search builds the index.

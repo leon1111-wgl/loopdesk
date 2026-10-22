@@ -134,6 +134,9 @@ class Settings:
     seed_demo: bool = True
     seed_demo_traffic: bool = True
     auto_migrate: bool = True  # run Alembic migrations at startup (tests use create_all)
+    # LOOPDESK_AUTO_MIGRATE=0: a release job migrates (python -m app.ops.migrate, a Kubernetes Job);
+    # this process leaves the schema alone and is not ready until it is at the latest revision.
+    external_migrations: bool = False
     prewarm_index: bool = True  # build retrieval indexes in the background at startup; /api/ready waits for it
     log_format: str = "json"  # json | text
     log_level: str = "INFO"
@@ -266,24 +269,30 @@ class Settings:
             s.cors_origins = [o.strip() for o in origins.split(",") if o.strip()]
         s.seed_demo = _env_bool("SEED_DEMO", s.seed_demo)
         s.auto_migrate = _env_bool("AUTO_MIGRATE", s.auto_migrate)
+        s.external_migrations = not s.auto_migrate
         s.prewarm_index = _env_bool("PREWARM_INDEX", s.prewarm_index)
         s.log_format = _env("LOG_FORMAT", s.log_format)
         s.log_level = _env("LOG_LEVEL", s.log_level)
 
-        s.llm_provider = _env("LLM_PROVIDER", s.llm_provider)
+        s.llm_preset = _env("LLM_PRESET")
+        s.llm_base_url = _env("LLM_BASE_URL") or PROVIDER_PRESETS.get(s.llm_preset or "")
+        s.llm_api_key = _env("LLM_API_KEY")
+        # An address and a key are an OpenAI-compatible endpoint: `docker compose up` with a .env of
+        # base URL, key and model connects it without naming a provider or tiers (W7).
+        inferred = "openai_compat" if s.llm_base_url and s.llm_api_key else s.llm_provider
+        s.llm_provider = _env("LLM_PROVIDER", inferred)
         # Demo traffic asks the model a dozen questions on a fresh database: free and instant offline,
         # but with a real model it costs calls and a wrong key or a hanging endpoint used to hold up
         # startup for minutes. Default on only for the offline model (N-032).
         s.seed_demo_traffic = _env_bool("SEED_DEMO_TRAFFIC", s.llm_provider == "mock")
         s.otlp_endpoint = _env("OTLP_ENDPOINT") or None
         s.otlp_service_name = _env("OTLP_SERVICE_NAME", s.otlp_service_name)
-        s.llm_preset = _env("LLM_PRESET")
-        s.llm_base_url = _env("LLM_BASE_URL") or PROVIDER_PRESETS.get(s.llm_preset or "")
-        s.llm_api_key = _env("LLM_API_KEY")
         default_fast = s.llm_model_fast
         default_strong = s.llm_model_strong
         if s.llm_provider == "anthropic":
             default_fast = default_strong = "claude-opus-5-5"
+        if s.llm_provider != "mock" and _env("LLM_MODEL"):  # one model for both tiers; the tier variables still win
+            default_fast = default_strong = _env("LLM_MODEL")
         s.llm_model_strong = _env("LLM_MODEL_STRONG", default_strong)
         s.llm_model_fast = _env("LLM_MODEL_FAST", default_fast if s.llm_provider in ("mock", "anthropic") else s.llm_model_strong)
         s.llm_timeout = _env_float("LLM_TIMEOUT", s.llm_timeout)

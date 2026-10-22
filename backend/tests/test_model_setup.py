@@ -63,3 +63,52 @@ def test_the_model_check_says_what_to_fix():
     [result] = check(settings, _provider(503, {"error": {"message": "overloaded"}}))
     assert result["kind"] == "unavailable"
     assert all(r["ok"] for r in check(Settings())), "the offline model passes"
+
+
+def _clear_model_env(monkeypatch):
+    for name in ("PROVIDER", "PRESET", "BASE_URL", "API_KEY", "MODEL", "MODEL_STRONG", "MODEL_FAST"):
+        monkeypatch.delenv(f"LOOPDESK_LLM_{name}", raising=False)
+
+
+def test_three_variables_connect_a_real_model(monkeypatch):
+    """docker compose with a .env of base URL, key and model (W7): no provider name, no tier names."""
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("LOOPDESK_LLM_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("LOOPDESK_LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("LOOPDESK_LLM_MODEL", "deepseek-v4-1-flash")
+    s = Settings.from_env()
+    assert s.llm_provider == "openai_compat"
+    assert (s.llm_model_strong, s.llm_model_fast) == ("deepseek-v4-1-flash", "deepseek-v4-1-flash")
+    assert s.seed_demo_traffic is False, "a fresh stack does not spend the key on demo traffic"
+
+
+def test_a_preset_and_a_key_also_select_the_real_model(monkeypatch):
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("LOOPDESK_LLM_PRESET", "deepseek")
+    monkeypatch.setenv("LOOPDESK_LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("LOOPDESK_LLM_MODEL", "deepseek-chat")
+    s = Settings.from_env()
+    assert (s.llm_provider, s.llm_base_url) == ("openai_compat", "https://api.deepseek.com/v1")
+
+
+def test_the_tier_variables_and_an_explicit_provider_still_win(monkeypatch):
+    _clear_model_env(monkeypatch)
+    monkeypatch.setenv("LOOPDESK_LLM_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("LOOPDESK_LLM_API_KEY", "sk-test")
+    monkeypatch.setenv("LOOPDESK_LLM_MODEL", "big")
+    monkeypatch.setenv("LOOPDESK_LLM_MODEL_FAST", "small")
+    s = Settings.from_env()
+    assert (s.llm_model_strong, s.llm_model_fast) == ("big", "small")
+    monkeypatch.setenv("LOOPDESK_LLM_PROVIDER", "mock")
+    assert Settings.from_env().llm_provider == "mock", "asked for the offline model: keep it"
+
+
+def test_without_a_key_or_an_address_it_stays_offline(monkeypatch):
+    _clear_model_env(monkeypatch)
+    assert Settings.from_env().llm_provider == "mock"
+    monkeypatch.setenv("LOOPDESK_LLM_API_KEY", "sk-test")
+    assert Settings.from_env().llm_provider == "mock", "a key alone names no endpoint"
+    monkeypatch.delenv("LOOPDESK_LLM_API_KEY")
+    monkeypatch.setenv("LOOPDESK_LLM_BASE_URL", "https://gateway.example.com/v1")
+    s = Settings.from_env()
+    assert (s.llm_provider, s.llm_model_strong) == ("mock", "mock-strong"), "an address without a key: offline"

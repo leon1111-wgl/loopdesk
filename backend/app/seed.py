@@ -310,7 +310,7 @@ def main() -> None:  # pragma: no cover - CLI
 
         with get_engine().begin() as conn:
             conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
-    prepare_database(settings.database_url, settings.auto_migrate)
+    prepare_database(settings.database_url, settings.auto_migrate, settings.external_migrations)
     with new_session() as db:
         created = seed_demo(db, build_embedder(settings))
     print("seeded demo data" if created else "database already has data; use --reset to rebuild")

@@ -54,7 +54,7 @@ def build_server():
 
     settings = get_settings()
     init_engine(settings.database_url)
-    prepare_database(settings.database_url, settings.auto_migrate)
+    prepare_database(settings.database_url, settings.auto_migrate, settings.external_migrations)
     services = Services(settings)
     server = MCPServer("loopdesk")
 

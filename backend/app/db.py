@@ -92,6 +92,17 @@ def migrate(database_url: str) -> str:
     return "upgraded"
 
 
+def current_revision() -> str | None:
+    """The revision the database is at, or None before the first migration."""
+    from sqlalchemy import inspect, text
+
+    engine = get_engine()
+    if "alembic_version" not in inspect(engine).get_table_names():
+        return None
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+
+
 def head_revision() -> str:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
@@ -101,8 +112,12 @@ def head_revision() -> str:
     return ScriptDirectory.from_config(config).get_current_head()
 
 
-def prepare_database(database_url: str, auto_migrate: bool = True) -> str:
-    """Production path: Alembic migrations. Tests and throwaway eval DBs: create_all."""
+def prepare_database(database_url: str, auto_migrate: bool = True, external: bool = False) -> str:
+    """Production path: Alembic migrations, at startup or by a release job (``external``: the schema
+    is left alone; create_all here would collide with the job's CREATE TABLE). Tests and throwaway
+    eval DBs: create_all."""
+    if external:
+        return "external"
     if auto_migrate:
         return migrate(database_url)
     create_all()
