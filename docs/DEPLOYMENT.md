@@ -19,13 +19,60 @@ cd frontend && pnpm install && pnpm dev     # http://localhost:5173
 ## Docker
 
 ```bash
-cp .env.example .env    # 按需修改
-docker compose up --build
+docker compose up -d --build --wait    # PostgreSQL + 应用，就绪后返回；http://localhost:8000
 ```
 
-`docker-compose.yml` 会启动 PostgreSQL 16 和应用镜像（多阶段构建：Node 构建前端，Python 运行后端并托管静态文件，以非 root 用户运行）。上线前请务必修改 `LOOPDESK_JWT_SECRET`，并设置 `LOOPDESK_SEED_DEMO=0`。生产配置（`LOOPDESK_SEED_DEMO=0`）下，如果 JWT 密钥仍是仓库里公开的默认值（代码默认值、`.env.example`、`docker-compose.yml` 中的占位符）或短于 32 字节，服务会直接拒绝启动；演示模式下只在启动日志里打印警告。
+不写 `.env` 时由离线模型回答。接真实模型只要在仓库根目录写一个三行的 `.env`（任何 OpenAI 兼容接口，详见 README“5 分钟用真实模型跑起来”）：
+
+```bash
+LOOPDESK_LLM_BASE_URL=https://api.deepseek.com/v1
+LOOPDESK_LLM_API_KEY=<你的 Key>
+LOOPDESK_LLM_MODEL=<控制台里的模型 ID>
+```
+
+有地址和 Key 就使用 OpenAI 兼容适配器，快、强两档都用 `LOOPDESK_LLM_MODEL`，启动时不会向模型发预置对话；`LOOPDESK_LLM_PROVIDER`、`LOOPDESK_LLM_MODEL_STRONG` / `_FAST` 仍然可以显式指定，指定了就以它们为准。改了 `.env` 之后用 `docker compose up -d --wait` 重建容器。自检和冒烟：
+
+```bash
+docker compose exec app python -m app.ops.llm_check                               # 两档模型各发一个最小请求
+python3 backend/app/ops/smoke.py http://localhost:8000 --provider openai_compat   # 就绪、健康、问一个问题，打印回答和用的模型
+```
+
+`smoke.py` 只用标准库，在宿主机上直接运行；它以 Echo音乐 的演示坐席登录（员工能看到是哪个模型回答的），任何一步失败退出码为 1。CI 每次推送都用离线模型执行同样的 `docker compose up` 和 `smoke.py`（`docker` 任务），手动触发的 Real-model eval 工作流用真实模型再执行一遍（`stack` 任务）。
+
+`docker-compose.yml` 会启动 PostgreSQL 16 和应用镜像（多阶段构建：Node 构建前端，Python 运行后端并托管静态文件，以非 root 用户 10001 运行；`.dockerignore` 把 `.env`、数据库文件和 `node_modules` 挡在构建上下文之外）。上线前请务必修改 `LOOPDESK_JWT_SECRET`，并设置 `LOOPDESK_SEED_DEMO=0`。生产配置（`LOOPDESK_SEED_DEMO=0`）下，如果 JWT 密钥仍是仓库里公开的默认值（代码默认值、`.env.example`、`docker-compose.yml` 中的占位符）或短于 32 字节，服务会直接拒绝启动；演示模式下只在启动日志里打印警告。
 
 放在 Nginx 等反向代理后面时，用 `uvicorn app.main:app --proxy-headers --forwarded-allow-ips=<代理 IP>` 启动，让登录限流看到真实的客户端 IP；不要让应用直接信任任意来源的 `X-Forwarded-For`，否则攻击者可以伪造 IP 绕过限流。
+
+## Kubernetes
+
+`deploy/k8s/base` 是一套 kustomize 清单：
+
+| 资源 | 作用 |
+|---|---|
+| Deployment `loopdesk` | 2 个副本，每个 Pod 一个 uvicorn 进程（扩容靠副本数，不靠 worker 数）；就绪探针 `/api/ready`，存活和启动探针 `/api/health`；init container 等表结构迁移完成；非 root（10001）、只读根文件系统（`/tmp` 用 emptyDir，给 jieba 的词典缓存）、去掉全部 capabilities；滚动发布不减少可用副本，`preStop` 先等 5 秒让 Service 摘掉流量，`terminationGracePeriodSeconds` 60 秒留给正在流式输出的回答（运行时限 45 秒） |
+| Service、HPA、PodDisruptionBudget | HPA 按 CPU 70% 在 2–10 个副本之间伸缩。回答真实模型时副本大多在等模型，CPU 只是近似指标，要同时看 `/api/chat` 的 p95（见 PERFORMANCE） |
+| ConfigMap `loopdesk-config` | 不保密的配置：`SEED_DEMO=0`、`AUTO_MIGRATE=0`、模型地址和模型名、`FORWARDED_ALLOW_IPS`（只信任 Ingress 控制器转发的 `X-Forwarded-For`，不要写 `*`） |
+| Secret `loopdesk-secrets` | 清单只引用、不创建：数据库地址、JWT 密钥、审计密钥、模型 Key |
+| Job `loopdesk-migrate` | 每次发布执行一次 `python -m app.ops.migrate` |
+| CronJob ×4 | `stale_runs`、`channel_retry`（每分钟）、`refund_reconcile`（每 5 分钟）、`retention --days 90`（每天）；都可以多实例同时执行，`concurrencyPolicy: Forbid` 只是避免在数据库变慢时堆积 |
+
+```bash
+docker build -t <registry>/loopdesk:<tag> . && docker push <registry>/loopdesk:<tag>
+# 把 deploy/k8s/base/kustomization.yaml 的 images 改成上面的镜像，configmap.yaml 改成自己的域名、模型地址和模型名
+kubectl create namespace loopdesk
+kubectl -n loopdesk create secret generic loopdesk-secrets \
+  --from-literal=LOOPDESK_DATABASE_URL='postgresql+psycopg://<user>:<password>@<host>:5432/loopdesk' \
+  --from-literal=LOOPDESK_JWT_SECRET="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+  --from-literal=LOOPDESK_AUDIT_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+  --from-literal=LOOPDESK_LLM_API_KEY='<模型 Key>'
+kubectl apply -k deploy/k8s/base
+kubectl -n loopdesk wait --for=condition=complete job/loopdesk-migrate --timeout=300s
+kubectl -n loopdesk rollout status deployment/loopdesk
+```
+
+**发布新版本**：Job 不可修改，先删掉上一次的迁移 Job 再应用：`kubectl -n loopdesk delete job loopdesk-migrate --ignore-not-found && kubectl apply -k deploy/k8s/base`。新副本的 init container 等新迁移完成才启动，旧副本继续服务（注意“升级注意”里需要先停旧实例的迁移）。
+
+**验证到什么程度**：CI 每次推送用 kubeconform 按 Kubernetes 1.31 的 schema 严格校验 base 和每个 overlay（`k8s` 任务）；`k8s.yml` 把 `overlays/kind`（base 加集群内的 PostgreSQL、演示数据、离线模型）部署到 GitHub Actions 上的 kind 集群，等迁移 Job 完成、副本就绪，经 Service 问一个问题，再手动触发一次 CronJob。没有在真实的云上集群和真实流量下运行过；PostgreSQL 请用托管服务或有持久卷和备份的部署，kind overlay 里的 emptyDir 只用于测试。
 
 ## 健康检查与排障
 
@@ -106,7 +153,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowl
 
 - 修改模型后生成迁移：`cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/alembic revision --autogenerate -m "说明"`。生成后先人工检查，再和代码一起提交。CI 中的 `tests/test_migrations.py` 会校验模型与迁移完全一致，漏写迁移会直接失败。
 - 由旧版本用 `create_all` 创建的数据库（没有 `alembic_version` 表）：启动时会补齐缺失的表，并标记为最新版本。
-- 多副本部署时，建议把迁移放进发布流程中的一次性任务（例如 Kubernetes 的 Job 或 initContainer），并对应用设置 `LOOPDESK_AUTO_MIGRATE=0`，避免多个副本同时执行迁移。
+- 多副本部署时，把迁移放进发布流程中的一次性任务，并对应用设置 `LOOPDESK_AUTO_MIGRATE=0`，避免多个副本同时执行迁移。发布任务执行 `python -m app.ops.migrate`（Kubernetes 里是 `deploy/k8s` 的 Job）；`LOOPDESK_AUTO_MIGRATE=0` 的实例完全不动表结构，表结构到最新版本之前 `/api/ready` 返回 503（`checks.migrations` 写着当前版本和期望版本）。每个副本的 init container 执行 `python -m app.ops.schema_wait --timeout 600`，等迁移完成再启动。以前 `AUTO_MIGRATE=0` 的实例会改为执行 `create_all()`：升级时新加的表先被副本建出来（迁移里的其他改动没有执行），迁移任务随后因为“表已存在”失败（W7 写 Kubernetes 清单时发现）。
 
 ## 环境变量
 
@@ -118,10 +165,11 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowl
 | `JWT_SECRET` | 开发用默认值 | 生产环境必须修改，至少 32 字节；`SEED_DEMO=0` 时使用公开默认值或过短的密钥会拒绝启动 |
 | `SEED_DEMO` / `SEED_DEMO_TRAFFIC` | `1` / 离线模型 `1`、真实模型 `0` | 演示租户、账号和预置对话。预置对话会调用十几次模型，所以接真实模型时默认关闭；显式打开也在后台执行，不会拖住启动 |
 | `LOG_FORMAT` / `LOG_LEVEL` | `json` / `INFO` | 结构化日志：每行一个 JSON，包含 request_id、tenant_id、user_id，可直接接入 ELK 或 Loki；本地调试可设为 `text` |
-| `AUTO_MIGRATE` | `1` | 启动时执行 Alembic 迁移；多副本部署时建议设为 0，改由发布任务执行 |
-| `LLM_PROVIDER` | `mock` | `mock` / `openai_compat` / `anthropic` |
+| `AUTO_MIGRATE` | `1` | 启动时执行 Alembic 迁移；多副本部署时设为 0，由发布任务执行 `python -m app.ops.migrate`，实例不动表结构，表结构到最新版本之前不就绪（见“数据库迁移”） |
+| `LLM_PROVIDER` | `mock`；设了地址（或预设）和 Key 时为 `openai_compat` | `mock` / `openai_compat` / `anthropic` |
 | `LLM_PRESET` | — | `doubao` / `hunyuan` / `deepseek` / `qwen` / `openai`，自动填写 Base URL |
 | `LLM_BASE_URL` / `LLM_API_KEY` | — | 自定义 OpenAI 兼容端点 |
+| `LLM_MODEL` | — | 两档都用这一个模型（真实模型时）；下面两个变量设了就以它们为准 |
 | `LLM_MODEL_STRONG` / `LLM_MODEL_FAST` | `mock-strong` / `mock-fast` | 路由使用的两档模型 |
 | `LLM_STREAM_USAGE` | `1` | 流式请求时要求返回 usage；厂商不支持时设为 `0`，系统会改用估算值 |
 | `ANTHROPIC_EFFORT` | `low` | Claude 的 effort 档位 |
