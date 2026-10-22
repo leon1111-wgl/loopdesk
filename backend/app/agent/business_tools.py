@@ -516,6 +516,9 @@ def _velocity_reason(ctx: ToolContext, customer_id: int, amount: float) -> str |
     return reason
 
 
+STAFF_FILED_REASON = "员工代顾客发起，需另一位员工审批"
+
+
 def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | None:
     # args went through _refund_precheck, so "amount" is the amount that would be paid.
     amount = round(float(args["amount"]), 2)
@@ -523,6 +526,12 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
     tenant, settings = ctx.tenant, ctx.settings
     reasons: list[str] = []
     customer_note = ""
+    # A member of staff filing for a customer is never paid out automatically (N-146): the automatic
+    # limit is the customer's own allowance, and spent by an agent nobody would see who moved the
+    # money. Another person approves it (the review queue refuses the requester), which leaves the
+    # requester on the approval and both names in the audit log.
+    if ctx.is_staff:
+        reasons.append(STAFF_FILED_REASON)
 
     # Between the no-reason and the quality window only a quality problem qualifies, and
     # the tool cannot look at the customer's photos: a person decides, whatever the amount.
@@ -605,6 +614,8 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             # already has one writer at a time. Every refund takes the order, then the customer.
             ctx.db.execute(select(User.id).where(User.id == customer_id).with_for_update(key_share=True))
             if ctx.approval_id is None:  # an automatic refund: the velocity limit again, under the lock
+                if ctx.is_staff:  # the policy already said so; a handler called without it must not pay
+                    raise ApprovalRequired(ApprovalNeed(STAFF_FILED_REASON))
                 velocity = _velocity_reason(ctx, customer_id, amount)
                 if velocity:  # the savepoint's rollback removes the row: the order is free again
                     raise ApprovalRequired(ApprovalNeed(velocity))

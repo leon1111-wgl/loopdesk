@@ -771,8 +771,14 @@ class AgentRuntime:
         # The approval record keeps the full reason for the reviewer; a customer only hears
         # the public part of it (see ApprovalNeed).
         shown = outcome.reason if ctx.is_staff else outcome.customer_note
-        text = (f"您的{TOOL_LABEL.get(call.name, '操作')}申请{amount_text}已提交人工审核"
-                f"{'：' + shown if shown else ''}。审核完成后会第一时间在这里通知您。")
+        label = TOOL_LABEL.get(call.name, '操作')
+        if ctx.is_staff:  # filed for a customer, not the staff member's own (N-146)
+            order = f"订单 {args['order_id']} 的" if args.get("order_id") else ""
+            text = (f"已为顾客提交{order}{label}申请{amount_text}，等待另一位员工审核"
+                    f"{'：' + shown if shown else ''}。审核结果会在这里显示。")
+        else:
+            text = (f"您的{label}申请{amount_text}已提交人工审核"
+                    f"{'：' + shown if shown else ''}。审核完成后会第一时间在这里通知您。")
         if ctx.dry_run:
             yield {"type": "approval_required", "approval_id": None, "tool": call.name, "arguments": args,
                    "reason": shown}
@@ -785,6 +791,10 @@ class AgentRuntime:
         )
         self.db.add(approval)
         self.db.flush()  # its id goes into the run state and the paused message
+        if ctx.is_staff:  # who asked for a customer's money, in the same commit as the application (N-146)
+            audit.record(self.db, Principal(ctx.user, ctx.tenant), "approval.request", f"approval:{approval.id}",
+                         tool=call.name, order_id=args.get("order_id"), amount=amount,
+                         conversation_id=ctx.conversation_id)
         state["pending"] = {
             "approval_id": approval.id,
             "call": {"id": call.id, "name": call.name, "arguments": args},

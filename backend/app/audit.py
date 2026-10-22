@@ -52,6 +52,7 @@ ACTIONS = {
     "answer_cache.purge": "清除答案缓存",
     "eval.case.update": "修改评测用例",
     # Staff work on customers' money and data (review round 3, N-022).
+    "approval.request": "员工代顾客提交待审批的申请",
     "approval.approve": "通过审批",
     "approval.reject": "驳回审批",
     "approval.withdraw": "顾客撤回待审批的申请",
