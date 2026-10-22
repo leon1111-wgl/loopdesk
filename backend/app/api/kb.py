@@ -13,7 +13,8 @@ from ..rag.chunking import UnsupportedFile, parse_upload
 from ..rag.conflicts import detect_conflicts, open_conflict_counts
 from ..rag.ingest import (StaleDocument, delete_document, edit_document, ingest_document, release_chunk,
                           tenant_channels)
-from ..rag.retrieval import cosine_gate, hybrid_search, index_manager, passes_gate
+from ..rag.questions import propose_questions
+from ..rag.retrieval import gate_options, hybrid_search, index_manager, passes_gate
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
 from .common import get_owned, iso, masked
@@ -108,6 +109,24 @@ def release_held_chunk(chunk_id: int, principal: Principal = Depends(require_adm
     return get_document(document.id, principal, db)
 
 
+@router.post("/documents/{document_id}/questions")
+def propose_document_questions(document_id: int, principal: Principal = Depends(require_admin),
+                               db: Session = Depends(get_db)) -> dict:
+    """Ask the fast model for 3-5 colloquial questions per chunk (W5). They wait in the knowledge-patch
+    review (「数据飞轮」) and index nothing until an administrator publishes them."""
+    document = get_owned(db, Document, document_id, principal.tenant.id)
+    services = get_services()
+    patch = propose_questions(db, document, services.provider, services.settings.llm_model_fast)
+    if patch is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "没有生成可用的问法（模型没有返回，或都被过滤掉了）")
+    items = patch.payload["items"]
+    count = sum(len(i["questions"]) for i in items)
+    record(db, principal, "kb.questions.propose", f"document:{document.id}", patch_id=patch.id, title=document.title,
+           sections=len(items), questions=count)
+    db.commit()
+    return {"patch_id": patch.id, "sections": len(items), "questions": count}
+
+
 @router.post("/documents/text")
 def create_text_document(body: TextDocIn, principal: Principal = Depends(require_admin),
                          db: Session = Depends(get_db)) -> dict:
@@ -188,8 +207,11 @@ def search(body: SearchIn, principal: Principal = Depends(require_staff), db: Se
     """Retrieval debugger: shows BM25 rank, vector rank, fused RRF score and relevance."""
     services = get_services()
     visibility = {"public", "internal"} if body.scope == "staff" else {"public"}
+    gate = gate_options(services.settings)
+    # Every candidate with its scores (the gate is shown per hit, not applied), reranked as in a chat.
     hits, debug = hybrid_search(db, principal.tenant.id, body.query, services.embedder, visibility,
-                                top_k=body.top_k, include_flagged=True)
+                                top_k=body.top_k, include_flagged=True, reranker=services.reranker,
+                                rerank_candidates=gate["rerank_candidates"], index_questions=gate["index_questions"])
     flagged = {
         c.id for c in db.execute(
             select(Chunk).where(Chunk.id.in_([h.chunk_id for h in hits]), Chunk.flagged_injection.is_(True))
@@ -198,13 +220,18 @@ def search(body: SearchIn, principal: Principal = Depends(require_staff), db: Se
     return {
         "query_tokens": debug.query_tokens,
         "coverage_tokens": debug.coverage_tokens,
-        "min_relevance": services.settings.min_relevance,
-        "min_cosine": cosine_gate(services.settings),
+        "min_relevance": gate["min_relevance"],
+        "min_cosine": gate["min_cosine"],
+        "min_rerank": gate["min_rerank"],
+        "rerank_floor": gate["rerank_floor"],
         "hits": [{**h.as_dict(), "flagged_injection": h.chunk_id in flagged,
-                  "passes_threshold": passes_gate(h.coverage, h.cosine, services.settings.min_relevance,
-                                                  cosine_gate(services.settings))} for h in hits],
+                  "passes_threshold": passes_gate(h.coverage, h.cosine, gate["min_relevance"], gate["min_cosine"],
+                                                  h.rerank, gate["min_rerank"], gate["rerank_floor"])} for h in hits],
         "bm25": debug.bm25,
         "vector": debug.vector,
+        "questions": debug.questions,
+        "reranker": services.reranker.name if services.reranker else None,
+        "rerank_error": debug.rerank_error,
     }
 
 

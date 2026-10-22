@@ -159,6 +159,9 @@ class MockLLM(LLMProvider):
         if options.get("task") == "kb_patch":
             content = self._kb_patch(messages[-1].content)
             return ChatResult(content, [], Usage(prompt_tokens, estimate_tokens(content), True), model)
+        if options.get("task") == "kb_questions":
+            content = self._kb_questions(messages[-1].content)
+            return ChatResult(content, [], Usage(prompt_tokens, estimate_tokens(content), True), model)
 
         available = {t.name for t in tools}
         user_idx = max(i for i, m in enumerate(messages) if m.role == "user")
@@ -436,6 +439,15 @@ class MockLLM(LLMProvider):
                 break
         picked.sort()
         return [f"{sentence.rstrip('。；;')}[{ref}]。" for ref, _, sentence in picked]
+
+    @staticmethod
+    def _kb_questions(prompt: str) -> str:
+        """Three questions from the section title: enough to exercise the review flow offline. Real
+        colloquial wordings need a real model (the generator runs on GitHub Actions)."""
+        match = re.search(r"^标题：(.*)$", prompt, re.M)
+        topic = (match.group(1) if match else "").split(" > ")[-1].strip() or "这个问题"
+        return json.dumps({"questions": [f"{topic}是怎么规定的？", f"想问一下{topic}", f"{topic}有什么要求？"]},
+                          ensure_ascii=False)
 
     @staticmethod
     def _kb_patch(prompt: str) -> str:

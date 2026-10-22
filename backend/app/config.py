@@ -165,7 +165,8 @@ class Settings:
     mock_stream_delay: float = 0.0  # seconds between streamed chunks of the mock model
     trace_writes: str = "auto"  # auto (buffered on PostgreSQL, per span on SQLite) | per_span | buffered
 
-    # Embeddings: hashing (offline) | openai_compat
+    # Embeddings: hashing (offline) | openai_compat (an embeddings API, e.g. bge-m3 behind TEI, vLLM or a
+    # vendor) | local (bge-m3 in-process on CPU; needs requirements-semantic.txt)
     embedding_provider: str = "hashing"
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
@@ -174,6 +175,16 @@ class Settings:
     # One search waits at most this long for the query vector before going on with BM25 (N-078);
     # ingest keeps the client's 30 s.
     embedding_timeout: float = 5.0
+    local_model_threads: int = 0  # torch threads for the local providers; 0: torch's default
+
+    # Cross-encoder reranking of the fused candidates (W5): none (default) | local (bge-reranker-v2-m3
+    # in-process) | http (a /rerank API: Jina / Cohere format, or text-embeddings-inference).
+    reranker_provider: str = "none"
+    reranker_model: str | None = None
+    reranker_base_url: str | None = None
+    reranker_api_key: str | None = None
+    reranker_timeout: float = 3.0  # one search waits this long for the scores, then goes on without them
+    rerank_candidates: int = 20  # the top fused candidates the reranker reads; the rest are dropped
 
     # Agent behaviour
     max_agent_steps: int = 6
@@ -185,6 +196,14 @@ class Settings:
     # (python -m app.evals.gate_probe --calibrate). Unset: the offline hashing embedder, whose
     # cosine is lexical, shares min_relevance; any other embedder's cosine never passes alone.
     min_cosine: float | None = None
+    # The two-signal gate's rerank side (W5), calibrated per model on the probe's dev split
+    # (python -m app.evals.gate_probe --calibrate --split dev). min_rerank: a chunk the reranker scores
+    # at least this high passes on its own, whatever its term coverage. rerank_floor: a chunk that
+    # passes on coverage is still refused when the reranker scores it below this (a word in common,
+    # another question). Unset: the reranker only reorders, it neither lets in nor keeps out.
+    min_rerank: float | None = None
+    rerank_floor: float | None = None
+    index_questions: bool = True  # published colloquial questions count as index entries of their chunk
     evidence_mode: str = "annotate"  # annotate | strict
     evidence_pass_coverage: float = 0.8
     sentence_support_threshold: float = 0.5
@@ -285,6 +304,13 @@ class Settings:
         s.embedding_model = _env("EMBEDDING_MODEL")
         s.embedding_dim = _env_int("EMBEDDING_DIM", s.embedding_dim)
         s.embedding_timeout = _env_float("EMBEDDING_TIMEOUT", s.embedding_timeout)
+        s.local_model_threads = _env_int("LOCAL_MODEL_THREADS", s.local_model_threads)
+        s.reranker_provider = _env("RERANKER_PROVIDER", s.reranker_provider)
+        s.reranker_model = _env("RERANKER_MODEL")
+        s.reranker_base_url = _env("RERANKER_BASE_URL")
+        s.reranker_api_key = _env("RERANKER_API_KEY")
+        s.reranker_timeout = _env_float("RERANKER_TIMEOUT", s.reranker_timeout)
+        s.rerank_candidates = _env_int("RERANK_CANDIDATES", s.rerank_candidates)
 
         s.max_agent_steps = _env_int("MAX_AGENT_STEPS", s.max_agent_steps)
         s.history_turns = _env_int("HISTORY_TURNS", s.history_turns)
@@ -292,6 +318,11 @@ class Settings:
         s.min_relevance = _env_float("MIN_RELEVANCE", s.min_relevance)
         s.min_cosine = _env_float("MIN_COSINE", -1.0)
         s.min_cosine = None if s.min_cosine < 0 else s.min_cosine
+        s.min_rerank = _env_float("MIN_RERANK", -1.0)
+        s.min_rerank = None if s.min_rerank < 0 else s.min_rerank
+        s.rerank_floor = _env_float("RERANK_FLOOR", -1.0)
+        s.rerank_floor = None if s.rerank_floor < 0 else s.rerank_floor
+        s.index_questions = _env_bool("INDEX_QUESTIONS", s.index_questions)
         s.evidence_mode = _env("EVIDENCE_MODE", s.evidence_mode)
         s.evidence_pass_coverage = _env_float("EVIDENCE_PASS_COVERAGE", s.evidence_pass_coverage)
         s.sentence_support_threshold = _env_float("SENTENCE_SUPPORT_THRESHOLD", s.sentence_support_threshold)

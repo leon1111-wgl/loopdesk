@@ -38,7 +38,8 @@ def _call(services: Services, handler, args: dict) -> str:
             return json.dumps({"error": f"MCP 身份 {email} 已停用"}, ensure_ascii=False)
         tenant = db.get(Tenant, user.tenant_id)
         ctx = ToolContext(db=db, settings=services.settings, tenant=tenant, user=user,
-                          embedder=services.embedder, run_id=uuid.uuid4().hex, conversation_id=None, dry_run=True,
+                          embedder=services.embedder, reranker=services.reranker, run_id=uuid.uuid4().hex,
+                          conversation_id=None, dry_run=True,
                           orders=services.commerce.orders(tenant, db), refunds=services.commerce.refunds(tenant, db))
         try:
             output = handler(ctx, args)

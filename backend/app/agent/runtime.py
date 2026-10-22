@@ -174,7 +174,8 @@ class _StreamGate:
 
 class AgentRuntime:
     def __init__(self, db: Session, settings: Settings, provider: LLMProvider, embedder: Embedder,
-                 registry: ToolRegistry, breaker: CircuitBreaker | None = None, commerce: Commerce | None = None):
+                 registry: ToolRegistry, breaker: CircuitBreaker | None = None, commerce: Commerce | None = None,
+                 reranker=None):
         self.db = db
         self.settings = settings
         self.provider = provider
@@ -183,6 +184,7 @@ class AgentRuntime:
         self.router = ModelRouter(settings)
         self.breaker = breaker or CircuitBreaker(settings)
         self.commerce = commerce or Commerce.local()  # the order and payment systems the tools reach
+        self.reranker = reranker  # app.rag.rerank.Reranker or None (off by default)
 
     # ================================================================ entry points
     def start(self, *, tenant: Tenant, user: User, text: str, conversation: Conversation | None = None,
@@ -914,6 +916,7 @@ class AgentRuntime:
             run_id=run.id, conversation_id=conversation.id if conversation else None,
             dry_run=dry_run, evidence=evidence, customer_text=run.input_text or "",
             orders=self.commerce.orders(tenant, self.db), refunds=self.commerce.refunds(tenant, self.db),
+            reranker=self.reranker,
         )
 
     def _forward_to_human(self, conversation: Conversation) -> Iterator[dict[str, Any]]:

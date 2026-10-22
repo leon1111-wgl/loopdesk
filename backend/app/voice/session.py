@@ -384,7 +384,8 @@ class VoiceSession:
         try:
             s = self.services
             runtime = AgentRuntime(db, self.settings, s.provider, s.embedder,
-                                   gate_registry(s.registry, self.confirmations, lambda: text), s.breaker, s.commerce)
+                                   gate_registry(s.registry, self.confirmations, lambda: text), s.breaker, s.commerce,
+                                   reranker=getattr(s, "reranker", None))
             turn.marks["run_started"] = time.perf_counter()
             for event in runtime.start(tenant=db.get(Tenant, self.tenant_id), user=db.get(User, self.user_id),
                                        text=text, conversation=db.get(Conversation, self.conversation_id)):

@@ -46,6 +46,7 @@ ACTIONS = {
     "kb.document.delete": "删除知识文档",
     "kb.conflict.resolve": "标记知识冲突已解决",
     "kb.chunk.release": "复核后放行被拦截的知识片段",
+    "kb.questions.propose": "生成口语问法（待审核）",
     "flywheel.patch.apply": "发布知识补丁",
     "flywheel.patch.reject": "驳回知识补丁",
     "answer_cache.purge": "清除答案缓存",

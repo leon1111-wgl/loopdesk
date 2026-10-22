@@ -1,0 +1,154 @@
+name: Retrieval eval
+
+# Semantic retrieval (W5) is measured here, on GitHub's CPU runners, never in the test jobs.
+#
+# stage=questions: an open model (Qwen2.5-7B-Instruct, Q4_K_M GGUF, served by llama.cpp on the CPU
+#   behind its OpenAI-compatible API) writes 3-5 colloquial questions per chunk through LoopDesk's own
+#   generator (python -m app.rag.questions --propose) and exports them as a file. The file is
+#   committed as backend/evals/index_questions.json and imported as proposals for review.
+# stage=eval: every configuration (lexical, lexical+questions, embed, rerank, rerank+floor, full) runs
+#   in its own job: bge-m3 and bge-reranker-v2-m3 in-process (torch CPU), thresholds calibrated on the
+#   probe's dev split, then the held-out half, the blind probe set, the paraphrase set, the hard suite
+#   and every tenant's eval gate. A last job merges the reports into one artifact and the job summary.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "questions (generate the index questions) or eval (measure the configurations)"
+        default: eval
+        required: true
+      configs:
+        description: "eval: configurations, comma-separated"
+        default: "lexical,lexical+questions,embed,rerank,rerank+floor,full"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TORCH_CPU: https://download.pytorch.org/whl/cpu
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  LLAMA_CPP: b11401  # 2026-10-05
+  GGUF_REPO: bartowski/Qwen2.5-7B-Instruct-GGUF
+  GGUF_FILE: Qwen2.5-7B-Instruct-Q4_K_M.gguf
+
+jobs:
+  questions:
+    name: Generate index questions (Qwen2.5-7B on llama.cpp, CPU)
+    if: inputs.stage == 'questions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    defaults: {run: {working-directory: backend}}
+    env:
+      LOOPDESK_DATABASE_URL: sqlite:////tmp/loopdesk-questions.db
+      LOOPDESK_LLM_PROVIDER: openai_compat
+      LOOPDESK_LLM_BASE_URL: http://127.0.0.1:8080/v1
+      LOOPDESK_LLM_API_KEY: local
+      LOOPDESK_LLM_MODEL_STRONG: qwen2.5-7b-instruct
+      LOOPDESK_LLM_TIMEOUT: "900"
+      LOOPDESK_LLM_STALL_TIMEOUT: "900"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip, cache-dependency-path: backend/requirements.txt}
+      - run: pip install -r requirements.txt
+      - uses: actions/cache@v4
+        with: {path: /tmp/gguf, key: "gguf-${{ env.GGUF_FILE }}"}
+      - name: llama.cpp server and the model
+        run: |
+          mkdir -p /tmp/llama /tmp/gguf
+          curl -fsSL -o /tmp/llama.tgz "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_CPP/llama-$LLAMA_CPP-bin-ubuntu-x64.tar.gz"
+          tar -xzf /tmp/llama.tgz -C /tmp/llama
+          SERVER=$(find /tmp/llama -name llama-server -type f | head -1)
+          test -f "/tmp/gguf/$GGUF_FILE" || curl -fsSL -o "/tmp/gguf/$GGUF_FILE" "https://huggingface.co/$GGUF_REPO/resolve/main/$GGUF_FILE"
+          ls -la /tmp/gguf
+          cd "$(dirname "$SERVER")"
+          LD_LIBRARY_PATH=. nohup ./llama-server -m "/tmp/gguf/$GGUF_FILE" --host 127.0.0.1 --port 8080 -c 4096 -t 4 \
+            --temp 0 > /tmp/llama-server.log 2>&1 &
+          for i in $(seq 1 120); do curl -sf http://127.0.0.1:8080/health && break; sleep 5; done
+          curl -sf http://127.0.0.1:8080/health
+      - name: Seed the demo knowledge and propose questions for every document
+        run: |
+          python -m app.seed
+          time python -m app.rag.questions --propose
+          python -m app.rag.questions --export ../out/index_questions.json
+          python - <<'EOF'
+          import json
+          data = json.load(open("../out/index_questions.json"))
+          for t in data["tenants"]:
+              n = sum(len(i["questions"]) for d in t["documents"] for i in d["items"])
+              print(t["tenant"], len(t["documents"]), "documents", n, "questions")
+          EOF
+      - if: always()
+        run: tail -n 50 /tmp/llama-server.log; mkdir -p ../out; cp /tmp/llama-server.log ../out/ || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: index-questions, path: out}
+
+  plan:
+    name: Configurations to run
+    if: inputs.stage == 'eval'
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.split.outputs.configs }}
+    steps:
+      - id: split
+        env: {CONFIGS: "${{ inputs.configs }}"}
+        run: echo "configs=$(python3 -c 'import json,os; print(json.dumps([c.strip() for c in os.environ["CONFIGS"].split(",") if c.strip()]))')" >> "$GITHUB_OUTPUT"
+
+  eval:
+    name: "Eval: ${{ matrix.config }}"
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        config: ${{ fromJSON(needs.plan.outputs.configs) }}
+    defaults: {run: {working-directory: backend}}
+    env:
+      LOOPDESK_EMBEDDING_PROVIDER: local
+      LOOPDESK_EMBEDDING_MODEL: BAAI/bge-m3
+      LOOPDESK_EMBEDDING_DIM: "1024"
+      LOOPDESK_RERANKER_PROVIDER: local
+      LOOPDESK_RERANKER_MODEL: BAAI/bge-reranker-v2-m3
+      LOOPDESK_LOCAL_MODEL_THREADS: "4"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - name: Install (torch CPU wheel, transformers)
+        run: |
+          pip install torch==2.5.1 --index-url $TORCH_CPU
+          pip install -r requirements.txt -r requirements-semantic.txt
+      - uses: actions/cache@v4
+        with: {path: ~/.cache/huggingface, key: hf-bge-m3-bge-reranker-v2-m3-v1}
+      - name: Measure
+        run: |
+          lscpu | grep -E 'Model name|^CPU\(s\)' || true
+          python -m app.evals.retrieval_eval --configs "${{ matrix.config }}" \
+            --report "../out/report-${{ matrix.config }}.json" --summary "../out/summary-${{ matrix.config }}.md"
+      - uses: actions/upload-artifact@v4
+        with: {name: "report-${{ matrix.config }}", path: out}
+
+  merge:
+    name: Merge the reports
+    if: always() && inputs.stage == 'eval'
+    needs: eval
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip, cache-dependency-path: backend/requirements.txt}
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with: {pattern: report-*, path: out, merge-multiple: true}
+      - run: |
+          python -m app.evals.retrieval_eval --merge ../out/report-*.json --report ../out/retrieval-eval.json \
+            --summary ../out/retrieval-eval.md
+          cat ../out/retrieval-eval.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with: {name: retrieval-eval, path: out}

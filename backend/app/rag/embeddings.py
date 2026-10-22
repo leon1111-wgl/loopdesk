@@ -3,7 +3,8 @@
 ``HashingEmbedder`` is an offline, deterministic baseline (feature hashing of words and
 character bigrams). It keeps the demo and CI free of model downloads. Production should
 use a semantic model through ``OpenAICompatEmbedder`` (e.g. doubao-embedding,
-hunyuan-embedding, bge-m3), configured with LOOPDESK_EMBEDDING_*.
+hunyuan-embedding, bge-m3 behind Infinity or vLLM), configured with LOOPDESK_EMBEDDING_*, or bge-m3
+in-process (``local``, app.rag.local_models).
 """
 
 from __future__ import annotations
@@ -84,6 +85,12 @@ class GuardedEmbedder(Embedder):
 
 
 def build_embedder(settings: Settings) -> Embedder:
+    if settings.embedding_provider == "local":
+        from .local_models import LocalEmbedder
+
+        if not settings.embedding_model:
+            raise LLMError("local embeddings need LOOPDESK_EMBEDDING_MODEL (e.g. BAAI/bge-m3, LOOPDESK_EMBEDDING_DIM=1024)")
+        return LocalEmbedder(settings.embedding_model, settings.embedding_dim, threads=settings.local_model_threads)
     if settings.embedding_provider == "openai_compat":
         from ..llm.openai_compat import OpenAICompatEmbedder
 

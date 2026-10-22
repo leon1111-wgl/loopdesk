@@ -1,0 +1,7 @@
+# Optional: bge-m3 embeddings and the bge-reranker-v2-m3 cross-encoder in-process on CPU
+# (LOOPDESK_EMBEDDING_PROVIDER=local, LOOPDESK_RERANKER_PROVIDER=local; see docs/DEPLOYMENT.md).
+# Install torch from the CPU index first, or pip pulls the CUDA build (several GB):
+#   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt -r requirements-semantic.txt
+# transformers < 4.50 still loads bge-m3's pytorch_model.bin with torch 2.5 (no safetensors in that repo).
+transformers==4.46.3

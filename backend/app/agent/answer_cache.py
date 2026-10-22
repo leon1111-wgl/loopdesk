@@ -94,7 +94,11 @@ def cacheable(text: str) -> bool:
 def config_fingerprint(settings: Settings, prompt_version: str = DEFAULT_PROMPT_VERSION) -> str:
     raw = "|".join([settings.llm_provider, settings.llm_model_strong, settings.llm_model_fast,
                     settings.embedding_provider, settings.embedding_model or "", str(settings.embedding_dim),
-                    str(settings.min_relevance), str(settings.min_cosine), prompt_version, KEY_FORMAT,
+                    str(settings.min_relevance), str(settings.min_cosine),
+                    # the reranker and the two-signal gate decide what the agent may answer from (W5)
+                    settings.reranker_provider, settings.reranker_model or "", str(settings.min_rerank),
+                    str(settings.rerank_floor), str(settings.rerank_candidates), str(settings.index_questions),
+                    prompt_version, KEY_FORMAT,
                     PROMPT_VERSIONS.get(prompt_version, "")])
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 

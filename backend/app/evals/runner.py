@@ -23,7 +23,8 @@ from ..agent.outcome import is_refusal  # one definition for evals and the dashb
 from ..agent.runtime import RunOptions, collect
 from ..db import Base
 from ..integrations import Commerce
-from ..models import Chunk, Conversation, Document, EvalCase, EvalResult, EvalRun, Run, Span, Tenant, User
+from ..models import (Chunk, Conversation, Document, EvalCase, EvalResult, EvalRun, IndexQuestion, Run, Span, Tenant,
+                      User)
 from ..seed import fixture_orders, fixture_refunds
 
 
@@ -68,6 +69,10 @@ def build_sandbox(db: Session, tenant: Tenant) -> Session:
     sandbox.add_all(_clone(u) for u in users)
     sandbox.add_all(_clone(d) for d in db.execute(select(Document).where(Document.tenant_id == tenant.id)).scalars())
     sandbox.add_all(_clone(c) for c in db.execute(select(Chunk).where(Chunk.tenant_id == tenant.id)).scalars())
+    for question in db.execute(select(IndexQuestion).where(IndexQuestion.tenant_id == tenant.id)).scalars():
+        copy = _clone(question)  # published colloquial questions are part of the index (W5)
+        copy.patch_id = None  # the patches stay behind
+        sandbox.add(copy)
     sandbox.flush()
     sandbox.add_all(fixture_orders(tenant.slug, {u.email: sandbox.get(User, u.id) for u in users}))
     sandbox.flush()

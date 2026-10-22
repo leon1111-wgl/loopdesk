@@ -20,13 +20,55 @@ interface FeedbackRow {
   eval_case: { id: number; key: string; status: string } | null;
 }
 
+interface QuestionItem {
+  heading: string;
+  text_sha: string;
+  questions: string[];
+}
+
 interface Patch {
   id: number;
-  feedback_id: number;
+  kind: "correction" | "questions";
+  feedback_id: number | null;
   title: string;
   content: string;
   status: string;
   created_at: string;
+  payload: {
+    document_title?: string;
+    items?: QuestionItem[];
+    published?: { indexed: number; skipped: string[]; stale: number };
+  } | null;
+}
+
+/** Colloquial questions proposed as index entries (W5): the reviewer unticks the wrong ones. */
+function QuestionsPatch({ patch, editable, dropped, onToggle }: {
+  patch: Patch; editable: boolean; dropped: Set<string>; onToggle: (q: string) => void;
+}) {
+  const items = patch.payload?.items ?? [];
+  const published = patch.payload?.published;
+  return (
+    <div className="stack" style={{ gap: 6, margin: "6px 0" }}>
+      <div className="small"><b>{patch.title}</b> <span className="faint">· 发布后作为片段的检索索引，不改动原文</span></div>
+      {items.map((item, i) => (
+        <div key={i} className="stack" style={{ gap: 2 }}>
+          <div className="small muted">{item.heading}</div>
+          {item.questions.map((q) => editable ? (
+            <label key={q} className="row small">
+              <input type="checkbox" checked={!dropped.has(q)} onChange={() => onToggle(q)} />
+              <span style={dropped.has(q) ? { textDecoration: "line-through", color: "var(--text-3)" } : undefined}>{q}</span>
+            </label>
+          ) : (
+            <div key={q} className="small">· {q}</div>
+          ))}
+        </div>
+      ))}
+      {published && (
+        <div className="small faint">已索引 {published.indexed} 条{published.skipped.length ? `，跳过 ${published.skipped.length} 条` : ""}
+          {published.stale ? `，${published.stale} 条因原文已修改未生效` : ""}</div>
+      )}
+    </div>
+  );
 }
 
 interface PatchConflict {
@@ -76,13 +118,34 @@ export default function FlywheelPage() {
   const [error, setError] = useState<string | null>(null);
   // A patch that contradicts the knowledge the corrected answer cited waits for an explicit decision.
   const [disputed, setDisputed] = useState<{ patch: Patch; reason: string; conflicts: PatchConflict[] } | null>(null);
+  // Questions the reviewer unticked, per questions patch.
+  const [dropped, setDropped] = useState<Record<number, Set<string>>>({});
+
+  function toggle(patchId: number, question: string) {
+    setDropped((all) => {
+      const next = new Set(all[patchId] ?? []);
+      if (next.has(question)) next.delete(question); else next.add(question);
+      return { ...all, [patchId]: next };
+    });
+  }
 
   async function act(patch: Patch, action: "apply" | "reject", acknowledge = false) {
     try {
-      const r = await api.post<{ document_version?: number; conflicts?: number; eval_case_activated?: boolean }>(
-        `/api/flywheel/patches/${patch.id}/${action}`, action === "apply" ? { acknowledge_conflicts: acknowledge } : {},
-      );
+      const body = action !== "apply" ? {}
+        : patch.kind === "questions" ? { skip_questions: [...(dropped[patch.id] ?? [])] }
+        : { acknowledge_conflicts: acknowledge };
+      const r = await api.post<{ document_version?: number; conflicts?: number; eval_case_activated?: boolean;
+        questions_indexed?: number; questions_stale?: number }>(`/api/flywheel/patches/${patch.id}/${action}`, body);
       setDisputed(null);
+      if (patch.kind === "questions") {
+        setMessage(action === "reject" ? `问法 #${patch.id} 已驳回，没有建立任何索引`
+          : `已发布 ${r.questions_indexed ?? 0} 条问法到检索索引` +
+            (r.questions_stale ? `；${r.questions_stale} 条对应的原文已修改，没有生效，请重新生成` : ""));
+        setError(null);
+        patches.reload();
+        stats.reload();
+        return;
+      }
       const published = r.document_version ? `（版本 ${docVersion(r.document_version)}）` : "";
       setMessage(action === "reject"
         ? `补丁 #${patch.id} 已驳回`
@@ -167,7 +230,12 @@ export default function FlywheelPage() {
             {patches.data?.map((p) => (
               <div key={p.id} className="json">
                 <div className="row"><b>#{p.id}</b><StatusBadge status={p.status} /><span className="spacer" /><span className="faint">{time(p.created_at)}</span></div>
-                <pre style={{ fontFamily: "inherit", margin: "6px 0" }}>{p.content}</pre>
+                {p.kind === "questions" ? (
+                  <QuestionsPatch patch={p} editable={admin && p.status === "proposed"} dropped={dropped[p.id] ?? new Set()}
+                    onToggle={(q) => toggle(p.id, q)} />
+                ) : (
+                  <pre style={{ fontFamily: "inherit", margin: "6px 0" }}>{p.content}</pre>
+                )}
                 {admin && p.status === "proposed" && (
                   <div className="row">
                     <button className="btn btn-sm btn-success" onClick={() => act(p, "apply")}><Check size={14} /> 发布</button>

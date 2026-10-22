@@ -26,7 +26,7 @@ from ..integrations import (REFUNDABLE, GatewayError, OrderInfo, RefundGateway, 
 from ..localtime import local_date, zone_of
 from ..models import Approval, Conversation, Refund, Tenant, Ticket, User
 from ..rag.conflicts import disputed
-from ..rag.retrieval import cosine_gate, hybrid_search
+from ..rag.retrieval import gate_options, hybrid_search
 from ..textutil import normalize_width, refund_declined
 from . import handoff
 from .tools import ApprovalNeed, ApprovalRequired, ToolContext, ToolDef, ToolError, ToolRegistry, ToolUnavailable
@@ -169,10 +169,8 @@ def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("query 不能为空")
     top_k = max(1, min(int(args.get("top_k") or ctx.settings.retrieval_top_k), 8))
     scope = {"public", "internal"} if ctx.is_staff else {"public"}
-    hits, debug = hybrid_search(
-        ctx.db, ctx.tenant.id, query, ctx.embedder, scope,
-        top_k=top_k, min_relevance=ctx.settings.min_relevance, min_cosine=cosine_gate(ctx.settings),
-    )
+    hits, debug = hybrid_search(ctx.db, ctx.tenant.id, query, ctx.embedder, scope, top_k=top_k,
+                                reranker=ctx.reranker, **gate_options(ctx.settings))
     # Relative cut-off: when one chunk clearly answers the question, weaker neighbours
     # only add noise (and tokens) to the prompt and to the reviewer's evidence package.
     if hits:
@@ -195,9 +193,11 @@ def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         # base has no answer when only part of the search ran (N-078).
         output["degraded"] = "语义检索暂不可用，本次只用关键词检索"
         output["vector_error"] = debug.vector_error
+    elif debug.rerank_error:  # the gate lost its semantic signal: a colloquial question may be missed
+        output["degraded"] = "重排服务暂不可用，本次只按关键词和向量检索"
     if not results:
         output["note"] = ("检索服务部分故障，这次没有查到，不代表知识库里没有；请顾客稍后再试或转人工"
-                          if debug.vector_error else "知识库中没有足够相关的内容")
+                          if debug.vector_error or debug.rerank_error else "知识库中没有足够相关的内容")
     # Open conflicts with both sides in this evidence: the runtime hands over instead of
     # letting the model state both versions.
     conflicts = disputed(ctx.db, ctx.tenant.id, [hit.text for hit in hits])
@@ -210,6 +210,7 @@ def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         "dropped_injection_chunks": debug.dropped_flagged,
         "filtered_low_relevance": debug.filtered_low_relevance,
         "vector_error": debug.vector_error,
+        "rerank_error": debug.rerank_error,
         "hits": [h.as_dict() for h in hits],
     }
     return output

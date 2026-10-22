@@ -103,7 +103,7 @@ class Evaluator:
     def _start(self, sandbox, tenant, user, text, conversation, registry=None):
         s = self.services
         runtime = AgentRuntime(sandbox, s.settings, s.provider, s.embedder, registry or s.registry, s.breaker,
-                               Commerce.local())
+                               Commerce.local(), reranker=getattr(s, "reranker", None))
         run = _Run(runtime.start(tenant=tenant, user=user, text=text, conversation=conversation,
                                  options=RunOptions(dry_run=True)))
         summary = collect(run.events)

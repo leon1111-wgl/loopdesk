@@ -1,4 +1,4 @@
-"""Process-wide singletons (model provider, embedder, tool registry, order and payment systems)."""
+"""Process-wide singletons (model provider, embedder, reranker, tool registry, order and payment systems)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .llm import build_provider
 from .llm.base import Embedder, LLMProvider
 from .llm.breaker import CircuitBreaker
 from .rag.embeddings import build_embedder
+from .rag.rerank import Reranker, build_reranker
 
 
 class Services:
@@ -20,13 +21,14 @@ class Services:
         self.settings = settings
         self.provider: LLMProvider = build_provider(settings)
         self.embedder: Embedder = build_embedder(settings)
+        self.reranker: Reranker | None = build_reranker(settings)  # None unless LOOPDESK_RERANKER_PROVIDER is set
         self.registry: ToolRegistry = build_registry()
         self.breaker = CircuitBreaker(settings)
         self.commerce = Commerce(settings)  # the order and payment systems, per tenant
 
     def runtime(self, db: Session, commerce: Commerce | None = None) -> AgentRuntime:
         return AgentRuntime(db, self.settings, self.provider, self.embedder, self.registry, self.breaker,
-                            commerce or self.commerce)
+                            commerce or self.commerce, reranker=self.reranker)
 
 
 _services: Services | None = None

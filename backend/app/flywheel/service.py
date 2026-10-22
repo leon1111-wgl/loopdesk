@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select, update
@@ -27,6 +28,8 @@ from ..llm.base import Embedder, LLMMessage, LLMProvider
 from ..models import Chunk, Document, EvalCase, EvalRun, Feedback, KBPatch, Message, Run, Span, Tenant, User
 from ..rag.conflicts import claims_in_text, conflicting_dimensions, extract_claims, record_published_anyway
 from ..rag.ingest import ingest_document
+from ..rag.questions import publish_questions
+from ..rag.retrieval import index_manager
 
 REASONS = {
     "knowledge_gap": "知识缺失",
@@ -257,10 +260,15 @@ def _claim(db: Session, patch: KBPatch, status: str, reviewer: User) -> None:
 
 
 def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder,
-                acknowledge_conflicts: bool = False) -> tuple[Document, list[dict]]:
+                acknowledge_conflicts: bool = False, skip_questions: Iterable[str] = ()) -> tuple[Document, list[dict]]:
     """Publish a patch. A patch that contradicts the knowledge the corrected answer cited needs
     an explicit acknowledgement, and even then its eval case is not activated: a wrong
-    correction must not certify itself by becoming a regression test."""
+    correction must not certify itself by becoming a regression test.
+
+    A ``questions`` patch (app.rag.questions) indexes its colloquial questions instead, minus the
+    ones the reviewer dropped; what was indexed is recorded in ``patch.payload["published"]``."""
+    if patch.kind == "questions":
+        return _publish_questions(db, patch, reviewer, embedder, skip_questions), []
     conflicts = patch_conflicts(db, patch)
     if conflicts and not acknowledge_conflicts:
         raise PatchConflict(conflicts)
@@ -293,6 +301,25 @@ def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder,
                 case.status = "active"
     db.commit()
     return document, conflicts
+
+
+def _publish_questions(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder,
+                       skip: Iterable[str]) -> Document:
+    document = db.get(Document, (patch.payload or {}).get("document_id"))
+    if document is None or document.tenant_id != patch.tenant_id:
+        raise FlywheelError("这批问法对应的文档已被删除，请驳回")
+    db.commit()
+    _claim(db, patch, "applied", reviewer)
+    # The tenant row, as for every knowledge write: serialises with edits of the same document.
+    db.execute(select(Tenant.id).where(Tenant.id == patch.tenant_id).with_for_update(key_share=True))
+    try:
+        publish_questions(db, patch, embedder, skip)
+    except LookupError as exc:
+        db.rollback()
+        raise FlywheelError("这批问法对应的文档已被删除，请驳回") from exc
+    db.commit()
+    index_manager.invalidate(patch.tenant_id)
+    return document
 
 
 def reject_patch(db: Session, patch: KBPatch, reviewer: User) -> None:

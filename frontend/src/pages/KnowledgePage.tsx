@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { AlertTriangle, Check, FilePlus2, Pencil, Search, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, FilePlus2, MessageSquarePlus, Pencil, Search, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { Drawer, Empty, ErrorBanner, Modal, docVersion, pressable, time, useLoad } from "../components/ui";
@@ -34,12 +34,17 @@ interface SearchHit {
   vector_rank: number | null;
   flagged_injection: boolean;
   passes_threshold: boolean;
+  rerank: number | null;
+  matched_question: string | null;
 }
 
 function RetrievalDebugger() {
   const [query, setQuery] = useState("退款多久能到账");
   const [scope, setScope] = useState("customer");
-  const [result, setResult] = useState<{ query_tokens: string[]; coverage_tokens: string[]; min_relevance: number; hits: SearchHit[] } | null>(null);
+  const [result, setResult] = useState<{
+    query_tokens: string[]; coverage_tokens: string[]; min_relevance: number; hits: SearchHit[];
+    reranker: string | null; min_rerank: number | null; rerank_floor: number | null; rerank_error: string | null;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   async function run() {
     try {
@@ -53,7 +58,7 @@ function RetrievalDebugger() {
     <div className="card">
       <div className="card-head">
         <h3>检索调试器</h3>
-        <span className="faint">BM25 + 向量 → RRF 融合 → 相关度阈值</span>
+        <span className="faint">BM25 + 向量（+ 已发布的口语问法）→ RRF 融合 → 重排（可选）→ 相关度阈值</span>
       </div>
       <div className="card-pad stack">
         <div className="row">
@@ -70,11 +75,13 @@ function RetrievalDebugger() {
             <div className="faint">
               召回分词：{result.query_tokens.join(" / ") || "（无）"} · 覆盖率分词（口语已换成知识库用语）：
               {result.coverage_tokens.join(" / ") || "（无）"} · 相关度阈值 {result.min_relevance}
+              {result.reranker ? ` · 重排模型 ${result.reranker}（单独放行 ≥ ${result.min_rerank ?? "未标定"}，否决 < ${result.rerank_floor ?? "未设"}）` : " · 未启用重排"}
+              {result.rerank_error && ` · 重排失败：${result.rerank_error}`}
             </div>
             <div className="table-wrap">
               <table className="table">
                 <thead>
-                  <tr><th>片段</th><th>BM25 名次</th><th>向量名次</th><th>RRF</th><th>词覆盖</th><th>余弦</th><th>相关度</th></tr>
+                  <tr><th>片段</th><th>BM25 名次</th><th>向量名次</th><th>RRF</th><th>词覆盖</th><th>余弦</th><th>重排</th><th>相关度</th></tr>
                 </thead>
                 <tbody>
                   {result.hits.map((h) => (
@@ -84,12 +91,14 @@ function RetrievalDebugger() {
                         <div className="small muted">{h.text.slice(0, 90)}</div>
                         {h.flagged_injection && <span className="badge badge-danger"><AlertTriangle size={12} /> 待复核，未进入检索</span>}
                         {!h.passes_threshold && <span className="badge">低于阈值，不进入上下文</span>}
+                        {h.matched_question && <div className="small faint">经问法“{h.matched_question}”命中</div>}
                       </td>
                       <td>{h.bm25_rank ?? "—"}</td>
                       <td>{h.vector_rank ?? "—"}</td>
                       <td className="mono">{h.rrf.toFixed(4)}</td>
                       <td className="mono">{h.coverage.toFixed(2)}</td>
                       <td className="mono">{h.cosine.toFixed(2)}</td>
+                      <td className="mono">{h.rerank == null ? "—" : h.rerank.toFixed(2)}</td>
                       <td><b className="mono">{h.relevance.toFixed(2)}</b></td>
                     </tr>
                   ))}
@@ -371,6 +380,14 @@ export default function KnowledgePage() {
     setDetail(await api.post<DocDetail>(`/api/kb/chunks/${chunk.id}/release`, {}));
     changed();
   }
+  async function propose(id: number) {
+    try {
+      const r = await api.post<{ patch_id: number; sections: number; questions: number }>(`/api/kb/documents/${id}/questions`, {});
+      window.alert(`已为 ${r.sections} 个片段生成 ${r.questions} 条口语问法（补丁 #${r.patch_id}），请到「数据飞轮」审核后发布；发布前不影响检索。`);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : String(e));
+    }
+  }
   async function remove(id: number) {
     if (!window.confirm("删除后该文档的所有片段会从索引中移除，确定吗？")) return;
     await api.del(`/api/kb/documents/${id}`);
@@ -419,6 +436,9 @@ export default function KnowledgePage() {
               <div className="row">
                 {detail.chunks.some((c) => c.page) ? <span className="faint small">PDF 文档请上传新版本文件</span>
                   : <button className="btn" onClick={() => setEditing(true)}><Pencil size={15} /> 编辑</button>}
+                <button className="btn" onClick={() => propose(detail.id)}
+                  title="用模型为每个片段写 3-5 个顾客口语问法，审核发布后作为检索索引">
+                  <MessageSquarePlus size={15} /> 生成口语问法</button>
                 <button className="btn btn-danger" onClick={() => remove(detail.id)}><Trash2 size={15} /> 删除文档</button>
               </div>
             )}

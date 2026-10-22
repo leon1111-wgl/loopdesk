@@ -309,14 +309,36 @@ class KBPatch(Base):
     __tablename__ = "kb_patches"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
-    feedback_id: Mapped[int] = mapped_column(ForeignKey("feedback.id"))
+    # correction: a knowledge entry drafted from a staff correction (feedback_id set);
+    # questions: colloquial questions proposed as index entries of a document's chunks (W5, payload).
+    kind: Mapped[str] = mapped_column(String(16), default="correction", server_default="correction")
+    feedback_id: Mapped[int | None] = mapped_column(ForeignKey("feedback.id"), nullable=True)
     title: Mapped[str] = mapped_column(String(255))
-    content: Mapped[str] = mapped_column(Text)
+    content: Mapped[str] = mapped_column(Text)  # what the reviewer reads
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="proposed")  # proposed | applied | rejected
     document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"), nullable=True)
     reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class IndexQuestion(Base):
+    """A colloquial question published as an extra index entry of a chunk (W5, after FastGPT's
+    indexes): BM25, the vector search and the coverage gate also match the question against it.
+    Bound to the document, the section heading and the exact chunk text it was approved for; when
+    that text changes, the question stops counting until it is reviewed again."""
+
+    __tablename__ = "index_questions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), index=True)
+    heading: Mapped[str] = mapped_column(String(512), default="")
+    text_sha: Mapped[str] = mapped_column(String(64))  # sha256 of the chunk text it was written for
+    question: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary, default=b"")
+    patch_id: Mapped[int | None] = mapped_column(ForeignKey("kb_patches.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class EvalCase(Base):

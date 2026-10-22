@@ -96,6 +96,19 @@ KB_PATCH_PROMPT = """你是知识库编辑。根据客服的纠错，写一段�
 - 不超过 150 字。
 输入 JSON：{payload}"""
 
+# Colloquial index questions (W5): written ahead of time per chunk, published only after an
+# administrator reviews them (app.rag.questions). "只凭这段内容就能回答" keeps the model from writing
+# questions the chunk does not answer: a published question lets its wording through the gate.
+KB_QUESTIONS_PROMPT = """你是客服知识库编辑。下面是知识库里的一段内容。请写出 3 到 5 个顾客可能会问、并且只凭这段内容就能回答的问题：
+- 用顾客自己的口语说法（可以口语化、简短、中英混用），尽量不照抄原文的措辞；
+- 不要写这段内容回答不了的问题，不要编造原文没有的数字、条件或服务；
+- 每个问题不超过 30 个字；
+- 如果这段内容不是顾客会来问的信息（例如免责声明、目录、给员工看的说明），输出空列表；
+- 只输出 JSON：{{"questions": ["…", "…"]}}
+标题：{heading}
+内容：
+{text}"""
+
 # Rewritten after the first real-model run: the old wording ("能否被证据直接支持") made the judge
 # reject "往返运费由我们承担" against "由Leon优选承担" and "您的订单…由Atlas快运承运" against the
 # tracking result. On that run's sentences the rewrite judged 106/112 supported (was 89/112) and

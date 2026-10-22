@@ -32,7 +32,7 @@ def measure(settings=None) -> dict:
     from ..config import get_settings
     from ..db import create_all, init_engine, new_session
     from ..models import Tenant
-    from ..rag.retrieval import cosine_gate, hybrid_search
+    from ..rag.retrieval import gate_options
     from ..seed import seed_demo
     from ..services import Services
 
@@ -41,35 +41,44 @@ def measure(settings=None) -> dict:
     init_engine(settings.database_url)
     create_all()
     services = Services(settings)
-    questions = json.loads(SET_FILE.read_text(encoding="utf-8"))["questions"]
-    counts = {"recall_at_4": 0, "answered": 0, "refused": 0, "wrong": 0}
-    misses = []
     with new_session() as db:
         seed_demo(db, services.embedder)
         tenant = db.execute(select(Tenant).where(Tenant.slug == "leon")).scalar_one()
-        for item in questions:
-            question, section = item["q"], item["section"]
-            top, _ = hybrid_search(db, tenant.id, question, services.embedder, {"public"}, top_k=4,
-                                   min_relevance=0.0, min_cosine=0.0)
-            gated, _ = hybrid_search(db, tenant.id, question, services.embedder, {"public"}, top_k=4,
-                                     min_relevance=settings.min_relevance, min_cosine=cosine_gate(settings))
-            if gated:  # the search tool's relative cut-off
-                floor = 0.5 * max(h.relevance for h in gated)
-                gated = [h for h in gated if h.relevance >= floor]
-            in_top = any(section in h.heading for h in top)
-            counts["recall_at_4"] += in_top
-            if not gated:
-                outcome = "refused"
-            elif any(section in h.heading for h in gated):
-                outcome = "answered"
-            else:
-                outcome = "wrong"
-            counts[outcome] += 1
-            if outcome != "answered":
-                best = max(top, key=lambda h: h.coverage, default=None)
-                misses.append({"question": question, "expected": section, "outcome": outcome,
-                               "in_top_4": in_top, "best_coverage": round(best.coverage, 3) if best else 0.0,
-                               "best_heading": best.heading if best else ""})
+        return measure_on(db, tenant.id, services.embedder, services.reranker, gate_options(settings))
+
+
+def measure_on(db, tenant_id: int, embedder, reranker, gate: dict, questions: list[dict] | None = None,
+               match=None) -> dict:
+    """The set's outcome on one seeded tenant. ``questions`` / ``match`` let the blind probe set reuse
+    it: [{"q", "section", "also"?}], and whether a hit's heading is the labelled section."""
+    from ..rag.retrieval import hybrid_search
+
+    questions = questions if questions is not None else json.loads(SET_FILE.read_text(encoding="utf-8"))["questions"]
+    match = match or (lambda heading, item: item["section"] in heading)
+    ungated = {**gate, "min_relevance": 0.0, "min_cosine": 0.0, "min_rerank": None, "rerank_floor": None}
+    counts = {"recall_at_4": 0, "answered": 0, "refused": 0, "wrong": 0}
+    misses = []
+    for item in questions:
+        question = item["q"]
+        top, _ = hybrid_search(db, tenant_id, question, embedder, {"public"}, top_k=4, reranker=reranker, **ungated)
+        gated, _ = hybrid_search(db, tenant_id, question, embedder, {"public"}, top_k=4, reranker=reranker, **gate)
+        if gated:  # the search tool's relative cut-off
+            floor = 0.5 * max(h.relevance for h in gated)
+            gated = [h for h in gated if h.relevance >= floor]
+        in_top = any(match(h.heading, item) for h in top)
+        counts["recall_at_4"] += in_top
+        if not gated:
+            outcome = "refused"
+        elif any(match(h.heading, item) for h in gated):
+            outcome = "answered"
+        else:
+            outcome = "wrong"
+        counts[outcome] += 1
+        if outcome != "answered":
+            best = max(top, key=lambda h: h.coverage, default=None)
+            misses.append({"question": question, "expected": item["section"], "outcome": outcome,
+                           "in_top_4": in_top, "best_coverage": round(best.coverage, 3) if best else 0.0,
+                           "best_heading": best.heading if best else ""})
     total = len(questions)
     return {"total": total, **{k: f"{v}/{total}" for k, v in counts.items()}, "misses": misses}
 

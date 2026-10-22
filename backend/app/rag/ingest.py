@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..guardrails.injection import NO_CHANNELS, Channels, scan_knowledge
 from ..llm.base import Embedder
-from ..models import Chunk, Document, KnowledgeConflict, Tenant
+from ..models import Chunk, Document, IndexQuestion, KBPatch, KnowledgeConflict, Tenant
 from .chunking import chunk_markdown, chunk_pages
 from .conflicts import detect_conflicts
 from .embeddings import pack
@@ -127,6 +127,10 @@ def recount_flagged(db: Session, document_ids: list[int]) -> None:
 def transient(exc: Exception) -> bool:
     """An embedding failure worth waiting out: the service is down, slow or rate-limited. A refused
     request (wrong key, model, dimension) is a configuration error and is raised as before."""
+    from .local_models import ModelSetupError
+
+    if isinstance(exc, ModelSetupError):  # a local model that cannot run (package missing): configuration
+        return False
     text = str(exc)
     if "LOOPDESK_EMBEDDING_DIM" in text:  # OpenAICompatEmbedder: the model returned another width
         return False
@@ -167,11 +171,40 @@ def embed_pending(db: Session, embedder: Embedder, batch: int = 256) -> int:
                 filled += 1
                 tenants.add(r.tenant_id)
         db.commit()
+    filled += _embed_pending_questions(db, embedder, batch, tenants)
     for tenant_id in sorted(tenants):
         _bump_kb_version(db, tenant_id)
         db.commit()
         index_manager.invalidate(tenant_id)
     return filled
+
+
+def _embed_pending_questions(db: Session, embedder: Embedder, batch: int, tenants: set[int]) -> int:
+    """The same for published index questions (W5) stored while the service was down."""
+    filled, after = 0, 0
+    while True:
+        rows = db.execute(select(IndexQuestion.id, IndexQuestion.tenant_id, IndexQuestion.question)
+                          .where(func.length(IndexQuestion.embedding) == 0, IndexQuestion.id > after)
+                          .order_by(IndexQuestion.id).limit(batch)).all()
+        db.rollback()
+        if not rows:
+            return filled
+        after = rows[-1].id
+        try:
+            vectors = embedder.embed([r.question for r in rows])
+            if len(vectors) != len(rows):
+                raise ValueError(f"embedding returned {len(vectors)} vectors for {len(rows)} texts")
+        except Exception as exc:
+            logger.warning("embedding %d pending questions failed, will retry: %s", len(rows), exc)
+            return filled
+        for r, vector in zip(rows, vectors):
+            result = db.execute(update(IndexQuestion)
+                                .where(IndexQuestion.id == r.id, func.length(IndexQuestion.embedding) == 0)
+                                .values(embedding=pack(vector)).execution_options(synchronize_session=False))
+            if result.rowcount:
+                filled += 1
+                tenants.add(r.tenant_id)
+        db.commit()
 
 
 def _bump_kb_version(db: Session, tenant_id: int) -> None:
@@ -219,6 +252,10 @@ def delete_document(db: Session, document: Document) -> None:
     # tenant row for its audit number): one lock order, no deadlock on PostgreSQL.
     _bump_kb_version(db, document.tenant_id)
     db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    db.execute(delete(IndexQuestion).where(IndexQuestion.document_id == document.id))
+    # Published patches keep their record (the questions patch names its document in the payload).
+    db.execute(update(KBPatch).where(KBPatch.document_id == document.id).values(document_id=None)
+               .execution_options(synchronize_session=False))
     db.execute(delete(KnowledgeConflict).where(
         (KnowledgeConflict.document_id == document.id) | (KnowledgeConflict.other_document_id == document.id)))
     tenant_id = document.tenant_id
