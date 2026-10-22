@@ -144,14 +144,50 @@ def _asks_what_if(text: str) -> bool:
     return True
 
 
+# A complaint followed by a bare demand ("还不发货？？？ 不要了 退钱！！！", "怎么还不发货 退款", "等了这么久还不发？退款！",
+# "SO… 退了吧") is a request (N-126): the question belongs to the complaint. Only a clause that is nothing but the demand
+# counts, and only when no question follows it: "怎么还不发货？退款已经申请了", "咋回事？退款金额不对", "应该退了吧？怎么还没到账",
+# "退款，多久到账" and "退款 咋弄" are not requests. Clauses end at punctuation, or at a space next to a Chinese character
+# ("还不发货 退款", "还不发货 refund"; "how do I get a refund" stays one clause).
+_DEMAND_SEP_RE = re.compile(r"[，,。.！!？?；;、～~…\n]+|(?<=[\u4e00-\u9fff])\s+|\s+(?=[\u4e00-\u9fff])")
+# Possessive quantifiers and a length cap: "那就" and "退货退款" can also be read as two pieces, and a failing fullmatch
+# would otherwise try every split ("那就" * 26 + "退了吧z" took over 15 s). Whitespace is gone by the time this runs.
+# No "了 / 啦" ending: "怎么回事？都退款了" says it was refunded. "退了吧" after a question is still read as a demand.
+_BARE_DEMAND_RE = re.compile(
+    r"(?:那|就|不要了|不等了|麻烦|请|赶紧|赶快|快点?|马上|立刻|直接|全额|全部)*+"
+    r"(?:(?:退款|退钱|退货|退掉)++(?:吧|啊|呀|哈|呗|好了|行了|谢谢)*+|(?:都|全)?退了吧(?:谢谢)?)"
+    r"|(?:please)?(?:full)?refund(?:now|please|me|it|asap)*+", re.IGNORECASE)
+_BARE_DEMAND_MAX = 16
+_DEMAND_FILLER_RE = re.compile(r"\s+|(?:SO\d+(?:和|跟|与|及|and)?)+|[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]+",
+                               re.IGNORECASE)
+# Colloquial questions the inquiry patterns miss: 咋 / 啥, 行不行 / 快不快, a trailing 不 or 没 ("要手续费不", "到账没").
+_COLLOQUIAL_QUESTION_RE = re.compile(r"咋|啥|([\u4e00-\u9fff])不\1|[不没](?=[\s，,。.！!？?～~]|$)")
+
+
+def _demands_refund(text: str) -> bool:
+    questions = [m.start() for pattern in (REFUND_INQUIRY_RE, _QUESTION_RE, _COLLOQUIAL_QUESTION_RE)
+                 for m in pattern.finditer(text)]
+    last_question = max(questions, default=-1)
+    start = 0
+    for sep in [*_DEMAND_SEP_RE.finditer(text), None]:
+        end = sep.start() if sep else len(text)
+        bare = _DEMAND_FILLER_RE.sub("", text[start:end])
+        if start > last_question and 0 < len(bare) <= _BARE_DEMAND_MAX and _BARE_DEMAND_RE.fullmatch(bare):
+            return True
+        start = sep.end() if sep else end
+    return False
+
+
 def refund_requested(text: str) -> bool:
     """True when the message asks for a refund, not when it asks about one or declines one."""
     kept = NEGATED_REFUND_RE.sub("，", normalize_width(text or ""))
-    if not REFUND_RE.search(kept) or _ONLY_ASKING_RE.search(kept):
+    if _ONLY_ASKING_RE.search(kept):
         return False
+    if not REFUND_RE.search(kept):
+        return _demands_refund(kept)  # "SO… 退了吧": not one of the refund words, but a bare demand
     if _asks_what_if(kept):
         return False
-    return bool(REFUND_APPLY_RE.search(kept)) or not REFUND_INQUIRY_RE.search(kept)
+    return bool(REFUND_APPLY_RE.search(kept)) or not REFUND_INQUIRY_RE.search(kept) or _demands_refund(kept)
 
 
 def refund_declined(text: str) -> bool:

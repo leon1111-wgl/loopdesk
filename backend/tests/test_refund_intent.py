@@ -139,3 +139,81 @@ def test_tool_still_files_an_explicit_request(ask, login, monkeypatch):
     _, events = ask(login("customer@leon.demo"), "SO20260918001 我要退款")
     result = [e for e in by_type(events, "tool_result") if e["name"] == "request_refund"][0]
     assert "error" not in result["output"] and result["output"]["amount"] == 39.9
+
+
+# N-126: the question in a complaint ("还不发货？？？") is not a question about the bare demand that follows it.
+ANGRY = "😡😡😡 SO20261012003 还不发货？？？ 不要了 退钱！！！"
+WHY_NOT_SHIPPED = "SO20261012003 怎么还不发货 退款"
+WAITED = "SO20261012003 等了这么久还不发？退款！"
+TWO_ORDERS = "SO20261012003和SO20260918011都退了吧"
+
+
+@pytest.mark.parametrize("text", [
+    ANGRY, WHY_NOT_SHIPPED, WAITED, "SO20261012003 退了吧", TWO_ORDERS, "还没发货吗 那退款", "怎么回事啊？？退款",
+    "说好的今天发呢？我不要了，退钱", "怎么还不发货 refund", "why no shipping?? refund!!", "怎么还不发货～退款",
+    "怎么还不发货\n退款", "ＳＯ２０２６１０１２００３\u3000退了吧", "怎么还不发货啊？麻烦退款", "怎么还不发货？不要了退款",
+    "not shipped yet? refund now", "where is it?? refund asap", "why?? full refund", "还不发货？退钱💢", "还不发货？退钱❗❗",
+])
+def test_a_bare_demand_after_a_complaint_is_a_request(text):
+    assert refund_requested(text) and not refund_declined(text)
+
+
+@pytest.mark.parametrize("text", [
+    # A question after the refund word, or about it, is still asked, not filed.
+    "退款，多久到账", "SO20261012003 退款 多久到账", "还不发货？退款要几天", "怎么还不发货 退款怎么申请",
+    "how do refunds work", "还不发货？？退款能原路退回吗", "退款？", "等了这么久，退款的话运费谁出",
+    "还不发货？？？ 不要退钱，我再等等", "怎么还不发货？退款咋弄", "怎么还不发货？退款啥时候到", "还不发货？退款快不快",
+    "还不发货？退款要手续费不", "还不发货？退款，到账没",
+    # Found by review: a question, then a statement that only mentions a refund. The first version filed these.
+    "SO20260918001 怎么还不发货？退款已经申请了", "SO20260918001 咋回事？退款被拒了", "SO20260918001 怎么回事？退款金额不对",
+    "SO20260918001 怎么还不发货？退货地址发我一下", "Where is my order SO20260918001? Refund pending for 2 weeks",
+    "什么时候到账？退款三天了", "发货了吗？退款我再考虑考虑", "还能发货吗？退款不急", "Hello? refund received, thanks",
+    # "退了吧" as a guess that it was refunded, not a demand.
+    "SO20260918001 钱应该退了吧？怎么还没到账", "SO20260918001 已经退了吧", "上周就退了吧，钱呢", "你们退了吧？我没收到",
+    "退了吧？到账没", "都退了吧，怎么一分钱没收到",
+    # Found by the second review: "了 / 啦" after the refund word reports it, it does not ask for it.
+    "SO20260918001 怎么回事？都退款了", "SO20260918001 是吗？退款了", "是吗？退款啦",
+])
+def test_a_question_or_a_statement_about_a_refund_is_not_a_request(text):
+    assert not refund_requested(text)
+
+
+def test_the_demand_check_stays_linear():
+    import time
+    started = time.perf_counter()
+    for text in ("退款，" * 1000 + "吗", "退款\n" * 1000, "退款 " * 1000 + "吗",
+                 "那就" * 26 + "退了吧z", "怎么还不发货？" + "退货退款" * 22 + "z", "那就" * 990 + "退了吧z"):
+        refund_requested(text)
+    assert time.perf_counter() - started < 0.5  # the first version took 2.5 s on the first one; another over 15 s on the fourth
+
+
+@pytest.mark.parametrize("text", [ANGRY, WHY_NOT_SHIPPED, WAITED])
+def test_offline_model_files_the_angry_demand(ask, login, text):
+    # ¥268 is over the automatic limit, so the request waits for a person instead of being answered.
+    _, events = ask(login("customer@leon.demo"), text)
+    approval = by_type(events, "approval_required")
+    assert approval and approval[0]["arguments"]["order_id"] == "SO20261012003"
+    answer = by_type(events, "final")[0]["text"]
+    assert "不会为您发起退款" not in answer and "人工审核" in answer
+
+
+@pytest.mark.parametrize("text", ["SO20260918001 怎么还不发货？退款已经申请了", "SO20260918001 钱应该退了吧？怎么还没到账"])
+def test_offline_model_does_not_pay_out_on_a_statement(ask, login, text):
+    # Both paid ¥39.90 automatically in the first version of this fix.
+    _, events = ask(login("customer@leon.demo"), text)
+    assert "request_refund" not in [e["name"] for e in by_type(events, "tool_result")]
+    assert _nothing_filed("SO20260918001")
+
+
+def test_two_orders_to_refund_asks_which_one(ask, login):
+    _, events = ask(login("customer@leon.demo"), TWO_ORDERS)
+    assert "request_refund" not in [e["name"] for e in by_type(events, "tool_result")]
+    assert "一次只能为一个订单申请退款" in by_type(events, "final")[0]["text"]
+
+
+def test_an_open_question_asks_instead_of_promising_nothing(ask, login):
+    # Only a customer who said "别退" hears "不会为您发起退款"; a plain question is offered the way to apply.
+    _, events = ask(login("customer@leon.demo"), "SO20260918001 退款是原路退回吗")
+    answer = by_type(events, "final")[0]["text"]
+    assert "不会为您发起退款" not in answer and "如需现在申请退款" in answer
+    assert _nothing_filed("SO20260918001")
