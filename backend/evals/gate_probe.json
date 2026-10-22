@@ -56,5 +56,40 @@
   "能用信用卡吗",
   "你们有实体店吗",
   "下单能打折吗"
- ]
+ ],
+ "split": {
+  "_comment": "Held-out half of each list, fixed on 2026-10-22 before any semantic-model measurement (W5): rank each list by sha256 of the question, the first half (rounded up) is dev, the rest held out. Thresholds for embeddings and the reranker are calibrated on dev only (gate_probe --calibrate --split dev); held-out is reported, never tuned on.",
+  "heldout": {
+   "in_scope": [
+    "开发票要多久",
+    "发票抬头能改吗",
+    "能退货吗",
+    "东西坏了能换吗",
+    "退货运费谁出",
+    "质量有问题能退吗",
+    "拆封了还能退吗",
+    "退款到账没",
+    "钱什么时候到",
+    "多久能退款",
+    "退款退到哪里",
+    "多久发货",
+    "什么时候发货",
+    "积分能抵钱吗",
+    "会员有什么好处",
+    "定制的东西能退吗"
+   ],
+   "out_of_scope": [
+    "能货到付款吗",
+    "可以用美元付款吗",
+    "能开收据吗",
+    "你们老板是谁",
+    "有没有学生优惠",
+    "能保价吗",
+    "可以指定送货时间吗",
+    "商品有保修吗",
+    "能修改收货地址吗",
+    "能用信用卡吗"
+   ]
+  }
+ }
 }

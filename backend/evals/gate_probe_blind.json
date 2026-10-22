@@ -1,0 +1,273 @@
+{
+ "_comment": "Blind probe set for the relevance gate, written on 2026-10-22 by a separate model (Fable 5.1) from the tenants' public knowledge-base documents only, without seeing any code, retrieval settings or other eval sets; committed before any semantic-model measurement (W5) and never used for tuning. in_scope: colloquial questions with the `##` section that answers them (also: other sections that answer it as well); out_of_scope: questions no document answers, about half of them near misses sharing a word with the documents. ambiguous: out-of-scope items the writer flagged as arguable (the documents say refunds go back the original way, which a strict reader takes as an answer); reported apart, not scored. Scoring rules were fixed before measuring. One question the writer happened to repeat from gate_probe.json (客服电话多少) was dropped, since that set was used for tuning.",
+ "tenants": {
+  "leon": {
+   "in_scope": [
+    {
+     "q": "想开票报销，在app哪里弄啊",
+     "section": "电子普通发票"
+    },
+    {
+     "q": "我们是企业采购，要开专票，需要准备啥材料",
+     "section": "增值税专用发票"
+    },
+    {
+     "q": "抬头写错了！已经开出来了还能改吗",
+     "section": "发票修改"
+    },
+    {
+     "q": "写好评有额外奖励不",
+     "section": "积分获取"
+    },
+    {
+     "q": "1000分能抵多少钱",
+     "section": "积分抵扣"
+    },
+    {
+     "q": "我的分是去年攒的，会不会过期",
+     "section": "积分抵扣"
+    },
+    {
+     "q": "怎么才能变金卡？要买够多少",
+     "section": "会员等级"
+    },
+    {
+     "q": "收到货不喜欢不想要了能退不？买了三天",
+     "section": "七天无理由退货"
+    },
+    {
+     "q": "内衣拆了包装还能退麻",
+     "section": "七天无理由退货"
+    },
+    {
+     "q": "不想要了寄回去邮费谁出",
+     "section": "七天无理由退货",
+     "also": [
+      "会员等级"
+     ]
+    },
+    {
+     "q": "快递员把东西摔坏了，咋办",
+     "section": "质量问题退换"
+    },
+    {
+     "q": "到手就是坏的，换一个的话来回邮费我出吗",
+     "section": "质量问题退换"
+    },
+    {
+     "q": "refund要几天到账",
+     "section": "退款到账时间"
+    },
+    {
+     "q": "用银行卡付的，钱退回来要多久",
+     "section": "退款到账时间"
+    },
+    {
+     "q": "退30块钱的东西要等客服审吗",
+     "section": "退款审核规则"
+    },
+    {
+     "q": "付完钱多久发货",
+     "section": "发货时效"
+    },
+    {
+     "q": "能指定顺丰吗",
+     "section": "合作快递"
+    },
+    {
+     "q": "寄到乌鲁木齐邮费多少",
+     "section": "配送范围与运费"
+    },
+    {
+     "q": "发香港吗",
+     "section": "配送范围与运费"
+    },
+    {
+     "q": "我是工厂，想在你们平台卖货，咋入驻",
+     "section": "如何成为供应商"
+    }
+   ],
+   "out_of_scope": [
+    "运费险怎么买，一单多少钱",
+    "金卡会员过生日有礼物吗",
+    "积分能转给朋友吗",
+    "预售的单子还能取消吗",
+    "电子发票能换成纸质的吗",
+    "Atlas快运把我的包裹弄丢了，赔多少",
+    "退货寄回去的地址是哪里",
+    "一般下单后几天能送到我手上",
+    "下单之后还能改收货地址不",
+    "有优惠券领吗",
+    "支持货到付款吗",
+    "你们有线下实体店吗",
+    "可以用花呗分期吗"
+   ],
+   "ambiguous": [
+    "退款能退到另一张银行卡吗，原来那张卡注销了"
+   ]
+  },
+  "iris": {
+   "in_scope": [
+    {
+     "q": "免费的能存多少东西",
+     "section": "存储空间"
+    },
+    {
+     "q": "升级pro之后容量有多少",
+     "section": "存储空间"
+    },
+    {
+     "q": "想把所有文档打包下载下来备份，咋搞",
+     "section": "数据导出"
+    },
+    {
+     "q": "导出来的文件是什么格式，word吗",
+     "section": "数据导出"
+    },
+    {
+     "q": "可以用企微扫码登录吗",
+     "section": "账号安全"
+    },
+    {
+     "q": "我们公司有自己的SSO，能接吗",
+     "section": "账号安全"
+    },
+    {
+     "q": "你们挂了的话有赔偿吗",
+     "section": "服务可用性"
+    },
+    {
+     "q": "SLA承诺多少个9",
+     "section": "服务可用性"
+    },
+    {
+     "q": "整个系统都打不开了，多久有人来处理",
+     "section": "工单响应时效"
+    },
+    {
+     "q": "提了个咨询的ticket，大概多久回我",
+     "section": "工单响应时效"
+    }
+   ],
+   "out_of_scope": [
+    "存储满了还能新建文档吗",
+    "能把word文件导进去吗",
+    "P1故障多久能修好",
+    "专业版多少钱一个月",
+    "免费版最多能加几个人",
+    "有手机app吗",
+    "能多人同时编辑一个文档吗",
+    "发票怎么开"
+   ]
+  },
+  "echo": {
+   "in_scope": [
+    {
+     "q": "一个号能几台机子一起用",
+     "section": "登录与设备"
+    },
+    {
+     "q": "号被ban了，说我刷量，怎么解封",
+     "section": "账号被封禁"
+    },
+    {
+     "q": "旧号码停机了收不到验证码，想换个号码绑定咋弄",
+     "section": "换绑手机号与注销账号"
+    },
+    {
+     "q": "销号之后我买的专辑还在吗",
+     "section": "换绑手机号与注销账号"
+    },
+    {
+     "q": "有个自称你们客服的打电话要我短信验证码，是真的吗",
+     "section": "账号安全提醒"
+    },
+    {
+     "q": "想听无损要开哪种会员",
+     "section": "音质",
+     "also": [
+      "会员类型与价格"
+     ]
+    },
+    {
+     "q": "会员过期了，之前down下来的歌咋放不了了",
+     "section": "下载与离线收听"
+    },
+    {
+     "q": "充的币能退吗，充多了",
+     "section": "Echo币"
+    },
+    {
+     "q": "我家小孩拿我手机偷偷充了几百块打赏，能退吗",
+     "section": "未成年人保护"
+    },
+    {
+     "q": "收藏的歌突然点不了了，变成灰色的，啥情况",
+     "section": "歌曲为什么变灰"
+    },
+    {
+     "q": "买的数字专辑下架了，钱咋办",
+     "section": "已下载和已购买的歌曲"
+    },
+    {
+     "q": "想听的歌搜不到，能不能让你们上架",
+     "section": "找不到某首歌"
+    },
+    {
+     "q": "买的专辑能送人嘛",
+     "section": "购买与收听"
+    },
+    {
+     "q": "不小心买了两次同一张专辑，重复的钱能要回来吗",
+     "section": "退款"
+    },
+    {
+     "q": "豪华会员送的那两张券这个月没用完，下个月还在吗",
+     "section": "数字专辑兑换券",
+     "also": [
+      "会员类型与价格"
+     ]
+    },
+    {
+     "q": "普通vip和豪华vip区别在哪",
+     "section": "会员类型与价格"
+    },
+    {
+     "q": "大学生有优惠不",
+     "section": "会员类型与价格"
+    },
+    {
+     "q": "在苹果手机上开的连续包月，app里找不到取消的地方",
+     "section": "自动续费"
+    },
+    {
+     "q": "昨天刚自动扣了18块，不想要了，这钱能退吗",
+     "section": "会员费用退款"
+    },
+    {
+     "q": "钱什么时候能退回我支付宝",
+     "section": "退款到账时间"
+    }
+   ],
+   "out_of_scope": [
+    "Echo币会过期吗",
+    "学生认证要交什么材料",
+    "送出去的数字专辑，对方没会员也能听吗",
+    "封号申诉被驳回了还能在申诉吗",
+    "青少年模式的密码忘了怎么关",
+    "求歌之后一般多久能上架",
+    "自动续费扣款失败了会怎么样",
+    "连续包月第一个月有优惠吗",
+    "人工客服几点上班",
+    "能导入其他平台的歌单吗",
+    "歌词字体怎么调大",
+    "有播客或者有声书吗",
+    "能在车机上用吗",
+    "怎么注册成为音乐人上传自己的歌"
+   ],
+   "ambiguous": [
+    "退会员费能直接退到我另一张银行卡上吗"
+   ]
+  }
+ }
+}
