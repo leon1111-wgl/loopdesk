@@ -312,7 +312,8 @@ class AgentRuntime:
             yield {"type": "verification", **verification}
         state = {"user_text": user_text, "steps": 0, "models": [], "options": {}, "elapsed_ms": 0}
         yield from self._finish(run, tracer, ctx, state, entry.answer, started, status="completed",
-                                extra_meta={"verification": verification, "cached": True})
+                                extra_meta={"verification": verification, "cached": True, "cache_id": entry.id,
+                                            "cache_source_run_id": (entry.meta or {}).get("source_run_id")})
 
     def resume(self, approval: Approval, decision: str, reviewer: User, comment: str = "") -> list[dict[str, Any]]:
         """Continue a paused run after a human decision. Runs synchronously; the result
@@ -835,9 +836,12 @@ class AgentRuntime:
         if (cache_key and status == "completed" and verification is not None and verification.verdict == "pass"
                 and tools_used and set(tools_used) == {"search_knowledge"} and not state.get("tool_errors")
                 and not answer_cache.is_refusal(final_text)):  # a refusal is cheap to redo, costly to replay (N-116)
-            answer_cache.store(self.db, answer_cache.CacheKey(**cache_key), final_text,
-                               {"evidence": [e.to_dict() for e in ctx.evidence], "verification": verification.to_dict()},
-                               self.settings.answer_cache_ttl_hours)
+            entry = answer_cache.store(self.db, answer_cache.CacheKey(**cache_key), final_text,
+                                       {"evidence": [e.to_dict() for e in ctx.evidence],
+                                        "verification": verification.to_dict(), "source_run_id": run.id},
+                                       self.settings.answer_cache_ttl_hours)
+            if entry is not None:  # so a bad rating on this answer finds the row it was stored in (N-097)
+                extra_meta = {**(extra_meta or {}), "cache_id": entry.id}
         citations = [e.to_dict() for e in ctx.evidence if e.kind == "kb"]
         meta = {
             "citations": citations,
@@ -871,7 +875,7 @@ class AgentRuntime:
         if status != "waiting_approval":  # a paused run is exported once, when it ends
             telemetry.export_run(self.db, run, self.settings)
         final = {"type": "final", "run_id": run.id, "message_id": message_id, "text": final_text,
-                 "status": status, "meta": meta}
+                 "status": status, "meta": meta if ctx.is_staff else customer_meta(meta)}
         done = {"type": "done", "run_id": run.id, "status": status, "latency_ms": run.latency_ms}
         if ctx.is_staff:  # tokens, cost, model and routing are operational data, not for customers
             done.update(prompt_tokens=run.prompt_tokens, completion_tokens=run.completion_tokens,
@@ -927,6 +931,13 @@ class AgentRuntime:
             elif m.role == "agent":  # what a person told the customer is context the agent needs after hand-back
                 history.append(LLMMessage(role="assistant", content=f"（人工客服）{m.content}"))
         return history
+
+
+CACHE_META = ("cache_id", "cache_source_run_id")  # which cache row, whose run: operational, not for customers
+
+
+def customer_meta(meta: dict) -> dict:
+    return {k: v for k, v in meta.items() if k not in CACHE_META}
 
 
 def answer_cache_created(entry) -> datetime:

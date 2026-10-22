@@ -21,6 +21,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..agent import answer_cache
 from ..agent.prompts import KB_PATCH_PROMPT
 from ..llm.base import Embedder, LLMMessage, LLMProvider
 from ..models import Chunk, Document, EvalCase, EvalRun, Feedback, KBPatch, Message, Run, Span, Tenant, User
@@ -86,6 +87,7 @@ def submit_feedback(
     comment: str = "",
     provider: LLMProvider,
     model: str,
+    ttl_hours: float = 24.0,
 ) -> dict:
     if message.role != "assistant":
         raise FlywheelError("只能对助手回复进行反馈")
@@ -106,7 +108,12 @@ def submit_feedback(
         .limit(1)
     ).scalar_one_or_none() or ""
     run = db.get(Run, message.run_id) if message.run_id else None
-    attribution = attribute_failure(db, run) if rating != "up" else ""
+    meta = message.meta or {}
+    # A replayed answer has no retrieval of its own: the run that produced it explains it (N-097).
+    # Only the diagnosis comes from there; who asked (the eval case's user) is still this run's.
+    source = db.get(Run, meta["cache_source_run_id"]) if meta.get("cache_source_run_id") else None
+    traced = source if source is not None and source.tenant_id == message.tenant_id else run
+    attribution = attribute_failure(db, traced) if rating != "up" else ""
 
     # One rating per user and message, the latest click wins; a correction is identified by its
     # text, so the same one sent twice returns the first result instead of a second eval case
@@ -119,15 +126,26 @@ def submit_feedback(
         reason_category=reason_category or (attribution if rating != "up" else ""),
         attribution=attribution, comment=comment, dedup_key=dedup_key,
     )
+    # A bad rating on an answer that is (or came from) a cache row stops it being replayed to the next
+    # customer. Committed with the feedback (after any model call: no row locks held while it runs).
+    def evict() -> int:
+        if rating == "up" or not (meta.get("cache_id") or meta.get("cached")):
+            return 0
+        return answer_cache.evict(db, message.tenant_id, meta.get("cache_id"), question, ttl_hours,
+                                  "feedback", message_id=message.id)
+
     existing = db.execute(select(Feedback).where(Feedback.dedup_key == dedup_key)).scalar_one_or_none()
-    if existing is not None:
-        return _repeated(db, existing, feedback)
+    if existing is not None:  # a changed rating (up → down) still evicts
+        evicted = evict()
+        result = _repeated(db, existing, feedback)
+        db.commit()
+        return {**result, "cache_evicted": evicted}
 
     case = patch = None
     if rating == "correction":
         asker = db.get(User, run.user_id) if run else None
-        used_search = bool(run) and db.execute(
-            select(func.count(Span.id)).where(Span.run_id == run.id, Span.name == "search_knowledge")
+        used_search = bool(traced) and db.execute(
+            select(func.count(Span.id)).where(Span.run_id == traced.id, Span.name == "search_knowledge")
         ).scalar_one() > 0
         case = EvalCase(
             tenant_id=message.tenant_id, suite="default", question=question,
@@ -146,7 +164,8 @@ def submit_feedback(
             ).content.strip() or f"## {question}\n\n{correction.strip()}"
             patch = KBPatch(tenant_id=message.tenant_id, title=f"纠错补丁：{question[:40]}", content=draft.strip())
 
-    # Feedback, eval case and patch are written in one transaction.
+    # Feedback, eval case, patch and the eviction are written in one transaction.
+    evicted = evict()
     db.add(feedback)
     try:
         db.flush()
@@ -160,8 +179,11 @@ def submit_feedback(
     except IntegrityError:  # the same feedback arrived twice at once: the first one stands
         db.rollback()
         first = db.execute(select(Feedback).where(Feedback.dedup_key == dedup_key)).scalar_one()
-        return _repeated(db, first, feedback)
-    return _feedback_result(db, feedback)
+        evicted = evict()  # the rollback undid it; the rating stands
+        result = _repeated(db, first, feedback)
+        db.commit()
+        return {**result, "cache_evicted": evicted}
+    return {**_feedback_result(db, feedback), "cache_evicted": evicted}
 
 
 def _repeated(db: Session, existing: Feedback, new: Feedback) -> dict:

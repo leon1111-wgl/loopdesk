@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..agent import handoff
-from ..agent.runtime import RunOptions, collect
+from ..agent.runtime import RunOptions, collect, customer_meta
 from ..config import get_settings
 from ..db import get_db, new_session
 from ..flywheel.service import FlywheelError, submit_feedback
@@ -54,8 +54,10 @@ def conversation_out(c: Conversation) -> dict:
             "user_id": c.user_id, "created_at": iso(c.created_at), "updated_at": iso(c.updated_at)}
 
 
-def message_out(m: Message, feedback: Feedback | None = None) -> dict:
-    return {"id": m.id, "role": m.role, "content": m.content, "run_id": m.run_id, "meta": m.meta or {},
+def message_out(m: Message, feedback: Feedback | None = None, staff: bool = True) -> dict:
+    meta = m.meta or {}
+    return {"id": m.id, "role": m.role, "content": m.content, "run_id": m.run_id,
+            "meta": meta if staff else customer_meta(meta),
             "created_at": iso(m.created_at),
             "feedback": {"rating": feedback.rating, "correction": feedback.correction} if feedback else None}
 
@@ -108,7 +110,7 @@ def list_messages(conversation_id: int, principal: Principal = Depends(get_princ
         ).scalars()
     }
     return {"conversation": conversation_out(conversation), "handoff": handoff.state(db, conversation),
-            "messages": [message_out(m, feedback.get(m.id)) for m in messages]}
+            "messages": [message_out(m, feedback.get(m.id), principal.is_staff) for m in messages]}
 
 
 @router.post("/conversations/{conversation_id}/stream")
@@ -211,6 +213,7 @@ def feedback(message_id: int, body: FeedbackIn, principal: Principal = Depends(g
             db, user=principal.user, message=message, rating=body.rating, correction=masked(body.correction),
             reason_category=body.reason_category, comment=masked(body.comment),
             provider=services.provider, model=services.settings.llm_model_strong,
+            ttl_hours=services.settings.answer_cache_ttl_hours,
         )
     except FlywheelError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

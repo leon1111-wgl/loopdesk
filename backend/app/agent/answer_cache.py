@@ -23,6 +23,13 @@ answered from it for a day (N-116). So the key folds only what the rules and ret
 too (width, case, whitespace runs) and keeps spaces and punctuation inside
 the question; `cacheable` checks that folding width and case changed no tool signal; and a
 refusal is never stored.
+
+A replayed answer repeats its mistakes too: one customer's "没帮助" used to change nothing while
+everyone else asking the same question got the same answer for a day (N-097). A thumbs-down or a
+correction on an answer from the cache (or on the answer that was stored) turns the rows for that
+question into tombstones: the text is dropped, lookups skip them, and the question is not stored
+again until the knowledge base or the configuration changes, which is what a fix looks like.
+Admins can list and purge the cache (`api/answer_cache.py`).
 """
 
 from __future__ import annotations
@@ -32,7 +39,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..config import Settings
@@ -123,7 +130,7 @@ def lookup(db: Session, key: CacheKey) -> AnswerCache | None:
     entry = db.execute(
         select(AnswerCache).where(*_where(key), AnswerCache.expires_at > now).order_by(AnswerCache.id.desc()).limit(1)
     ).scalar_one_or_none()
-    if entry is not None and is_refusal(entry.answer):
+    if entry is not None and (is_evicted(entry) or is_refusal(entry.answer)):
         return None  # stored before refusals were excluded (N-116): never replayed
     if entry is not None:
         entry.hits += 1
@@ -132,8 +139,17 @@ def lookup(db: Session, key: CacheKey) -> AnswerCache | None:
     return entry
 
 
-def store(db: Session, key: CacheKey, answer: str, meta: dict, ttl_hours: float) -> AnswerCache:
+def is_evicted(entry: AnswerCache) -> bool:
+    return bool((entry.meta or {}).get("evicted"))
+
+
+def store(db: Session, key: CacheKey, answer: str, meta: dict, ttl_hours: float) -> AnswerCache | None:
+    """Store a replayable answer, unless a bad rating evicted this question under the same key
+    (same knowledge, same configuration): regenerating gives the same answer that was rated down."""
     now = datetime.now(timezone.utc)
+    for row in db.execute(select(AnswerCache).where(*_where(key), AnswerCache.expires_at > now)).scalars():
+        if is_evicted(row):
+            return None
     entry = AnswerCache(
         tenant_id=key.tenant_id, scope=key.scope, question=key.question, kb_signature=key.kb_signature,
         config=key.config, answer=answer, meta=meta, created_at=now, expires_at=now + timedelta(hours=ttl_hours),
@@ -141,3 +157,30 @@ def store(db: Session, key: CacheKey, answer: str, meta: dict, ttl_hours: float)
     db.add(entry)
     db.commit()
     return entry
+
+
+def evict(db: Session, tenant_id: int, cache_id: int | None, question: str, ttl_hours: float, reason: str,
+          **detail) -> int:
+    """Turn the rows for a question into tombstones (every scope and configuration of the tenant: the
+    rating says the answer is wrong, not which variant). A tombstone lasts a full TTL from the rating,
+    not what was left of the row's. Returns how many rows were evicted. The caller commits. Only ids are
+    kept, never the customer's words, so erasure has nothing new to find (and erasing the customer
+    deletes the tombstone with the rest of their questions)."""
+    ids = set(db.execute(select(AnswerCache.id).where(
+        AnswerCache.tenant_id == tenant_id, AnswerCache.question == normalize_question(question))).scalars())
+    if cache_id is not None:
+        # The row the answer came from, wherever its key lies (it may have been stored under a variant).
+        row = db.get(AnswerCache, cache_id)
+        if row is not None and row.tenant_id == tenant_id:
+            ids.update(db.execute(select(AnswerCache.id).where(
+                AnswerCache.tenant_id == tenant_id, AnswerCache.question == row.question)).scalars())
+    # Locked in id order, so two ratings evicting overlapping rows at once cannot deadlock.
+    rows = db.execute(select(AnswerCache).where(AnswerCache.id.in_(ids)).order_by(AnswerCache.id)
+                      .with_for_update()).scalars()
+    live = [row.id for row in rows if not is_evicted(row)]
+    if live:
+        until = datetime.now(timezone.utc) + timedelta(hours=ttl_hours)
+        db.execute(update(AnswerCache).where(AnswerCache.id.in_(live))
+                   .values(answer="", meta={"evicted": reason, **detail}, expires_at=until)
+                   .execution_options(synchronize_session=False))
+    return len(live)

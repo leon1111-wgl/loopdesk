@@ -46,6 +46,7 @@ ACTIONS = {
     "kb.chunk.release": "复核后放行被拦截的知识片段",
     "flywheel.patch.apply": "发布知识补丁",
     "flywheel.patch.reject": "驳回知识补丁",
+    "answer_cache.purge": "清除答案缓存",
     "eval.case.update": "修改评测用例",
     # Staff work on customers' money and data (review round 3, N-022).
     "approval.approve": "通过审批",
