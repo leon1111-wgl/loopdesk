@@ -87,6 +87,15 @@ class LLMRetryableError(LLMError):
     """Rate limit, timeout, 5xx, connection reset."""
 
 
+class LLMDeadlineError(LLMRetryableError):
+    """The run's deadline cut the call short. ``blameless``: the call started with less time than
+    the stall timeout, so it says nothing about the model and the breaker does not count it."""
+
+    def __init__(self, message: str, blameless: bool = False):
+        super().__init__(message)
+        self.blameless = blameless
+
+
 class LLMProvider(ABC):
     name: str = "base"
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import math
+import queue
+import threading
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -19,6 +21,7 @@ from ..textutil import estimate_tokens
 from .base import (
     ChatResult,
     Embedder,
+    LLMDeadlineError,
     LLMError,
     LLMMessage,
     LLMProvider,
@@ -114,9 +117,12 @@ class OpenAICompatProvider(LLMProvider):
         would hang again, and three attempts would spend the whole run deadline on one tier. The
         runtime moves on to the other tier, then to the quoted-policy answer."""
         delay = 1.0
+        fair = deadline is None or deadline - time.monotonic() >= self.stall_timeout
         for attempt in range(self.max_retries + 1):
             left = None if deadline is None else deadline - time.monotonic()
             if left is not None and left <= 0:
+                if attempt == 0:  # never asked: says nothing about the model (N-108)
+                    raise LLMDeadlineError("run deadline reached", blameless=True)
                 raise LLMRetryableError("run deadline reached")
             try:
                 timeout = None if left is None else httpx.Timeout(min(self.timeout, left), connect=min(10.0, left),
@@ -125,7 +131,7 @@ class OpenAICompatProvider(LLMProvider):
                                                     **({"timeout": timeout} if timeout else {}))
                 response = self.client.send(request, stream=bool(payload.get("stream")))
             except httpx.ReadTimeout as exc:
-                raise LLMRetryableError(self._stalled(deadline)) from exc
+                raise self._stalled(deadline, fair) from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 if attempt == self.max_retries:
                     raise LLMRetryableError(f"network error: {exc}") from exc
@@ -148,10 +154,23 @@ class OpenAICompatProvider(LLMProvider):
             delay *= 2
         raise LLMRetryableError("unreachable")
 
-    def _stalled(self, deadline: float | None) -> str:
+    def _stalled(self, deadline: float | None, fair: bool) -> LLMRetryableError:
         if deadline is not None and time.monotonic() >= deadline - 0.05:  # cut short by the run's deadline
-            return "run deadline reached while waiting for the model"
-        return f"stall timeout: the model sent nothing for {self.stall_timeout:g} s"
+            # Too little of the run was left to judge the model: the breaker does not count it.
+            return LLMDeadlineError("run deadline reached while waiting for the model", blameless=not fair)
+        return LLMRetryableError(f"stall timeout: the model sent nothing for {self.stall_timeout:g} s")
+
+    def _cut_off(self, progress_at: float, call_deadline: float, deadline: float | None,
+                 had_fair_chance: bool) -> LLMRetryableError:
+        now = time.monotonic()
+        past_deadline = deadline is not None and now >= deadline - 0.05
+        if past_deadline and not had_fair_chance:  # too little of the run was left to judge the model
+            return LLMDeadlineError("run deadline reached while the model was answering", blameless=True)
+        if now - progress_at >= self.stall_timeout - 0.05:
+            return LLMRetryableError(f"stall timeout: the model sent no output for {self.stall_timeout:g} s")
+        if past_deadline:
+            return LLMDeadlineError("run deadline reached while the model was answering")
+        return LLMRetryableError(f"call timeout: the model was still answering after {self.timeout:g} s")
 
     def chat(self, messages, tools, model, options=None) -> ChatResult:
         final: ChatResult | None = None
@@ -164,13 +183,29 @@ class OpenAICompatProvider(LLMProvider):
     def stream(self, messages, tools, model, options=None) -> Iterator[StreamEvent]:
         payload = self._payload(messages, tools, model, options, stream=True)
         deadline = (options or {}).get("deadline")
+        started = time.monotonic()
+        # The whole call, not each read, is bounded (N-108): httpx's read timeout resets on every
+        # byte, so a model sending an empty delta every 8 s kept one answer going for 242 s.
+        call_deadline = started + self.timeout if deadline is None else min(started + self.timeout, deadline)
+        had_fair_chance = call_deadline - started >= self.stall_timeout
         response = self._post_with_retry(payload, deadline=deadline)
         content_parts: list[str] = []
         calls: dict[int, dict[str, str]] = {}
         usage: Usage | None = None
         finish_reason = "stop"
+        lines = _LineReader(response)
+        progress_at = time.monotonic()  # when output last arrived; heartbeats and empty deltas do not move it
         try:
-            for line in response.iter_lines():
+            while True:
+                now = time.monotonic()
+                wait = min(progress_at + self.stall_timeout, call_deadline) - now
+                if now >= call_deadline:  # a long backlog does not outlast the deadline
+                    raise self._cut_off(progress_at, call_deadline, deadline, had_fair_chance)
+                arrived, line = lines.next(wait)
+                if line is _TIMED_OUT:
+                    raise self._cut_off(progress_at, call_deadline, deadline, had_fair_chance)
+                if line is _END:
+                    break
                 if not line or not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
@@ -180,10 +215,14 @@ class OpenAICompatProvider(LLMProvider):
                 if chunk.get("usage"):
                     u = chunk["usage"]
                     usage = Usage(u.get("prompt_tokens", 0), u.get("completion_tokens", 0))
+                    progress_at = arrived
                 for choice in chunk.get("choices") or []:
                     delta = choice.get("delta") or {}
+                    if delta.get("reasoning_content") or delta.get("reasoning"):  # thinking models: output, not shown
+                        progress_at = arrived
                     if delta.get("content"):
                         content_parts.append(delta["content"])
+                        progress_at = arrived
                         yield StreamEvent(type="delta", text=delta["content"])
                     for tc in delta.get("tool_calls") or []:
                         slot = calls.setdefault(tc.get("index", 0), {"id": "", "name": "", "arguments": ""})
@@ -191,13 +230,16 @@ class OpenAICompatProvider(LLMProvider):
                         fn = tc.get("function") or {}
                         slot["name"] = fn.get("name") or slot["name"]
                         slot["arguments"] += fn.get("arguments") or ""
+                        progress_at = arrived
                     if choice.get("finish_reason"):
                         finish_reason = choice["finish_reason"]
+                        progress_at = arrived
         except httpx.ReadTimeout as exc:
-            raise LLMRetryableError(self._stalled(deadline)) from exc
+            raise self._stalled(deadline, had_fair_chance) from exc
         except httpx.HTTPError as exc:
             raise LLMRetryableError(f"stream interrupted: {exc}") from exc
         finally:
+            lines.stop()
             response.close()
 
         content = "".join(content_parts)
@@ -216,6 +258,45 @@ class OpenAICompatProvider(LLMProvider):
             finish_reason="tool_calls" if tool_calls else finish_reason,
         )
         yield StreamEvent(type="done", result=result)
+
+
+_END = object()
+_TIMED_OUT = object()
+
+
+class _LineReader:
+    """Reads the response's lines on a daemon thread so the caller can stop waiting on its own
+    clock. Once stopped (the caller gave up and closed the response), the thread ends at its next
+    line or when the closed connection errors out."""
+
+    def __init__(self, response: httpx.Response):
+        self._queue: queue.Queue = queue.Queue()
+        self._stopped = threading.Event()
+        threading.Thread(target=self._read, args=(response,), daemon=True).start()
+
+    def _read(self, response: httpx.Response) -> None:
+        try:
+            for line in response.iter_lines():
+                if self._stopped.is_set():
+                    return
+                self._queue.put((time.monotonic(), line))
+            self._queue.put((time.monotonic(), _END))
+        except BaseException as exc:  # handed to the caller, raised there
+            self._queue.put((time.monotonic(), exc))
+
+    def next(self, timeout: float) -> tuple[float, Any]:
+        """(arrival time, line). A line already received is returned even when the wait is used up:
+        a consumer that paused (a slow client) must not turn a healthy stream into a stall."""
+        try:
+            arrived, item = self._queue.get_nowait() if timeout <= 0 else self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return time.monotonic(), _TIMED_OUT
+        if isinstance(item, BaseException):
+            raise item
+        return arrived, item
+
+    def stop(self) -> None:
+        self._stopped.set()
 
 
 class OpenAICompatEmbedder(Embedder):

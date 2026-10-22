@@ -537,6 +537,8 @@ class AgentRuntime:
                    "deadline": state.get("deadline")}  # providers cap timeouts and stop retrying at it
         last_error: LLMError | None = None
         for model in state["models"]:
+            if last_error is not None and self._past_deadline(state):  # no time left to ask the next tier
+                break
             if not self.breaker.allow(model):  # failing lately: do not make this customer wait for it
                 with tracer.span("llm", f"chat:{model}", {"step": state["steps"], "breaker": "open"}) as span:
                     span.model = model
@@ -565,7 +567,10 @@ class AgentRuntime:
                 self.breaker.record(model, ok=True)
                 return
             except LLMError as exc:
-                self.breaker.record(model, ok=False)
+                if getattr(exc, "blameless", False):  # the run, not the model, ran out of time (N-108)
+                    self.breaker.release(model)
+                else:
+                    self.breaker.record(model, ok=False)
                 last_error = exc
                 if emitted:  # tokens already reached the user; switching models would duplicate text
                     raise
