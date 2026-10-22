@@ -9,7 +9,9 @@ For every factual sentence it asks two questions:
    for paraphrasing models (LOOPDESK_VERIFIER=llm); the number rule always stays.
 3. Does it contradict a tool result? A sentence can be well grounded in the refund
    policy ("arrives in 1-3 working days") and still be wrong because the refund was
-   rejected or failed. Claiming money is coming when it is not blocks the answer.
+   rejected or failed. Claiming money is coming when it is not, a ticket or a handoff no
+   tool made, or deciding a requested refund without the refund tool blocks the answer
+   (status_templates.py; the runtime renders the status sentences themselves from the tools).
 
 Output: per-sentence results, ``coverage`` (= supported factual sentences / factual
 sentences) and a verdict pass / warn / blocked.
@@ -26,10 +28,9 @@ from ..llm.base import LLMMessage, LLMProvider
 from ..textutil import ORDER_ID_RE, extract_numbers, overlap_recall, split_sentences, strip_citations
 from .outcome import REFUSAL_RE
 from .prompts import JUDGE_PROMPT
+from .status_templates import case_state, contradiction
 from .tools import Evidence
 
-# Wording that tells the customer money is on its way.
-_PAYOUT = re.compile(r"到账|已退款|退款成功|已受理|原支付方式退回|原路退回")
 _NON_FACTUAL = re.compile(r"^(请|如需|如有|如果您|建议|还有什么|欢迎|感谢|为避免|麻烦|稍等)")
 # Courtesy opening a sentence. What follows it is checked like any sentence: "您好，本店支持
 # 终身保修" used to pass unchecked, because the whole sentence counted as a greeting.
@@ -62,7 +63,8 @@ class SentenceCheck:
     best_ref: int | None = None
     unverified_numbers: list[float] = field(default_factory=list)
     unknown_ids: list[str] = field(default_factory=list)
-    contradicts: str | None = None  # the tool result this sentence contradicts
+    contradicts: str | None = None  # request_refund | under_action | ticket | handoff (status_templates)
+    source: str = "model"  # model | template (rendered from tool fields: supported by construction)
 
 
 @dataclass
@@ -97,37 +99,6 @@ def _numbers_match(value: float, pool: list[float]) -> bool:
     return any(abs(value - other) < 1e-6 for other in pool)
 
 
-def _failed_refund(evidence: list[Evidence]) -> str | None:
-    """The message of the last refund call if it was rejected or failed, or the payment system has
-    not confirmed it (pending: it may never be paid), else None."""
-    for item in reversed(evidence):
-        if item.kind != "tool" or item.title != "request_refund":
-            continue
-        try:
-            output = json.loads(item.text)
-        except ValueError:
-            return None
-        if isinstance(output, dict) and (output.get("error") or output.get("status") == "rejected"
-                                         or output.get("refund_status") in ("pending", "failed")):
-            return str(output.get("message") or output.get("error") or "")
-        return None
-    return None
-
-
-def _claims_payout(text: str, failure: str) -> bool:
-    """Whether a sentence says money is coming, beyond quoting why it is not.
-
-    Quoting the failure ("未能提交：该订单当前状态为“已退款”…", "审核意见：该订单已退款")
-    or a quoted status word is not a claim.
-    """
-    for piece in [failure, *split_sentences(failure)]:
-        piece = piece.strip().rstrip("。")
-        if piece:
-            text = text.replace(piece, "")
-    text = re.sub(r"“[^”]*”", "", text)
-    return bool(_PAYOUT.search(text))
-
-
 def verify_answer(
     answer: str,
     evidence: list[Evidence],
@@ -135,12 +106,15 @@ def verify_answer(
     settings: Settings,
     judge: LLMProvider | None = None,
     judge_model: str | None = None,
+    trusted: list[str] | None = None,
 ) -> Verification:
+    """``trusted``: the status sentences the runtime rendered from tool fields (status_templates)."""
     by_ref = {e.ref: e for e in evidence}
     evidence_text = "\n".join(e.text for e in evidence)
     number_pool = extract_numbers(evidence_text) + extract_numbers(user_text)
     known_ids = {m.upper() for m in ORDER_ID_RE.findall(evidence_text + " " + user_text)}
-    failed_refund = _failed_refund(evidence)
+    state = case_state(evidence, user_text)
+    rendered = {strip_citations(p)[0] for t in trusted or [] for p in split_sentences(t)}
 
     checks: list[SentenceCheck] = []
     invalid: set[int] = set()
@@ -149,6 +123,9 @@ def verify_answer(
         if not text:
             continue
         invalid.update(r for r in cited if r not in by_ref)
+        if text in rendered:
+            checks.append(SentenceCheck(text=text, factual=True, supported=True, score=1.0, source="template"))
+            continue
         claim = _claim(text)
         numbers = extract_numbers(claim)
         factual = not (
@@ -156,8 +133,8 @@ def verify_answer(
             or claim.endswith(("？", "?"))
             or (not numbers and _claims_nothing(claim))
         )
-        # A payout claim counts even when phrased politely ("请放心，钱会到账").
-        contradicts = "request_refund" if failed_refund is not None and _claims_payout(text, failed_refund) else None
+        # A status claim counts even when phrased politely ("请放心，钱会到账").
+        contradicts = contradiction(text, state)
         check = SentenceCheck(text=text, factual=factual or bool(contradicts), supported=True, score=1.0,
                               cited=cited, contradicts=contradicts)
         if check.factual:
@@ -181,8 +158,7 @@ def verify_answer(
         labels = _judge(judge, judge_model or "", checks, evidence)
         if labels is not None:
             method = "llm"
-            factual_checks = [c for c in checks if c.factual]
-            for check, label in zip(factual_checks, labels):
+            for check, label in zip(_judged(checks), labels):
                 check.supported = (bool(label) and not check.unverified_numbers and not check.unknown_ids
                                    and not check.contradicts)
 
@@ -199,8 +175,13 @@ def verify_answer(
     return Verification(verdict, coverage, checks, sorted(invalid), method)
 
 
+def _judged(checks: list[SentenceCheck]) -> list[SentenceCheck]:
+    """The sentences a judge reads: claims the model wrote (a rendered status sentence is the tool's)."""
+    return [c for c in checks if c.factual and c.source != "template"]
+
+
 def _judge(provider: LLMProvider, model: str, checks: list[SentenceCheck], evidence: list[Evidence]) -> list[bool] | None:
-    factual = [c for c in checks if c.factual]
+    factual = _judged(checks)
     if not factual:
         return []
     prompt = JUDGE_PROMPT.format(

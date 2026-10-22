@@ -47,6 +47,7 @@ from .. import telemetry
 from ..textutil import ORDER_ID_RE, asks_for_person, normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
+from .status_templates import case_state, compose as compose_status
 from .tools import ApprovalNeed, ApprovalRequired, Evidence, ToolContext, ToolError, ToolRegistry, ToolUnavailable
 from .tracing import Tracer
 from .verifier import Verification, verify_answer
@@ -70,6 +71,9 @@ APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 REWRITE_BUDGET_SECONDS = 5.0
 JUDGE_BUDGET_SECONDS = 8.0  # the output judge waits this long at most; past it the rules' verdict stands
 TOOL_LABEL = {"request_refund": "退款"}
+# Tools whose result the answer reports as a status: the sentence is rendered from its fields
+# (status_templates), so the model's own wording of it is not streamed.
+STATUS_TOOLS = ("request_refund", "create_ticket")
 
 logger = logging.getLogger(__name__)
 
@@ -482,7 +486,10 @@ class AgentRuntime:
             state["steps"] += 1
             try:
                 result = None
-                gate = _StreamGate(ctx) if stream_tokens else None
+                # After a refund or a ticket, the status sentence is the tool's: the answer is held back
+                # whole so the model's wording of it never reaches the customer.
+                status_pending = any(e.kind == "tool" and e.title in STATUS_TOOLS for e in ctx.evidence)
+                gate = _StreamGate(ctx) if stream_tokens and not status_pending else None
                 for event in self._call_llm(tracer, messages, specs, state):
                     if event.type == "delta":
                         if gate and (shown := gate.feed(event.text)):
@@ -789,6 +796,11 @@ class AgentRuntime:
                 started: float, status: str | None = None, verify: bool = False,
                 extra_meta: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
         final_text = text or MODEL_ERROR_TEXT
+        templates: list[str] = []
+        if verify:  # a model answer: what it says about a refund or a ticket comes from the tool
+            final_text, templates, status_meta = self._status_sentences(tracer, ctx, state, final_text)
+            if status_meta:
+                extra_meta = {**(extra_meta or {}), "status_sentences": status_meta}
         reasons = unsafe_answer(final_text, _reviewed(ctx), _channels(ctx))
         if not reasons and verify and self._judging():
             if detect_injection(final_text).suspicious:  # an answer that instructs a model: the judge's own reader
@@ -810,7 +822,7 @@ class AgentRuntime:
             judge = self.provider if (self.settings.verifier == "llm" and self.provider.name != "mock") else None
             with tracer.span("verify", "evidence_check", {"answer": final_text}) as span:
                 verification = verify_answer(final_text, ctx.evidence, state["user_text"], self.settings,
-                                             judge, state["models"][0])
+                                             judge, state["models"][0], trusted=templates)
                 span.set(**verification.to_dict())
             run.evidence_coverage = verification.coverage
             run.verdict = verification.verdict
@@ -819,6 +831,19 @@ class AgentRuntime:
                 final_text = STRICT_FALLBACK
                 yield {"type": "answer_replaced", "text": final_text, "reason": "证据校验未通过（严格模式）"}
         yield from self._save(run, tracer, ctx, state, final_text, started, status, verification, extra_meta)
+
+    def _status_sentences(self, tracer: Tracer, ctx: ToolContext, state: dict[str, Any],
+                          text: str) -> tuple[str, list[str], dict[str, Any] | None]:
+        """The answer with its refund and ticket status sentences rendered from the tools' fields
+        (status_templates): the text, the rendered sentences, and what changed for the trace and staff."""
+        composed = compose_status(text, case_state(ctx.evidence, state["user_text"]), ctx.dry_run)
+        meta = composed.meta()
+        if meta:
+            with tracer.span("verify", "status_templates", {"answer": text}) as span:
+                span.set(**meta)
+                if composed.blocked:
+                    span.status = "error"
+        return composed.text, composed.templates, meta
 
     def _save(self, run: Run, tracer: Tracer, ctx: ToolContext, state: dict[str, Any], final_text: str,
               started: float, status: str | None = None, verification: Verification | None = None,
@@ -933,7 +958,8 @@ class AgentRuntime:
         return history
 
 
-CACHE_META = ("cache_id", "cache_source_run_id")  # which cache row, whose run: operational, not for customers
+# Which cache row, whose run, and the model's replaced status sentences: operational, not for customers.
+CACHE_META = ("cache_id", "cache_source_run_id", "status_sentences")
 
 
 def customer_meta(meta: dict) -> dict:
