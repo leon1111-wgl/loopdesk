@@ -74,7 +74,7 @@ function DailyChart({ daily }: { daily: Overview["daily"] }) {
 // Why runs hit an error (N-037). Customers were served either way (quoted policy or a person, N-031).
 const FAILURE_KIND: Record<string, string> = {
   unavailable: "模型服务不可用", rejected: "请求被拒绝（多半是配置或参数）", timeout: "超时",
-  breaker: "熔断中", disconnected: "顾客断开", interrupted: "进程中断", embedding: "向量服务故障", other: "其他",
+  breaker: "熔断中", disconnected: "顾客断开", interrupted: "进程中断", embedding: "向量服务故障", rerank: "重排服务故障", other: "其他",
 };
 
 // The dashboard's days are the tenant's calendar days (N-024); say which zone that is.

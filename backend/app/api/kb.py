@@ -232,6 +232,8 @@ def search(body: SearchIn, principal: Principal = Depends(require_staff), db: Se
         "questions": debug.questions,
         "reranker": services.reranker.name if services.reranker else None,
         "rerank_error": debug.rerank_error,
+        "rerank_ms": debug.rerank_ms,
+        "rerank_skipped": debug.rerank_skipped,
     }
 
 

@@ -29,6 +29,8 @@ def error_kind(error: str | None) -> str:
         return "disconnected"
     if text.startswith("embedding unavailable"):  # the search ran on BM25 only (N-078)
         return "embedding"
+    if text.startswith("rerank unavailable"):  # the search ran without the reranker (N-141)
+        return "rerank"
     if text.startswith("interrupted"):  # app.ops.stale_runs: the process running it is gone
         return "interrupted"
     status = _HTTP_STATUS.search(text)

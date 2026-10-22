@@ -476,7 +476,10 @@ class AgentRuntime:
                 if outcome.output.get("degraded") and not run.error:
                     # Counted as a failure (dashboard, loopdesk_run_errors_total, not "resolved"):
                     # otherwise an embedding outage would only show in a log line.
-                    run.error = f"embedding unavailable: {outcome.output.get('vector_error') or ''}"[:2000]
+                    if outcome.output.get("vector_error"):
+                        run.error = f"embedding unavailable: {outcome.output['vector_error']}"[:2000]
+                    else:  # the reranker failed on its own, not because the run was out of time (N-141)
+                        run.error = f"rerank unavailable: {outcome.output.get('rerank_error') or ''}"[:2000]
                 messages.append(self._tool_message(call, outcome))
                 yield {"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
                        "is_error": outcome.is_error}

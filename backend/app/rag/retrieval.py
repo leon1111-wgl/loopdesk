@@ -36,10 +36,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..llm.base import Embedder
+from .rerank import RerankTimeout
 from ..models import Chunk, Document, IndexQuestion, Tenant
 from ..textutil import canonical_query, expand_query, tokenize
 
 RRF_K = 60
+MIN_RERANK_SECONDS = 0.2  # less left of the run than this: the search goes on without the reranker
 logger = logging.getLogger(__name__)
 _width_warned: set[tuple[int, int]] = set()
 MIN_SIMILARITY = 1e-6  # below this a vector score is rounding noise (float32), not similarity
@@ -101,6 +103,8 @@ class SearchDebug:
     filtered_low_relevance: int = 0
     vector_error: str | None = None  # the embedding service failed: this search was BM25 only (N-078)
     rerank_error: str | None = None  # the reranker failed: RRF order and the coverage gate only
+    rerank_ms: int | None = None  # how long the reranker took, when it answered
+    rerank_skipped: str | None = None  # the run's deadline left no time for it: a policy, not a fault
     reranked: int = 0  # candidates the reranker scored
     questions: list[dict] = field(default_factory=list)  # chunks recalled through a published question
 
@@ -527,12 +531,15 @@ def hybrid_search(
     rerank_floor: float | None = None,
     rerank_candidates: int = 20,
     index_questions: bool = True,
+    deadline: float | None = None,
 ) -> tuple[list[Hit], SearchDebug]:
     """``min_relevance`` gates the term coverage, ``min_cosine`` the vector similarity (see
     cosine_gate; None: the cosine alone never lets a chunk through). With a ``reranker``
     (app.rag.rerank), the top ``rerank_candidates`` fused chunks are reordered by its score, and
     ``min_rerank`` / ``rerank_floor`` are its side of the gate (see passes_gate; None: it only
-    reorders). ``index_questions``: published colloquial questions count as index entries."""
+    reorders). ``index_questions``: published colloquial questions count as index entries.
+    ``deadline`` (the run's, time.monotonic()): the reranker gets at most what is left of it, and
+    is skipped when too little is left (N-141)."""
     index = index_manager.get(db, tenant_id)
     asked = query
     # Recall uses the question plus the knowledge base's wording for any colloquial phrase in
@@ -590,13 +597,27 @@ def hybrid_search(
         # The cross-encoder reads the top candidates only, and what it did not read is not ranked
         # against what it did. The customer's own words: the synonym expansion is for BM25.
         candidates = candidates[:max(1, rerank_candidates)]
+        budget = None if deadline is None else deadline - time.monotonic()
         try:
-            scores = reranker.score(asked, [f"{index.chunks[i].heading}\n{index.chunks[i].text}" for i, _ in candidates])
+            if budget is not None and budget < MIN_RERANK_SECONDS:
+                raise RerankTimeout("skipped: the run's deadline is too close", full=False)
+            passages = [f"{index.chunks[i].heading}\n{index.chunks[i].text}" for i, _ in candidates]
+            started = time.perf_counter()
+            score_within = getattr(reranker, "score_within", None)
+            scores = (score_within(asked, passages, budget) if score_within is not None
+                      else reranker.score(asked, passages))
+            debug.rerank_ms = round((time.perf_counter() - started) * 1000)
             if len(scores) != len(candidates):
                 raise ValueError(f"{len(scores)} scores for {len(candidates)} passages")
             rerank = {i: float(v) for (i, _), v in zip(candidates, scores)}
             debug.reranked = len(candidates)
             candidates.sort(key=lambda x: -rerank[x[0]])  # stable: ties keep the RRF order
+        except RerankTimeout as exc:
+            if exc.full:  # the service is slow
+                debug.rerank_error = f"{type(exc).__name__}: {exc}"[:200]
+                logger.warning("rerank failed, keeping the fused order: %s", debug.rerank_error)
+            else:  # the run is out of time: the search goes on as it would without a reranker
+                debug.rerank_skipped = str(exc)[:200]
         except Exception as exc:  # the coverage gate still works without it
             debug.rerank_error = f"{type(exc).__name__}: {exc}"[:200]
             logger.warning("rerank failed, keeping the fused order: %s", debug.rerank_error)

@@ -58,6 +58,12 @@ class CircuitBreaker:
                 failures = 0
             self._failures[key] = failures
 
+    def release(self, key: str) -> None:
+        """The call ended without saying whether the service is healthy (cut short by the caller's
+        own deadline): a half-open trial is handed back so the next caller can make it."""
+        with self._lock:
+            self._trial.discard(key)
+
     def state(self, key: str) -> str:
         with self._lock:
             if key not in self._opened:
