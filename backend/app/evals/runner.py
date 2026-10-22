@@ -169,6 +169,7 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
 
     latencies: list[int] = []
     tokens = 0
+    prompt_tokens = 0
     cost = 0.0
     check_totals: dict[str, list[bool]] = defaultdict(list)
     tag_totals: dict[str, list[bool]] = defaultdict(list)
@@ -198,6 +199,7 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
         run = sandbox.get(Run, run_id) if run_id else None
         if run is not None:  # the run record, not the event: customers' events carry no usage data
             tokens += run.prompt_tokens + run.completion_tokens
+            prompt_tokens += run.prompt_tokens
             cost += run.cost
         latencies.append(latency)
         if summary.get("verification"):
@@ -234,6 +236,8 @@ def run_suite(db: Session, services, tenant: Tenant, suite: str = "default", tri
         "latency_p50_ms": _percentile(latencies, 0.5),
         "latency_p95_ms": _percentile(latencies, 0.95),
         "total_tokens": tokens,
+        "prompt_tokens": prompt_tokens,  # input and output are priced apart
+        "completion_tokens": tokens - prompt_tokens,
         "estimated_cost": round(cost, 6),
         "prompt_version": prompt_version,
         "diff": diff_runs(db, previous, eval_run) if previous else None,

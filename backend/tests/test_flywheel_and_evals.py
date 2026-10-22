@@ -57,6 +57,9 @@ def test_eval_suite_detects_regressions(settings, client, login):
     admin = login("admin@leon.demo")
     first = client.post("/api/evals/runs", json={}, headers=admin).json()
     assert first["metrics"]["pass_rate"] == 1.0
+    m = first["metrics"]  # input and output are priced apart, so the cost estimate needs both (W7)
+    assert m["prompt_tokens"] > 0 and m["completion_tokens"] > 0
+    assert m["prompt_tokens"] + m["completion_tokens"] == m["total_tokens"]
 
     # Simulate a bad change: shrink the auto-refund limit so a previously automatic refund now needs approval.
     client.patch("/api/tenant", json={"auto_refund_limit": 10}, headers=admin)
