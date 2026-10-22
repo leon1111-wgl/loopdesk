@@ -1,0 +1,93 @@
+name: Record the demo with the real model
+
+# Plays the demo script (backend/app/ops/record_demo.py) against the configured real model on
+# SYNTHETIC data, commits the recording to demo/real-model/fixtures.json and redeploys the Pages demo,
+# whose banner then names the model, the date and the commit. Steps a real model gives no occasion for
+# (an approval it did not ask for) are skipped and listed, never faked. The file is scanned for the key,
+# the gateway's host and login tokens before it is committed. Without the secret nothing is recorded
+# and the demo keeps the offline model.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # commit the recording
+  actions: write   # start the Pages deployment (a push by this workflow's token starts no workflow)
+
+concurrency:
+  group: demo-record
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Record with the real model, commit, redeploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      LOOPDESK_LLM_BASE_URL: ${{ vars.LOOPDESK_LLM_BASE_URL }}
+      LOOPDESK_LLM_MODEL: ${{ vars.LOOPDESK_LLM_MODEL }}
+    steps:
+      - id: key
+        working-directory: .
+        env:
+          KEY: ${{ secrets.LOOPDESK_LLM_API_KEY }}
+        run: |
+          if [ -n "$KEY" ] && [ -n "$LOOPDESK_LLM_BASE_URL" ] && [ -n "$LOOPDESK_LLM_MODEL" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No LOOPDESK_LLM_API_KEY secret or LOOPDESK_LLM_* variables: the demo keeps the offline model." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.configured == 'true'
+      - uses: actions/setup-python@v5
+        if: steps.key.outputs.configured == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - if: steps.key.outputs.configured == 'true'
+        run: pip install -r requirements.txt
+      - name: Check the model answers
+        if: steps.key.outputs.configured == 'true'
+        env:
+          LOOPDESK_LLM_API_KEY: ${{ secrets.LOOPDESK_LLM_API_KEY }}
+        run: python -m app.ops.llm_check
+      - name: Record
+        if: steps.key.outputs.configured == 'true'
+        env:
+          LOOPDESK_LLM_API_KEY: ${{ secrets.LOOPDESK_LLM_API_KEY }}
+        run: |
+          python -m app.ops.record_demo ../demo/real-model/fixtures.json --model configured | tee record.txt
+          { echo '```'; cat record.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: No key, gateway address or login token in the recording
+        if: steps.key.outputs.configured == 'true'
+        env:
+          LOOPDESK_LLM_API_KEY: ${{ secrets.LOOPDESK_LLM_API_KEY }}
+        run: python -m app.ops.leak_check ../demo/real-model/fixtures.json
+      - uses: actions/upload-artifact@v4
+        if: steps.key.outputs.configured == 'true'
+        with:
+          name: demo-real-model-fixtures
+          path: demo/real-model/fixtures.json
+      - name: Commit the recording
+        if: steps.key.outputs.configured == 'true'
+        working-directory: .
+        run: |
+          git config user.name "Leon Wang"
+          git config user.email "205497500+leon1111-wgl@users.noreply.github.com"
+          git add demo/real-model/fixtures.json
+          git commit -m "Record the demo with $LOOPDESK_LLM_MODEL ($(date -u +%Y-%m-%d))" \
+            -m "Recorded by the workflow \"Record the demo with the real model\" from ${GITHUB_SHA::7}, run $GITHUB_RUN_ID."
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin main && git push origin HEAD:main && exit 0
+            sleep $((attempt * 5))
+          done
+          exit 1
+      - name: Redeploy the Pages demo
+        if: steps.key.outputs.configured == 'true'
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run pages.yml --ref main

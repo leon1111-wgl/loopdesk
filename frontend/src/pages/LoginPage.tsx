@@ -1,8 +1,15 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { isDemo } from "../demo/replay";
+import { isDemo, recording } from "../demo/replay";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { Logo, ROLE_TEXT } from "../components/ui";
+
+function demoSource(): string {
+  const rec = recording();
+  return rec && !rec.model.offline
+    ? `这是静态演示：选择下方的账号进入。回答由真实模型 ${rec.model.strong} 生成（${rec.date} 录制，数据虚构）`
+    : "这是静态演示：选择下方的账号进入，数据录制自真实后端的离线运行";
+}
 
 interface DemoAccounts {
   accounts: { email: string; name: string; role: string; tenant: string }[];
@@ -72,7 +79,7 @@ export default function LoginPage() {
           <div>
             <h1>登录</h1>
             <p className="muted" style={{ marginTop: 4 }}>
-              {isDemo ? "这是静态演示：选择下方的账号进入，数据录制自真实后端的离线运行" : "使用工作邮箱登录，或选择下方的演示账号"}
+              {isDemo ? demoSource() : "使用工作邮箱登录，或选择下方的演示账号"}
             </p>
           </div>
           <form className="stack" style={{ gap: 14 }} onSubmit={submit}>

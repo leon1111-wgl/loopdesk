@@ -733,7 +733,7 @@ export default function ChatPage() {
           {input.length > MAX_MESSAGE * 0.9 && (
             <div id="message-count" className="small muted" style={{ marginTop: 4 }}>{input.length} / {MAX_MESSAGE} 字</div>
           )}
-          {user?.role === "admin" && (
+          {user?.role === "admin" && !isDemo && (
             <label className="row small muted" style={{ marginTop: 8, cursor: "pointer", width: "fit-content" }}>
               <input type="checkbox" checked={inject} onChange={(e) => setInject(e.target.checked)} />
               <FlaskConical size={14} /> 演示模式：在回答末尾追加一句编造内容，查看证据校验如何标出（仅离线模型）

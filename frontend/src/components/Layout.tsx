@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { api } from "../api";
 import { isStaff, useAuth } from "../auth";
-import { REPO_URL, isDemo } from "../demo/replay";
+import { REPO_URL, isDemo, recording } from "../demo/replay";
 import type { Approval, Handoff } from "../types";
 import { INDUSTRY_TEXT, Logo, ROLE_TEXT, useMediaQuery, useTheme } from "./ui";
 
@@ -47,9 +47,19 @@ interface NavItem {
 }
 
 function DemoNotice() {
+  const rec = recording();
+  const source = rec && !rec.model.offline ? (
+    <>
+      回答由真实模型 <b>{rec.model.strong}</b> 生成，{rec.date} 录制自真实后端
+      {rec.commit && <>（提交 <a href={`${REPO_URL}/commit/${rec.commit}`} target="_blank" rel="noreferrer" style={{ marginLeft: 0 }}>{rec.commit}</a>）</>}
+      ，数据均为虚构
+    </>
+  ) : (
+    <>页面数据录制自真实后端（离线模型、虚构数据）</>
+  );
   return (
-    <div className="demo-notice" role="note">
-      静态演示：页面数据录制自真实后端（离线模型、虚构数据），可以切换角色浏览、回放对话页里的示例问题；提交类操作不会生效。
+    <div className="demo-notice" role="note" data-model={rec?.model.strong}>
+      静态演示：{source}。可以切换角色浏览、回放对话页里的示例问题；提交类操作不会生效。
       <a href={REPO_URL} target="_blank" rel="noreferrer">在本地运行完整版本 ↗</a>
     </div>
   );

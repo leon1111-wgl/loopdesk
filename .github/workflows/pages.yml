@@ -1,9 +1,11 @@
 name: Demo site (GitHub Pages)
 
 # The static demo at https://leon1111-wgl.github.io/loopdesk/ : the real console in replay mode.
-# Its data is recorded from the real backend on every deployment (offline model, SYNTHETIC
-# accounts and orders; backend/app/ops/record_demo.py), so the demo always shows what this
-# commit's code does. Nothing in the demo talks to a server.
+# Its data is recorded from the real backend (SYNTHETIC accounts and orders;
+# backend/app/ops/record_demo.py). The answers come from the real-model recording committed by
+# demo-record.yml (demo/real-model/fixtures.json) while it still covers this commit's console;
+# otherwise, and in forks without one, from the offline model, recorded here on every deployment.
+# The banner says which model answered. Nothing in the demo talks to a server.
 
 on:
   push:
@@ -51,7 +53,15 @@ jobs:
         working-directory: backend
         run: |
           pip install -r requirements.txt
-          python -m app.ops.record_demo ../frontend/dist/demo/fixtures.json
+          python -m app.ops.record_demo ../offline-fixtures.json
+      - name: Replay the real-model recording if it covers this console, else the offline one
+        working-directory: backend
+        run: |
+          python -m app.ops.demo_fixtures --offline ../offline-fixtures.json \
+            --real ../demo/real-model/fixtures.json --out ../frontend/dist/demo/fixtures.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: No key or login token in what is published
+        working-directory: backend
+        run: python -m app.ops.leak_check ../frontend/dist/demo/fixtures.json
       - uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/dist

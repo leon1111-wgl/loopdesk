@@ -1,9 +1,11 @@
 /**
  * The static demo published on GitHub Pages. The console runs unchanged in the browser; every
- * fetch("/api/…") is answered from responses recorded from the real backend running the offline
- * model on SYNTHETIC data (backend/app/ops/record_demo.py, regenerated on each deployment). The
- * scripted questions replay their recorded event streams; anything that would change data is
- * refused with a note, so nothing on the page is made up and nothing is written anywhere.
+ * fetch("/api/…") is answered from responses recorded from the real backend on SYNTHETIC data
+ * (backend/app/ops/record_demo.py): by a real model when the committed real-model recording still
+ * covers this console (backend/app/ops/demo_fixtures.py), otherwise by the offline model, recorded
+ * on each deployment. The banner names the model. The scripted questions replay their recorded event
+ * streams; anything that would change data is refused with a note, so nothing on the page is made up
+ * and nothing is written anywhere.
  */
 import type { AgentEvent } from "../types";
 
@@ -13,8 +15,17 @@ interface Chat {
   messages: { conversation: Record<string, unknown>; [key: string]: unknown } | null;
 }
 
+export interface RecordingModel {
+  provider: string;
+  strong: string;
+  fast: string;
+  offline: boolean;
+}
+
 interface Fixtures {
   recorded_at: string;
+  model?: RecordingModel; // absent in recordings made before W7: the offline model
+  commit?: string;
   accounts: unknown;
   users: Record<string, { role: string } & Record<string, unknown>>;
   /** account -> URL -> key into bodies (staff of one tenant share most bodies) */
@@ -41,6 +52,14 @@ let nextId = 900_001;
 
 export function recordedAt(): string | null {
   return data?.recorded_at ?? null;
+}
+
+/** Which model wrote the recorded answers, when and from which commit: shown in the demo's banner. */
+export function recording(): { model: RecordingModel; date: string; commit: string } | null {
+  if (!data) return null;
+  const model = data.model ?? { provider: "mock", strong: "mock-strong", fast: "mock-fast", offline: true };
+  const date = new Date(data.recorded_at).toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" }); // YYYY-MM-DD
+  return { model, date, commit: (data.commit ?? "").slice(0, 7) };
 }
 
 /** The questions an account can replay (they were asked while recording). */

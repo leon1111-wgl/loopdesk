@@ -2,6 +2,7 @@
 (app/ops/record_demo.py). These tests check the recording is complete and safe to publish."""
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -88,3 +89,76 @@ def test_nothing_secret_is_published(recording):
     customer = recording["responses"]["customer@leon.demo"]
     assert not any(url.startswith(("/api/runs", "/api/approvals", "/api/audit", "/api/refunds")) for url in customer), \
         "a customer's recording holds only what a customer may see"
+
+
+def test_the_recording_says_which_model_answered_and_when(recording):
+    """The demo's banner names the model (W7): the offline one here, the real one when recorded on Actions."""
+    assert recording["model"] == {"provider": "mock", "strong": "mock-strong", "fast": "mock-fast", "offline": True}
+    assert recording["recorded_at"] and "commit" in recording
+    assert recording["script_notes"] == [], "the offline model follows the script exactly"
+
+
+class _TerseModel:
+    """A real model that never calls a tool: the recorder must still finish (W7)."""
+
+    name = "openai_compat"
+
+    def chat(self, messages, tools, model, options=None):
+        from app.llm.base import ChatResult, Usage
+
+        return ChatResult("您好，这个问题我需要再核实一下，请稍候。", [], Usage(40, 12), model)
+
+    def stream(self, messages, tools, model, options=None):
+        from app.llm.base import StreamEvent
+
+        result = self.chat(messages, tools, model, options)
+        yield StreamEvent(type="delta", text=result.content)
+        yield StreamEvent(type="done", result=result)
+
+
+@pytest.fixture()
+def configured_model(monkeypatch):
+    for name in list(os.environ):
+        if name.startswith("LOOPDESK_"):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("LOOPDESK_LLM_BASE_URL", "https://relay.private.example.net/v1")
+    monkeypatch.setenv("LOOPDESK_LLM_API_KEY", "sk-recording-test-0123456789abcdef")
+    monkeypatch.setenv("LOOPDESK_LLM_MODEL", "deepseek-v4-1-flash")
+    monkeypatch.setattr("app.services.build_provider", lambda settings: _TerseModel())
+
+
+def test_a_configured_model_records_what_it_did_and_never_its_key(configured_model):
+    data = record_demo.record(model="configured")
+    assert data["model"] == {"provider": "openai_compat", "strong": "deepseek-v4-1-flash",
+                             "fast": "deepseek-v4-1-flash", "offline": False}
+    assert data["script_notes"], "steps the model gave no occasion for are skipped and listed, not invented"
+    assert all(note.startswith("skipped: ") for note in data["script_notes"])
+    text = json.dumps(data, ensure_ascii=False)
+    assert "sk-recording-test" not in text and "relay.private" not in text
+    for email, chats in data["chats"].items():
+        assert chats and all(c["events"][-1]["type"] == "done" for c in chats), email
+
+
+def test_a_recording_that_carries_the_key_is_not_written(configured_model, monkeypatch, tmp_path):
+    real = record_demo.record
+
+    def leaky(model="mock"):
+        data = real(model)
+        data["bodies"]["x"] = {"detail": "upstream https://relay.private.example.net/v1 returned 502"}
+        return data
+
+    monkeypatch.setattr(record_demo, "record", leaky)
+    out = tmp_path / "fixtures.json"
+    with pytest.raises(SystemExit, match="LOOPDESK_LLM_BASE_URL"):
+        record_demo.main([str(out), "--model", "configured"])
+    assert not out.exists()
+
+
+def test_a_real_recording_from_the_same_code_is_replayed(recording, configured_model):
+    """Even a model that does far less than the script (no approvals, no handoffs) leaves every page and
+    question the console asks for, so the deployment replays it rather than falling back (W7)."""
+    from app.ops.demo_fixtures import choose
+
+    real = record_demo.record(model="configured")
+    chosen, reasons = choose(recording, real)
+    assert reasons == [] and chosen is real
