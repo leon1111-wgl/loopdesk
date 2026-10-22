@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..agent.runtime import ResumeError
+from ..agent.runtime import ResumeError, decided_text
 from ..channels.feishu import FeishuClient
 from ..db import get_db
 from ..models import Approval, Conversation, Refund, Run, Tenant, User
@@ -80,7 +80,7 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
            db: Session = Depends(get_db)) -> dict:
     approval = get_owned(db, Approval, approval_id, principal.tenant.id)
     if approval.status != "pending":
-        raise HTTPException(status.HTTP_409_CONFLICT, "该审批单已处理")
+        raise HTTPException(status.HTTP_409_CONFLICT, decided_text(approval.status))
     if approval.requested_by == principal.user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "不能审批自己发起的申请（四眼原则）")
     if body.decision == "reject" and not body.comment.strip():

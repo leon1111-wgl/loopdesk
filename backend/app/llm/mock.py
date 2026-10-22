@@ -18,7 +18,9 @@ from collections.abc import Iterator
 from typing import Any
 
 from ..textutil import (NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, REFUND_APPLY_RE, REFUND_RE,
-                        estimate_tokens, expand_query, normalize_width, refund_requested, split_sentences, token_set)
+                        estimate_tokens, expand_query, normalize_width, refund_bare_decline, refund_requested,
+                        refund_withdraw_requested,
+                        split_sentences, token_set)
 from .base import ChatResult, LLMMessage, LLMProvider, StreamEvent, ToolCall, ToolSpec, Usage
 
 _HANDOFF = re.compile(r"人工|真人|投诉|转接")
@@ -99,6 +101,8 @@ def about_my_order(text: str) -> bool:
     """A refund or delivery question about the customer's own order, asked without an order number."""
     if ORDER_ID_RE.search(text):
         return False
+    if refund_withdraw_requested(text):  # "取消我的退款申请": which one? (N-127)
+        return True
     if asks_refund_status(text):
         return bool(_OWN.search(text) or "单子" in text)
     if _mentions_refund(text):
@@ -230,7 +234,8 @@ class MockLLM(LLMProvider):
                 return "list_my_orders", {}
             listing = (results.get("list_my_orders") or [{}])[-1]
             # Read-only questions may follow a single match; money never moves on an order we picked.
-            picked = None if (refund_requested(text) and not asks_refund_status(text)) else pick_my_order(text, listing)
+            picked = (None if (refund_requested(text) and not asks_refund_status(text)) or refund_withdraw_requested(text)
+                      else pick_my_order(text, listing))
             if picked is None:
                 return None  # list the orders and ask which one
             order_ids = [picked]
@@ -242,6 +247,9 @@ class MockLLM(LLMProvider):
             order = (results.get("get_order") or [{}])[-1]
             if order.get("error"):
                 return None
+            # "我刚才的退款申请能撤回吗", or "不想退了" while one waits for review: take it back (N-127).
+            if refund_withdraw_requested(text) or (order.get("refund_awaiting_approval") and refund_bare_decline(text)):
+                return ("withdraw_refund_request", {"order_id": order_id}) if can("withdraw_refund_request") else None
             if asks_refund_status(text):  # answer from the order's refunds; never file one
                 live = order.get("refund_awaiting_approval") or any(
                     r.get("status") in ("pending", "processing") for r in order.get("refunds") or [])
@@ -298,7 +306,10 @@ class MockLLM(LLMProvider):
         if listing and not results.get("get_order"):
             parts.append(self._ask_which(text, listing))
 
-        orders = results.get("get_order") or []
+        withdrawal = last("withdraw_refund_request")
+        if withdrawal:  # its message says what happened; the order's own summary would only repeat it
+            parts.append(withdrawal.get("message") or f"未能撤回退款申请：{withdrawal.get('error', '')}。")
+        orders = [] if withdrawal else results.get("get_order") or []
         refund = last("request_refund")
         progress = len(orders) == 1 and not orders[0].get("error") and asks_refund_status(text)
         if progress:
@@ -384,6 +395,9 @@ class MockLLM(LLMProvider):
             return "没有查到您账号下的订单。如果是用其他账号下的单，请告诉我订单号。"
         lines = "；".join(f"{o['order_id']}（{'、'.join(o.get('items') or [])}，{o['status_text']}，¥{o['amount']:.2f}）"
                          for o in orders)
+        if refund_withdraw_requested(text):
+            return (f"您账号下最近的订单有：{lines}。请问要撤回的是哪一单的退款申请？"
+                    f"请回复“订单号 撤回退款申请”，例如“{orders[0]['order_id']} 撤回退款申请”。")
         if _mentions_refund(text) and not asks_refund_status(text):
             return (f"您账号下最近的订单有：{lines}。请问要申请退款的是哪一单？"
                     f"请回复“订单号 申请退款”，例如“{orders[0]['order_id']} 申请退款”。")

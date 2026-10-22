@@ -90,7 +90,9 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
         </div>
       ) : (
         <div className="card-pad faint" style={{ borderTop: "1px solid var(--border)" }}>
-          {approval.reviewer?.name} 于 {time(approval.decided_at)} 处理{approval.comment && `，意见：${approval.comment}`} ·{" "}
+          {approval.status === "withdrawn"
+            ? `顾客于 ${time(approval.decided_at)} 撤回了这笔申请，未执行`
+            : <>{approval.reviewer?.name} 于 {time(approval.decided_at)} 处理{approval.comment && `，意见：${approval.comment}`}</>} ·{" "}
           <Link to={`/traces/${approval.run_id}`}>查看链路</Link>
         </div>
       )}

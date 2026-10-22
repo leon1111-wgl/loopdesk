@@ -180,6 +180,8 @@ def _demands_refund(text: str) -> bool:
 
 def refund_requested(text: str) -> bool:
     """True when the message asks for a refund, not when it asks about one or declines one."""
+    if refund_withdraw_requested(text):  # "撤回退款申请" takes one back (N-127)
+        return False
     kept = NEGATED_REFUND_RE.sub("，", normalize_width(text or ""))
     if _ONLY_ASKING_RE.search(kept):
         return False
@@ -188,6 +190,51 @@ def refund_requested(text: str) -> bool:
     if _asks_what_if(kept):
         return False
     return bool(REFUND_APPLY_RE.search(kept)) or not REFUND_INQUIRY_RE.search(kept) or _demands_refund(kept)
+
+
+# Taking back a refund application that is still waiting for review (N-127): "我刚才的退款申请能撤回吗",
+# "取消退款申请 SO…", "cancel my refund request". Only an explicit verb counts here; "不想退了" counts
+# as a withdrawal only when there is an application to take back (the caller knows that).
+_WITHDRAW_VERB = r"(?:撤回|撤销|取消|收回|作废|撤(?=[了掉吧吗不]|一下|$))"
+_WITHDRAW_FILL = r"(?:我想|我要|想|要|请|麻烦|帮我|给我|能不能|可不可以|能|可以|你|就|怎么|如何|该怎么)*"
+_REFUND_NOUN = r"(?:退款|退货|退费)"
+WITHDRAW_REFUND_RE = re.compile(
+    rf"{_WITHDRAW_VERB}掉?(?:一?下)?(?:我的|这笔|这个|那笔|那个|刚才的?|刚刚的?|之前的?|上次的?)*的?{_REFUND_NOUN}的?(?:申请|请求)?"
+    rf"|{_REFUND_NOUN}的?(?:申请|请求){_WITHDRAW_FILL}{_WITHDRAW_VERB}"
+    rf"|把[^，,。！!？?]{{0,12}}?{_REFUND_NOUN}(?:的?(?:申请|请求))?{_WITHDRAW_FILL}{_WITHDRAW_VERB}"
+    rf"|{_REFUND_NOUN}申请(?:不要了|不用了|不需要了)"
+    rf"|{_WITHDRAW_VERB}掉?(?:一下)?(?:这个|这笔|刚才的?|我的)?申请"  # "不退了，撤回申请": counted only next to a refund word
+    r"|(?:cancel|withdraw|revoke|retract|take\s+back)\s+(?:my\s+|the\s+|this\s+|that\s+)?refund"
+    r"|cancell?ation\s+of\s+(?:my\s+|the\s+)?refund",
+    re.IGNORECASE)
+_NOT_WITHDRAW_RE = re.compile(
+    rf"(?:不是要?|不要|别|不用|不想|没说要?|没有|没)(?:帮我|给我)?{_WITHDRAW_VERB}"
+    # a complaint or a question about a cancellation, not a request for one (reviewed after N-127)
+    # (anchored to the withdrawal itself: "算了，撤回退款申请吧" is still one)
+    rf"|(?:为什么|为啥|凭什么|谁)[^，,。！!？?]{{0,12}}{_WITHDRAW_VERB}|怎么回事|被{_WITHDRAW_VERB}"
+    rf"|{_WITHDRAW_VERB}[^，,。！!？?]{{0,8}}?(?:以后|之后|后(?![悔面续]))"
+    rf"|{_WITHDRAW_VERB}[^，,。！!？?]{{0,10}}算了|{_WITHDRAW_VERB}.*?(?:继续退|还是要?退)"
+    r"|(?:don'?t|do\s+not|didn'?t|did\s+not)\s+(?:cancel|withdraw)|(?<![A-Za-z])(?:why|who)(?![A-Za-z])", re.IGNORECASE)
+
+
+_CJK_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+|\s+(?=[\u4e00-\u9fff])")
+
+
+def refund_withdraw_requested(text: str) -> bool:
+    """True when the message asks to take back a refund application (N-127), not to file one."""
+    text = _CJK_SPACE_RE.sub("", ORDER_ID_RE.sub("", normalize_width(text or "")))  # "撤回 SO… 的退款"
+    return (bool(WITHDRAW_REFUND_RE.search(text)) and bool(REFUND_RE.search(text) or "退" in text)
+            and not _NOT_WITHDRAW_RE.search(text))
+
+
+def refund_bare_decline(text: str) -> bool:
+    """"不想退了", "先不退款了": a decline with nothing asked besides. "先别退款，如果退款的话钱退到哪" also asks
+    something (N-091): that is answered, and a waiting application is not taken back on it."""
+    text = ORDER_ID_RE.sub("", normalize_width(text or ""))
+    if not NEGATED_REFUND_RE.search(text):
+        return False
+    rest = NEGATED_REFUND_RE.sub("，", text)
+    return not (REFUND_INQUIRY_RE.search(rest) or _QUESTION_RE.search(rest) or REFUND_RE.search(rest))
 
 
 def refund_declined(text: str) -> bool:

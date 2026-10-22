@@ -84,17 +84,18 @@ ALLOWED: dict[str, set[str]] = {
     "refunded_order": {"paid", "not_refundable"},  # the order system shows the order as refunded
     "refunding_order": {"submitted", "will_pay", "not_refundable"},
     "not_refundable": {"not_refundable"},
+    "withdrawn": {"withdrawn", "not_refundable"},  # the customer took the application back (N-127)
     "refundable": set(),  # an order the tool would accept: nothing was filed, nothing was decided
     "none": set(),
 }
 # Where money is not coming (or not known to be), any payout wording misleads, policy or not.
-NO_PAYOUT = {"rejected", "failed", "confirming"}
+NO_PAYOUT = {"rejected", "failed", "confirming", "withdrawn"}
 
 
 @dataclass
 class CaseState:
     refund: str = "none"
-    refund_source: str = ""  # action (request_refund in this run) | ledger (get_order's refunds) | order | ""
+    refund_source: str = ""  # action (request_refund in this run) | withdrawal | ledger (get_order's refunds) | order | ""
     refund_fields: dict[str, Any] = field(default_factory=dict)
     ticket: str = "none"  # created | failed | none
     ticket_fields: dict[str, Any] = field(default_factory=dict)
@@ -151,7 +152,10 @@ def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
         if item.title == "request_refund":
             state.refund, state.refund_fields = _refund_action(output)
             state.refund_source = "action"
-        elif item.title == "get_order" and state.refund_source != "action" and not output.get("error"):
+        elif item.title == "withdraw_refund_request" and output.get("withdrawn"):
+            state.refund, state.refund_source = "withdrawn", "withdrawal"
+        elif (item.title == "get_order" and state.refund_source not in ("action", "withdrawal")
+              and not output.get("error")):
             waiting, refunds = output.get("refund_awaiting_approval"), output.get("refunds") or []
             if waiting:
                 state.refund, state.refund_source = "awaiting_review", "ledger"
@@ -215,6 +219,9 @@ _REFUND_PATTERNS: dict[str, re.Pattern] = {
     "rejected": re.compile(r"未通过|没有通过|没通过|不通过|驳回|被拒|拒绝了"),
     "confirming": re.compile(r"暂未返回|暂时没有返回|核实中|正在核实|继续核实|以订单状态为准|尚未确认|还未确认"),
     "failed": re.compile(r"未能(?:完成|提交|受理)|没有受理|退款失败|提交失败|没能提交"),
+    # a refund word or 申请 must follow: "已为您取消自动续费 / 订单" is not about a refund application
+    "withdrawn": re.compile(r"已(?:经)?(?:为您|帮您)?(?:撤回|撤销|取消)(?:了)?(?:这笔|您的)?(?:(?:退款|退货)(?:申请)?|申请)"
+                            r"|(?:退款|退货)?申请(?:已经|已|被)(?:撤回|撤销|取消)"),
     "not_refundable": re.compile(rf"{_NEG}(?:为您)?(?:申请|办理|发起|支持)?(?:退款|退货)|不符合(?:退款|退货)条件|不在(?:退款|售后)范围"
                                  r"|不能重复申请"),
 }
@@ -255,7 +262,7 @@ def claimed_states(sentence: str, quoted: list[str] | None = None) -> Claims:
     conditional = bool(_CONDITIONAL.search(text))
     for state, pattern in _REFUND_PATTERNS.items():
         for match in pattern.finditer(text):
-            if state in ("paid", "will_pay", "submitted", "awaiting_review") and _negated(text, match.start()):
+            if state in ("paid", "will_pay", "submitted", "awaiting_review", "withdrawn") and _negated(text, match.start()):
                 continue
             claims.refund.add(state)
             break
@@ -264,7 +271,7 @@ def claimed_states(sentence: str, quoted: list[str] | None = None) -> Claims:
         if "通过" in text:
             claims.refund.discard("not_refundable")
     if conditional:  # what would happen, not what did
-        claims.refund -= {"paid", "will_pay", "submitted", "awaiting_review"}
+        claims.refund -= {"paid", "will_pay", "submitted", "awaiting_review", "withdrawn"}
     claims.ticket = bool(_TICKET_CLAIM.search(text))
     claims.handoff = bool(_HANDOFF_CLAIM.search(text))
     return claims
@@ -285,7 +292,7 @@ def contradiction(sentence: str, state: CaseState) -> str | None:
     if state.refund in ("refundable", "none"):
         if "not_refundable" in claims.refund and state.refund_asked:
             return "under_action"  # the tool decides whether a requested refund is possible, not the model
-        if claims.personal and claims.refund & {"paid", "will_pay", "submitted", "awaiting_review", "rejected"}:
+        if claims.personal and claims.refund & {"paid", "will_pay", "submitted", "awaiting_review", "rejected", "withdrawn"}:
             return "request_refund"  # says something happened to a refund no tool touched
         return None
     if claims.personal or state.refund in NO_PAYOUT:

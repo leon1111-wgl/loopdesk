@@ -12,6 +12,7 @@ export const TOOL_TEXT: Record<string, string> = {
   get_order: "查询订单",
   track_shipment: "查询物流",
   request_refund: "发起退款",
+  withdraw_refund_request: "撤回退款申请",
   create_ticket: "创建工单",
   handoff_to_human: "转人工",
 };
@@ -25,6 +26,7 @@ const RUN_STATUS: Record<string, [string, string]> = {
   pending: ["待审批", "badge-warning"],
   approved: ["已通过", "badge-success"],
   rejected: ["已驳回", "badge-danger"],
+  withdrawn: ["顾客已撤回", ""],
   proposed: ["待审核", "badge-warning"],
   applied: ["已发布", "badge-success"],
   candidate: ["候选", "badge-warning"],

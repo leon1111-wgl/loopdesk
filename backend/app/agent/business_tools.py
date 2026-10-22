@@ -21,13 +21,16 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .. import audit
 from ..integrations import (REFUNDABLE, GatewayError, OrderInfo, RefundGateway, RefundRejected, RefundRequest,
                             customer_ref, reads)
 from ..localtime import local_date, zone_of
-from ..models import Approval, Conversation, Refund, Tenant, Ticket, User
+from ..models import Approval, Conversation, Message, Refund, Run, Tenant, Ticket, User
 from ..rag.conflicts import disputed
 from ..rag.retrieval import gate_options, hybrid_search
-from ..textutil import normalize_width, refund_declined
+from ..security import Principal
+from ..textutil import (REFUND_RE, normalize_width, refund_bare_decline, refund_declined, refund_requested,
+                        refund_withdraw_requested)
 from . import handoff
 from .tools import ApprovalNeed, ApprovalRequired, ToolContext, ToolDef, ToolError, ToolRegistry, ToolUnavailable
 
@@ -614,6 +617,83 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return _settle(ctx, refund, status)
 
 
+WITHDRAWN_COMMENT = "顾客已撤回申请"
+
+
+def _end_paused_run(ctx: ToolContext, approval: Approval, now: datetime) -> None:
+    """The run that filed the application ends here: nothing will resume it, so its paused call goes. A
+    customer who withdraws from another conversation (N-127) sees the outcome in the one that said "under
+    review" too, which is also what stops that page from polling for a decision."""
+    run = ctx.db.get(Run, approval.run_id)
+    if run is None or run.status != "waiting_approval":
+        return
+    amount = float((approval.arguments or {}).get("amount") or 0)
+    text = f"您已撤回订单 {(approval.arguments or {}).get('order_id')} 的退款申请（¥{amount:.2f}），这笔款项不会退回。"
+    state = dict(run.state or {})
+    tools = list(state.get("tools", []))
+    state.pop("pending", None)
+    state.pop("messages", None)
+    run.state, run.status, run.finished_at, run.output_text = state, "completed", now, text
+    if run.conversation_id is not None and run.conversation_id != ctx.conversation_id:
+        ctx.db.add(Message(tenant_id=run.tenant_id, conversation_id=run.conversation_id, role="assistant", content=text,
+                           run_id=run.id, meta={"citations": [], "verification": None, "tools": tools,
+                                                "status": "completed", "withdrawn": True}))
+        conversation = ctx.db.get(Conversation, run.conversation_id)
+        if conversation is not None:
+            conversation.updated_at = now
+
+
+def withdraw_refund_request(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    """The customer takes back their own refund application while it waits for review (N-127).
+    No money moves: the approval leaves the queue as "withdrawn", its paused run ends, and a reviewer
+    who opens it afterwards gets 409 instead of paying out what the customer called off. A refund
+    already filed with the payment system is not withdrawn here: that is a person's job."""
+    order = _load_order(ctx, _order_id(args))
+    text = normalize_width(ctx.customer_text)
+    # A turn that files or chases a refund ("我要退款", "SO… 退了吧", "退款到哪了") never takes one back, whatever
+    # the model makes of it; "撤回退款申请", "不想退了" and a bare "是的" after the model asked may.
+    if not refund_withdraw_requested(text) and (
+            refund_requested(text) or (REFUND_RE.search(text) and not refund_bare_decline(text))):
+        raise ToolError("顾客这句话没有要求撤回退款申请，不能撤回。请回答顾客的问题。")
+    mine = ctx.db.execute(select(Approval).join(Run, Run.id == Approval.run_id).where(
+        Approval.tenant_id == ctx.tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
+        Run.user_id == ctx.user.id,
+    ).order_by(Approval.id)).scalars().all()
+    waiting = [a for a in mine if (a.arguments or {}).get("order_id") == order.order_id]
+    if not waiting:
+        live = _live_refund(ctx, order.order_id)
+        message = (f"订单 {order.order_id} 没有等待审核的退款申请，无需撤回。" if live is None else
+                   f"订单 {order.order_id} 的退款已提交到支付系统（退款单 #{live.id}），无法在线撤回；如需处理请转人工客服。")
+        return {"withdrawn": False, "order_id": order.order_id, "refund_id": None if live is None else live.id,
+                "message": message}
+    amount = round(sum(float((a.arguments or {}).get("amount") or 0) for a in waiting), 2)
+    if ctx.dry_run:
+        return {"withdrawn": False, "order_id": order.order_id, "amount": amount,
+                "message": f"（演练）将撤回订单 {order.order_id} 待审核的退款申请 ¥{amount:.2f}。"}
+    now, done = datetime.now(timezone.utc), []
+    for approval in waiting:
+        # Conditional, like a reviewer's claim: one decided a moment ago stays decided.
+        if ctx.db.execute(update(Approval).where(Approval.id == approval.id, Approval.status == "pending")
+                          .values(status="withdrawn", reviewer_id=None, comment=WITHDRAWN_COMMENT, decided_at=now),
+                          execution_options={"synchronize_session": False}).rowcount != 1:
+            continue
+        _end_paused_run(ctx, approval, now)
+        done.append(approval)
+    for approval in done:  # audit last: the tenant row's counter is the last lock, as everywhere else
+        args_ = approval.arguments or {}
+        audit.record(ctx.db, Principal(ctx.user, ctx.tenant), "approval.withdraw", f"approval:{approval.id}",
+                     tool=approval.tool_name, order_id=args_.get("order_id"), amount=args_.get("amount"),
+                     comment=WITHDRAWN_COMMENT)
+    ctx.db.commit()
+    if not done:  # a reviewer got there first
+        return {"withdrawn": False, "order_id": order.order_id,
+                "message": f"订单 {order.order_id} 的退款申请刚刚已经审核完毕，无法撤回；结果会在对话里通知您。"}
+    amount = round(sum(float((a.arguments or {}).get("amount") or 0) for a in done), 2)
+    return {"withdrawn": True, "order_id": order.order_id, "amount": amount, "approval_ids": [a.id for a in done],
+            "message": f"已为您撤回订单 {order.order_id} 待审核的退款申请（¥{amount:.2f}），这笔款项不会退回；"
+                       "以后如需退款，可以重新申请。"}
+
+
 # ---------------------------------------------------------------- tickets & handoff
 def create_ticket(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     title = str(args.get("title") or "").strip()[:120] or "客户问题"
@@ -741,6 +821,19 @@ def build_registry() -> ToolRegistry:
         precheck=_refund_precheck,
         approval=_refund_policy,
         executed=_refund_executed,
+    ))
+    registry.register(ToolDef(
+        name="withdraw_refund_request",
+        description=("撤回顾客自己还在等待人工审核的退款申请（不会退钱）。只在顾客明确说撤回、取消退款申请或不想退了时调用；"
+                     "已提交到支付系统的退款不能撤回，按返回的提示告知顾客。"),
+        parameters={
+            "type": "object",
+            "properties": {"order_id": {"type": "string", "description": "订单号"}},
+            "required": ["order_id"],
+        },
+        handler=withdraw_refund_request,
+        risk="write",
+        roles=("customer",),  # staff decide an application in the approval queue
     ))
     registry.register(ToolDef(
         name="create_ticket",

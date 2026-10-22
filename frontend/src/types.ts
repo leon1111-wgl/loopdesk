@@ -119,7 +119,7 @@ export interface Approval {
   arguments: Record<string, unknown>;
   reason: string;
   evidence: EvidenceItem[];
-  status: "pending" | "approved" | "rejected";
+  status: "pending" | "approved" | "rejected" | "withdrawn";
   requested_by: { id: number; name: string; role: Role } | null;
   reviewer: { id: number; name: string } | null;
   question: string;

@@ -101,6 +101,11 @@ class ToolOutcome:
 
 
 
+def decided_text(status: str) -> str:
+    """Why an approval cannot be decided: a withdrawn one was called off by the customer (N-127)."""
+    return "顾客已撤回这笔申请，不能再审批" if status == "withdrawn" else "该审批单已处理"
+
+
 def rejected_result(tool: str, comment: str) -> dict[str, Any]:
     """A rejection as a tool result: the model words the answer from it, and a resume killed
     before that tells the customer its message as it stands (app.ops.stale_runs)."""
@@ -330,7 +335,7 @@ class AgentRuntime:
         decided again. If the approved tool already ran (money moved), the decision stands
         and the customer gets the tool's own result instead of a model-written answer."""
         if approval.status != "pending":
-            raise ValueError("该审批单已处理")
+            raise ValueError(decided_text(approval.status))
         if decision not in ("approve", "reject"):
             raise ValueError("decision 必须是 approve 或 reject")
         # Claim the approval with a conditional UPDATE: when two reviewers decide at the
@@ -343,7 +348,8 @@ class AgentRuntime:
         ).rowcount
         if claimed != 1:
             self.db.rollback()
-            raise ValueError("该审批单已处理")
+            now = self.db.execute(select(Approval.status).where(Approval.id == approval.id)).scalar_one()
+            raise ValueError(decided_text(now))
         run = self.db.get(Run, approval.run_id)
         if not (run.state or {}).get("pending"):
             # Nothing to resume (the state was erased, N-103): failing and reopening would loop forever.

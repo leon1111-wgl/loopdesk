@@ -191,7 +191,7 @@ class Approval(Base):
     arguments: Mapped[dict] = mapped_column(JSON, default=dict)
     reason: Mapped[str] = mapped_column(Text, default="")
     evidence: Mapped[list] = mapped_column(JSON, default=list)
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | approved | rejected
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | approved | rejected | withdrawn (by the customer, N-127)
     reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     comment: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

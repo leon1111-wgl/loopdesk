@@ -54,6 +54,7 @@ ACTIONS = {
     # Staff work on customers' money and data (review round 3, N-022).
     "approval.approve": "通过审批",
     "approval.reject": "驳回审批",
+    "approval.withdraw": "顾客撤回待审批的申请",
     "approval.reopen": "审批执行失败，退回待审批",
     "refund.settle": "人工确认退款结果",
     "export.download": "导出数据",
