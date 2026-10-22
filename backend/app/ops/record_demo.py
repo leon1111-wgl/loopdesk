@@ -178,6 +178,7 @@ def record(model: str = "mock") -> dict[str, Any]:
                             headers=chloe).raise_for_status()
             client.patch("/api/tenant", json={"approval_admin_threshold": 800}, headers=admin).raise_for_status()
             client.post("/api/evals/runs", json={"suite": "default"}, headers=admin).raise_for_status()
+            client.post("/api/evals/runs", json={"suite": "default"}, headers=auth["admin@echo.demo"]).raise_for_status()
             client.get("/api/export/tickets.csv?days=30", headers=agent).raise_for_status()
 
             # ---- what the console asks for, per account

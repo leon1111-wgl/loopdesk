@@ -59,6 +59,8 @@ jobs:
         env:
           LOOPDESK_LLM_API_KEY: ${{ secrets.LOOPDESK_LLM_API_KEY }}
         run: |
+          # The traces' cost column: the same list-price estimate as the eval workflow (CNY per 1M tokens).
+          export LOOPDESK_PRICES="{\"$LOOPDESK_LLM_MODEL\": [2, 8]}"
           python -m app.ops.record_demo ../demo/real-model/fixtures.json --model configured | tee record.txt
           { echo '```'; cat record.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: No key, gateway address or login token in the recording

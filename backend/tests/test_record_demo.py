@@ -80,6 +80,8 @@ def test_the_main_demo_has_a_refund_to_review_and_a_person_at_work(recording):
     assert [a["arguments"]["order_id"] for a in pending] == ["SO20261015102"]
     assert [(h["customer"], h["assignee"]) for h in bodies[admin["/api/handoffs"]]] == [("Ryan", "Chloe")]
     assert [t["status"] for t in bodies[admin["/api/tickets"]]] == ["open"]
+    [run] = bodies[admin["/api/evals/runs"]]  # the main demo's evaluation page is not empty
+    assert run["total"] > 0
 
 
 def test_nothing_secret_is_published(recording):

@@ -27,3 +27,4 @@ frontend/public/demo/
 
 # red-team runs (python -m app.redteam.build / redteam/run.sh)
 out/
+frontend/dist-demo/
