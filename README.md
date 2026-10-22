@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml)
 
-**[打开在线演示 ↗](https://leon1111-wgl.github.io/loopdesk/)**（不用安装，选一个角色进入：顾客、坐席或管理员）· [案例：一位顾客的退款，从提问到钱退回去](docs/CASE_STUDY.md) · [架构](docs/ARCHITECTURE.md) · [评测](docs/EVALUATION.md) · [语音通道](#语音通道voice-agent)
+**中文** · [English](README.en.md)
+
+**[打开在线演示 ↗](https://leon1111-wgl.github.io/loopdesk/)**（不用安装，选一个角色进入：顾客、坐席或管理员；回答由真实模型生成，页面顶部写明模型和录制时间）· [5 分钟用真实模型跑起来](#5-分钟用真实模型跑起来) · [案例：一位顾客的退款，从提问到钱退回去](docs/CASE_STUDY.md) · [架构](docs/ARCHITECTURE.md) · [评测](docs/EVALUATION.md) · [语音通道](#语音通道voice-agent)
 
 **每一句回答都有出处，每一个高风险动作都要人复核，每一次人工纠错都会变成回归测试。**
 
@@ -12,9 +14,9 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 
 作者：**Leon Wang** · 个人项目 · 仓库中的企业、订单与客户数据全部为虚构（SYNTHETIC），与任何真实企业无关。
 
-![对话测试台：证据校验标出编造内容](docs/assets/chat-verifier.png)
+![对话测试台：真实模型的回答，每句都有出处](docs/assets/chat-real-model.png)
 
-> 上图：管理员打开「演示模式」后，离线模型在回答末尾编造了一句“90 天无理由退货，2 小时到账”。校验器发现证据里没有 90 和 2 这两个数字，把这句话标红，并把整条回答判为“证据冲突”。
+> 上图（在线演示，Echo音乐 的管理员）：问“怎么取消自动续费？”，`deepseek-v4-1-flash` 先调用检索工具，再按知识库回答，每句带出处编号，证据校验逐句核对后判为“证据充分 · 100%”；右侧是这次运行：快模型、7.0 秒、3,067 token。页面顶部写明回答来自哪个模型、哪天、从哪个提交录制。
 
 ---
 
@@ -32,7 +34,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 
 ## 功能一览
 
-（截图目前取自电商租户 Leon优选。）
+（截图取自在线演示：Echo音乐，真实模型 `deepseek-v4-1-flash` 的录制，用 `frontend/scripts/screenshots.mjs` 生成，可复现；检索调试器和下面的证据校验演示取自电商租户 Leon优选 的本地运行。）
 
 <table>
 <tr>
@@ -54,6 +56,9 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 <tr>
 <td><img src="docs/assets/dashboard.png" alt="运营看板"><br><b>运营看板</b>：自助解决率、转人工率、拒答率（都按会话计算：拒答、差评和出错不算解决）、出错率与最近 15 分钟的故障提示、证据覆盖率、缓存命中率、Prompt 版本对比，按租户时区的自然日统计，支持导出 CSV（会话全文、工单、人工接待、运行记录、反馈、审批，按租户时区）</td>
 <td><img src="docs/assets/dashboard-dark.png" alt="深色模式"><br><b>深色模式</b>：跟随系统，也可以手动切换</td>
+</tr>
+<tr>
+<td colspan="2"><img src="docs/assets/chat-verifier.png" alt="证据校验标出编造内容"><br><b>证据校验</b>：管理员打开「演示模式」后，离线模型在回答末尾编造了一句“90 天无理由退货，2 小时到账”。校验器发现证据里没有 90 和 2 这两个数字，把这句话标红，并把整条回答判为“证据冲突”</td>
 </tr>
 <tr>
 <td colspan="2"><img src="docs/assets/mobile-approvals.png" alt="手机端审批" width="260"> <img src="docs/assets/mobile-nav.png" alt="手机端导航" width="260"><br><b>手机端</b>：窄屏下用抽屉式导航，审批卡片改为单列，主管在手机上也能处理审批</td>
@@ -110,7 +115,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 - 渠道：飞书机器人事件回调（challenge 校验、事件去重（记在数据库里，多 worker 和重启后都有效）、先落库再在 3 秒内回 200、后台处理失败时记录日志并回复兜底话术；处理中的进程崩溃时，补偿任务会重新认领并回答，最多重试 3 次，之后回复兜底话术）、企业微信群机器人审批提醒。
 - 订单与支付系统：查订单、查物流、退款通过 `OrderGateway` / `RefundGateway` 访问外部系统，默认用演示表；按租户配置 `LOOPDESK_COMMERCE_APIS` 后接商家自己的 HTTP 接口（Bearer 令牌、可选 HMAC 签名、只重试幂等请求、回复不合约定按故障处理，每次调用记进链路）。退款先写记录再请求支付系统，随机幂等键在第一次请求前写入；支付系统没有回音时不算失败，订单继续占着，顾客被告知“正在核实”，由 `python -m app.ops.refund_reconcile` 用同一个键重发，只会退一次；确认不了的变成工单，管理员核实后记下结果（记审计）。接口约定见 [DEPLOYMENT](docs/DEPLOYMENT.md#接入你自己的订单和支付系统)。
 - MCP：只读工具通过 MCP 暴露，Claude Desktop、Cursor 等客户端可以直接接入。
-- 运维：Prometheus `/metrics`、Docker、docker-compose（PostgreSQL）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、Playwright 端到端走查、镜像构建）。
+- 运维：Prometheus `/metrics`、Docker、一条命令起全栈的 docker-compose（PostgreSQL）、Kubernetes 清单（`deploy/k8s`：探针、HPA、PDB、迁移 Job、定时任务，CI 用 kubeconform 校验，并在 kind 集群上实际部署、经 Service 问一个问题）、GitHub Actions（SQLite + PostgreSQL 双库测试、评测门禁、Playwright 端到端走查、`docker compose up` 冒烟、手动触发的真实模型评测和演示录制）。
 - 数据库迁移：Alembic 管理表结构版本，启动时自动升级；对旧版本用 `create_all` 建的库会补齐缺失的表并标记为最新版本。CI 在 SQLite 和 PostgreSQL 上都会校验“模型定义与迁移脚本完全一致”。
 - OpenTelemetry：配置 `LOOPDESK_OTLP_ENDPOINT` 后，每次运行导出为一条 OTel trace（`invoke_agent` → `chat <模型>` / `execute_tool <工具>`，GenAI 语义约定，含 token 用量），可直接接入 Jaeger、Grafana Tempo、Langfuse；只导出元数据，不导出对话内容。
 - 可排障：每个请求都带 `X-Request-ID`（可以沿用网关传入的 ID），它会写进 JSON 结构化日志和 Agent 运行记录；发生 500 错误时只返回 request_id，不暴露内部信息；`/api/ready` 检查数据库和迁移版本，供 Kubernetes 和 Docker 的健康检查使用，`/api/health` 用作存活检查。
@@ -153,7 +158,27 @@ flowchart LR
 
 设计细节见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。落地时会遇到的问题（以 AI Agent 特有的问题为主：幻觉、工具调用、提示注入、评测可信度、非确定性、延迟成本、模型故障、长时间运行的状态）见 [docs/CHALLENGES.md](docs/CHALLENGES.md)。
 
-## 快速开始
+## 5 分钟用真实模型跑起来
+
+只需要 Docker 和一个 OpenAI 兼容接口的模型 Key（DeepSeek、豆包、通义、混元、OpenAI，或者经网关接入的任何模型）：
+
+```bash
+git clone https://github.com/leon1111-wgl/loopdesk.git && cd loopdesk
+cat > .env <<'EOF'
+LOOPDESK_LLM_BASE_URL=https://api.deepseek.com/v1
+LOOPDESK_LLM_API_KEY=<你的 Key>
+LOOPDESK_LLM_MODEL=<控制台里的模型 ID>
+EOF
+docker compose up -d --build --wait                                              # PostgreSQL + 应用，就绪后返回
+docker compose exec app python -m app.ops.llm_check                              # 两档模型各发一个最小请求
+python3 backend/app/ops/smoke.py http://localhost:8000 --provider openai_compat  # 登录、提问，打印回答、模型和 token
+```
+
+然后打开 http://localhost:8000，在登录页点一个演示账号（Echo音乐 的顾客、坐席或管理员）。不写 `.env` 也能跑，那样由离线模型回答（`--provider mock`）。停掉：`docker compose down`（加 `-v` 连数据库一起删）。
+
+这几条命令是验证过的：CI 每次推送都用离线模型执行 `docker compose up` 和 `smoke.py`；手动触发的 [Real-model eval](.github/workflows/real-model-eval.yml) 工作流用 GitHub Secrets 里的真实模型把上面的命令再执行一遍。2026-10-22 那次：GitHub Actions runner 上从零构建镜像到就绪 49 秒，`deepseek-v4-1-flash` 回答“怎么取消自动续费？”用了 7.7 秒（2,897 + 167 token，检索后回答，证据校验通过）。生产部署（`LOOPDESK_SEED_DEMO=0`、自己的密钥、多副本和迁移任务、Kubernetes 清单）见 [DEPLOYMENT](docs/DEPLOYMENT.md)。
+
+## 快速开始（本地开发）
 
 **环境要求**：Python 3.11+、Node 20+（推荐 pnpm）。不需要任何 API Key。
 
@@ -174,11 +199,7 @@ pnpm dev            # http://localhost:5173 ，/api 会代理到 8000
 
 首次启动会自动创建三个演示租户（Echo音乐、Leon优选、Iris云文档）、知识库、订单和几段演示对话。登录页列出了所有演示账号，点击即可进入。
 
-**Docker**（PostgreSQL + 单镜像）：
-
-```bash
-docker compose up --build    # http://localhost:8000
-```
+**Docker**（PostgreSQL + 单镜像）：`docker compose up -d --build --wait`，见上一节。
 
 **测试与评测**：
 
@@ -200,19 +221,22 @@ E2E_PYTHON=../backend/.venv/bin/python pnpm e2e
 
 ## 在线演示是怎么来的
 
-[在线演示](https://leon1111-wgl.github.io/loopdesk/)是同一套 React 控制台的静态构建，部署在 GitHub Pages 上，没有后端。每次推送到 main，`.github/workflows/pages.yml` 先构建控制台，再在 CI 里启动真实后端（离线模型、虚构数据），按脚本让顾客提问、坐席审批和回复、管理员改额度、跑一遍回归评测，把控制台会请求的每个接口的响应和示例问题的事件流录下来（`python -m app.ops.record_demo`）。浏览器里的 `demo/replay.ts` 用这些录制回答请求：可以切换角色浏览每个页面，回放对话页的示例问题；提交类操作不会生效。演示里的数据都不是手写的，测试会检查对话页的每个示例问题都有录制、录制里没有登录凭证。
+[在线演示](https://leon1111-wgl.github.io/loopdesk/)是同一套 React 控制台的静态构建，部署在 GitHub Pages 上，没有后端。录制脚本（`python -m app.ops.record_demo`）在真实后端上按剧本让顾客提问、坐席审批和回复、管理员改额度、跑一遍回归评测，把控制台会请求的每个接口的响应和示例问题的事件流录下来；浏览器里的 `demo/replay.ts` 用这些录制回答请求：可以切换角色浏览每个页面，回放对话页的示例问题；提交类操作不会生效。
+
+- **回答来自真实模型**：手动触发的 [`demo-record.yml`](.github/workflows/demo-record.yml) 在 GitHub Actions 上用 Secrets 里的模型录制（`--model configured`），提交到 `demo/real-model/fixtures.json` 并重新部署。真实模型不一定给剧本里的员工步骤留出机会（比如它没有申请审批，坐席就没有审批可做），这样的步骤跳过并记在录制里，不编造。页面顶部和登录页写明是哪个模型、哪天、从哪个提交录的。
+- **不会因为代码更新而坏掉**：每次推送到 main，`pages.yml` 仍然用离线模型重新录一份，再比较两份录制：当前控制台要请求的账号、页面、示例问题和响应字段，真实模型的录制都有，才回放真实模型的；缺了就回放离线模型的（横幅会写“离线模型”），并在任务摘要里列出缺了什么。没有配置模型 Key 的 fork 也是离线模型。
+- **不泄露凭证**：录制和发布前都会扫描模型 Key、网关地址和登录凭证（`app.ops.leak_check`），有就拒绝写入；测试还会检查对话页的每个示例问题都有录制。数据全部虚构。
 
 ## 接入真实模型
 
-在 `.env` 中设置（完整说明见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）：
+最少三个变量：`LOOPDESK_LLM_BASE_URL`、`LOOPDESK_LLM_API_KEY`、`LOOPDESK_LLM_MODEL`（见上面“5 分钟用真实模型跑起来”）。有地址和 Key 就使用 OpenAI 兼容适配器，快、强两档都用这个模型。需要分档或用预设地址时（完整说明见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）：
 
 ```bash
-LOOPDESK_LLM_PROVIDER=openai_compat
-LOOPDESK_LLM_PRESET=doubao              # doubao | hunyuan | deepseek | qwen | openai
+LOOPDESK_LLM_PRESET=doubao              # doubao | hunyuan | deepseek | qwen | openai，代替 BASE_URL
 LOOPDESK_LLM_API_KEY=...
 LOOPDESK_LLM_MODEL_STRONG=<控制台里的模型或接入点 ID>
 LOOPDESK_LLM_MODEL_FAST=<更便宜的模型>
-# LOOPDESK_LLM_BASE_URL=https://<网关>/v1  # 经 OpenAI 兼容网关接入时设置，覆盖预设地址
+# LOOPDESK_LLM_PROVIDER=anthropic         # Claude 走官方 SDK，需要显式指定
 # LOOPDESK_VERIFIER=llm                    # 用模型判定措辞是否有依据（数字校验始终开启）；带思考过程的模型会明显变慢，见 EVALUATION
 ```
 
@@ -226,7 +250,18 @@ LOOPDESK_LLM_MODEL_FAST=<更便宜的模型>
 | Iris云 default | 10 | 100% | 100% | — | SaaS 帮助中心：口语问答、拒答、跨租户隔离（知识和订单） |
 | Echo音乐 default | 43 | 100% | 100% | 3ms / 8ms | 音乐流媒体：会员价格与自动续费、取消路径（含 App Store）、退款窗口（扣费 3 天内自动、7 天内人工核实、超期拒绝）、假设和英文否定的退款咨询不提交、不能在线退款的商品（Echo币、数字专辑、App Store 扣费）、虚拟商品没有物流、未成年人误充值、歌曲变灰、口语、拒答、跨顾客与跨租户隔离、注入、转人工、工单、员工专用文档 |
 
-**真实模型**（DeepSeek V4.1 Flash，2026-10-20，测的是电商和 SaaS 两个租户，Echo音乐 还没测；每种配置跑 3 次，报平均值和范围，详见 [docs/EVALUATION.md](docs/EVALUATION.md#用真实模型评测)）：
+**真实模型，最新一次**（`deepseek-v4-1-flash`，2026-10-22，提交 `0510ecb`，手动触发的 [Real-model eval](.github/workflows/real-model-eval.yml) 工作流在 GitHub Actions 上跑，每个评测集 3 次；[运行记录](https://github.com/leon1111-wgl/loopdesk/actions/runs/39836535608)，详见 [docs/EVALUATION.md](docs/EVALUATION.md#用真实模型评测)）：
+
+| 评测集 | 平均通过（范围） | pass^3（三次都过） | 每次 token / 估算成本 |
+|---|---|---|---|
+| Leon优选 default（67 条） | 41.7（40–43） | 30/67 | 26 万 / ¥0.65 |
+| Echo音乐 default（43 条） | 30.7（28–33） | 25/43 | 17 万 / ¥0.42 |
+| Iris云 default（10 条） | 7.7（7–8） | 7/10 | 3.8 万 / ¥0.09 |
+| 困难集（9 条） | 6.7（5–8） | 4/9 | 4.1 万 / ¥0.10 |
+
+整次运行 155 万 token，按公开价估算约 ¥3.7（上限，没扣缓存命中）。三次都失败的 21 条里：10 条是证据校验把正确的句子判成没有依据，4 条是用例要求离线模型的轨迹（例如退款前必须先检索；模型直接退、结果正确），7 条是字面说法对不上；没有退错钱的。所以下一步是评测改为按最终数据状态和语义判分（W1），而不是为这个模型调规则。
+
+**真实模型，第一次**（DeepSeek V4.1 Flash，2026-10-20，测的是电商和 SaaS 两个租户；每种配置跑 3 次，报平均值和范围）：
 
 | 评测集 | 第一次（未改代码） | 修复评分、证据校验和提示词后（默认 1.02） |
 |---|---|---|
@@ -260,6 +295,8 @@ LOOPDESK_LLM_MODEL_FAST=<更便宜的模型>
 
 **答案缓存基准**（`python -m app.evals.cache_bench`）：评测集里 29 个知识类问题各问两遍，第二遍 23 个命中缓存，token 从 32,850 降到 6,676；没命中的 6 个是 5 条应拒答的问题（拒答按设计不缓存）和 1 条会建工单的报修问题（用了业务工具，本来就不缓存）。离线模型几乎瞬间返回，所以这里不报延迟收益；接入真实模型后，省下的是真实的首字延迟和 token 账单。
 
+**规模测试**（GitHub Actions 4 vCPU，离线模型，PostgreSQL，4 个 worker，压测客户端和服务同机）：并发 16 时 113 RPS、p95 181ms、p99 265ms；并发 64 时 87 RPS、p95 1.05 秒、p99 1.28 秒，全程 0 错误；4 核在并发 16 左右饱和，之后只是排队。Kubernetes 上按副本扩容（`deploy/k8s` 的 HPA）。没有真实流量，这不是线上容量，见 [PERFORMANCE](docs/PERFORMANCE.md#规模测试并发-164w72026-10-22github-actions-实测)。
+
 **性能基线**（`python -m app.evals.load_bench`，离线模型）：本机（Apple M1 Max、单进程、SQLite WAL）并发 1 时约 160 RPS，其中分词缓存贡献了 11%–15%；GitHub Actions 上同一次运行内对比：PostgreSQL 改为批量写链路后，单 worker 吞吐提升 39%–47%；并发 16 时 4 workers 达到 129.7 RPS、p99 193ms。检索改为倒排表加向量矩阵后，2 万片段时单次检索从 391ms 降到 10ms（排序结果与逐个扫描一致）。每一步的数据、没有采用的方案和仍未解释的现象见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。测的是模型以外的平台开销，不代表接入真实模型后的线上表现。
 
 ## 目录结构
@@ -276,12 +313,15 @@ backend/
     evals/        沙箱评测运行器、CLI 门禁
     channels/     飞书、企业微信
     api/          REST + SSE 接口
-    ops/          运维任务：渠道补偿、中断运行收尾、退款对账、数据保留、审计补签与锚点核对、上线前的模型自检
+    ops/          运维任务：渠道补偿、中断运行收尾、退款对账、数据保留、审计补签与锚点核对、上线前的模型自检、
+                  迁移任务与等待、冒烟检查、演示录制、发布前的凭证扫描
     mcp_server.py MCP 服务
   evals/          评测集（JSONL）
   seed_data/      演示知识库（Markdown）
   tests/          pytest
 frontend/src/     React 控制台（对话、审批、知识库、链路、飞轮、评测、看板）
+deploy/k8s/       Kubernetes 清单（kustomize：base 和 kind overlay）
+demo/real-model/  在线演示用的真实模型录制（由 demo-record.yml 生成）
 docs/             架构、评测、部署、性能、挑战与风险文档
 ```
 
