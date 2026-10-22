@@ -77,10 +77,9 @@ def plugin_label(metadata: dict[str, Any]) -> str:
     return plugin
 
 
-def _tenant(row: dict[str, Any], folder: str) -> str:
-    meta = ((row.get("response") or {}).get("metadata") or {}).get("loopdesk") or {}
+def _tenant(row: dict[str, Any], folder: str, turns: dict[str, Any]) -> str:
     test_meta = (row.get("testCase") or {}).get("metadata") or {}
-    return str(meta.get("tenant") or test_meta.get("tenant") or folder.split("-")[0])
+    return str(turns.get("tenant") or test_meta.get("tenant") or folder.split("-")[0])
 
 
 def _transcript(row: dict[str, Any]) -> list[dict[str, str]]:
@@ -104,6 +103,35 @@ def _transcript(row: dict[str, Any]) -> list[dict[str, str]]:
                 return out
     prompt = meta.get("redteamFinalPrompt") or (row.get("vars") or {}).get("prompt") or ""
     return [{"role": "user", "content": str(prompt)}, {"role": "assistant", "content": str(response.get("output") or "")}]
+
+
+def _calls(folder: Path) -> dict[str, list[dict[str, Any]]]:
+    """The target's per-call log of a pass (target._log_call), by conversation."""
+    calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    path = folder / "calls.jsonl"
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                entry = json.loads(line)
+                calls[str(entry.get("conversation_id"))].append(entry)
+    return calls
+
+
+def _turns(row: dict[str, Any], calls: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """Layers, violations and blocked attempts over every LoopDesk call this attack made: the result's own
+    metadata for a plain attack, the logged calls of its conversation(s) for crescendo and jailbreak."""
+    meta = {**(row.get("metadata") or {}), **((row.get("response") or {}).get("metadata") or {})}
+    own = meta.get("loopdesk") or {}
+    ids = {str(x) for x in [meta.get("sessionId"), own.get("conversation_id"), *(meta.get("sessionIds") or [])]
+           if x not in (None, "")}
+    entries = [e for i in sorted(ids) for e in calls.get(i, [])] or ([own] if own else [])
+    layers: list[str] = []
+    for entry in entries:
+        layers += [layer for layer in entry.get("layers") or [] if layer not in layers]
+    return {"tenant": own.get("tenant") or next((e.get("tenant") for e in entries if e.get("tenant")), None),
+            "layers": layers, "violations": [v for e in entries for v in e.get("violations") or []],
+            "blocked": [b for e in entries for b in e.get("blocked") or []],
+            "kb": own.get("kb") or next((e.get("kb") for e in entries if e.get("kb")), None)}
 
 
 def _empty() -> dict[str, Any]:
@@ -143,15 +171,16 @@ def summarize_dir(root: Path, only: tuple[str, ...] | None = None,
         usage = stats.get("tokenUsage") or {}
         tokens["promptfoo"] += int(usage.get("total") or 0)
         tokens["grading"] += int((usage.get("assertions") or {}).get("total") or 0)
+        calls = _calls(path.parent)
         for row in results.get("results") or []:
             test_meta = {**((row.get("testCase") or {}).get("metadata") or {}), **(row.get("metadata") or {})}
-            tenant = _tenant(row, path.parent.name)
+            loop = _turns(row, calls)
+            tenant = _tenant(row, path.parent.name, loop)
             plugin = plugin_label(test_meta)
             strategy = str(test_meta.get("strategyId") or "basic")
             owasp, _ = classify(plugin)
             response = row.get("response") or {}
             tokens["target"] += int((response.get("tokenUsage") or {}).get("total") or 0)
-            loop = (response.get("metadata") or {}).get("loopdesk") or {}
             buckets = (by_plugin[(tenant, plugin)], by_strategy[(tenant, strategy)], by_owasp[owasp], totals)
             errored = row.get("failureReason") == ERROR_FAILURE or bool(row.get("error") and not row.get("gradingResult"))
             success = not errored and not row.get("success") and row.get("failureReason", ASSERT_FAILURE) == ASSERT_FAILURE

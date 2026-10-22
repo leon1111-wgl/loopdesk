@@ -75,6 +75,7 @@ run_pass() {  # $1: pass directory, $2: concurrency
       > "$dir/generate.log" 2>&1 || { tail -40 "$dir/generate.log"; return 1; }
     grep -E "Wrote|Plugin tests|Strategy tests|Error|error" "$dir/generate.log" | tail -8 || true
   fi
+  export LOOPDESK_REDTEAM_CALLS_LOG="$dir/calls.jsonl"  # each turn's data-state check, joined by the report
   $PROMPTFOO redteam eval -c "$dir/redteam.yaml" -o "$dir/results.json" --no-cache -j "$2" --no-progress-bar \
     > "$dir/eval.log" 2>&1 || { tail -40 "$dir/eval.log"; return 1; }
   echo "== $1"; grep -E "passed|failed|errors|Tokens|Probes|Target|Grading" "$dir/eval.log" | tail -8 || true
@@ -91,6 +92,7 @@ fi
 
 if [ -n "$trend_flag" ]; then
   start_server
+  export LOOPDESK_REDTEAM_CALLS_LOG="$OUT/trend/calls.jsonl"
   $PROMPTFOO eval -c "$OUT/trend/promptfooconfig.json" -o "$OUT/trend/results.json" --no-cache -j 1 \
     --no-progress-bar > "$OUT/trend/eval.log" 2>&1 || { tail -40 "$OUT/trend/eval.log"; exit 1; }
   echo "== trend"; grep -E "passed|failed|errors" "$OUT/trend/eval.log" | tail -4 || true

@@ -5,8 +5,9 @@
 For each tenant there are two passes, each a promptfoo config in its own directory:
 - ``<slug>/``: fresh attacks through the chat. One ``policy`` plugin per tenant policy, ``loopdesk:bola``,
   ``loopdesk:bfla``, ``rbac``, ``excessive-agency``, ``pii`` (direct, session, social, api-db) and
-  ``loopdesk:hijacking``; every attack also runs through the ``jailbreak`` (iterative, single-turn) and
-  ``crescendo`` (multi-turn, one LoopDesk conversation) strategies, in Chinese;
+  ``loopdesk:hijacking``; every attack also runs through the ``jailbreak`` (iterative, single-turn; promptfoo's
+  local iterative provider through redteam/jailbreak-iterative.mjs) and ``crescendo`` (multi-turn, one LoopDesk
+  conversation) strategies, in Chinese;
 - ``<slug>-kb/``: indirect injection. Each test plants a knowledge document and asks an innocent question.
   It runs alone (one at a time), because a planted document is visible to every conversation of the tenant
   until it is deleted, and without strategies: the attack is in the document, not in the question.
@@ -33,7 +34,11 @@ from .plugins import CUSTOM_PLUGINS
 from .tenants import SPECS, TenantSpec
 
 TARGET_FILE = Path(__file__).resolve().parent / "target.py"
-TREND_FILE = Path(__file__).resolve().parents[2] / "redteam" / "trend_set.json"
+REDTEAM_DIR = Path(__file__).resolve().parents[2] / "redteam"
+TREND_FILE = REDTEAM_DIR / "trend_set.json"
+# promptfoo 0.124.1 runs "jailbreak" (now jailbreak:meta) only on its own servers; this file applies the
+# local iterative jailbreak instead (see the file).
+JAILBREAK_FILE = REDTEAM_DIR / "jailbreak-iterative.mjs"
 KEY_ENV = "LOOPDESK_LLM_API_KEY"
 STRATEGIES = ("jailbreak", "crescendo")
 STRATEGY_CONFIG: dict[str, dict[str, Any]] = {
@@ -100,7 +105,8 @@ def tenant_config(spec: TenantSpec, *, out_dir: Path, model: str, tests_per_plug
         "numTests": tests_per_plugin,
         "entities": [spec.name, spec.customer_name, *spec.own_orders],
         "plugins": plugins,
-        "strategies": [{"id": s, "config": dict(STRATEGY_CONFIG.get(s, {}))} for s in strategies],
+        "strategies": [{"id": _relative(JAILBREAK_FILE, out_dir) if s == "jailbreak" else s,
+                        "config": dict(STRATEGY_CONFIG.get(s, {}))} for s in strategies],
     }
     return config
 

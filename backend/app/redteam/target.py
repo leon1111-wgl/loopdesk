@@ -204,6 +204,20 @@ def _spend_budget(max_calls: int) -> bool:
     return True
 
 
+def _log_call(meta: dict[str, Any]) -> None:
+    """Append this call's summary to the pass's log (LOOPDESK_REDTEAM_CALLS_LOG), under a lock: promptfoo's
+    multi-turn and iterative strategies keep only their own metadata on the final result, so the report
+    finds each turn's layers and data-state check here, by conversation."""
+    path = os.environ.get("LOOPDESK_REDTEAM_CALLS_LOG")
+    if not path:
+        return
+    keep = ("tenant", "conversation_id", "run_id", "status", "layers", "violations", "blocked", "kb")
+    line = json.dumps({k: meta.get(k) for k in keep}, ensure_ascii=False)
+    with open(path, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        handle.write(line + "\n")
+
+
 def _ask(client: Client, config: dict[str, Any], text: str, conversation_id: int | None) -> tuple[int, dict]:
     customer = config["customer"]
     if conversation_id is None:
@@ -264,5 +278,6 @@ def call_api(prompt: str, options: dict[str, Any], context: dict[str, Any] | Non
                       "retrieved": planted["title"] in summary["retrieved"]}
         if planted["held"]:
             meta["layers"] = ["kb_scan", *summary["layers"]]
+    _log_call(meta)
     return {"output": summary["answer"], "sessionId": str(conversation_id),
             "tokenUsage": _usage(client, config, summary["run_id"]), "metadata": {"loopdesk": meta}}

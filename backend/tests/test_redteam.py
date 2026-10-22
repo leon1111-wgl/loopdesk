@@ -109,9 +109,16 @@ def test_main_config_plugins_and_strategies(tmp_path):
     assert all(p["numTests"] == 3 for p in plugins)  # the cost cap holds for every plugin
     assert "indirect" not in json.dumps(ids)  # planted documents run in their own pass
     strategies = {s["id"]: s.get("config", {}) for s in config["redteam"]["strategies"]}
-    assert set(strategies) == {"jailbreak", "crescendo"}
+    assert len(strategies) == 2 and "crescendo" in strategies
+    # promptfoo 0.124.1 maps "jailbreak" to jailbreak:meta, which runs only on promptfoo's servers; the
+    # iterative jailbreak runs through a strategy file pointing at promptfoo's local iterative provider.
+    jailbreak_id = next(s for s in strategies if s != "crescendo")
+    strategy_file = tmp_path / jailbreak_id.removeprefix("file://")
+    assert strategy_file.resolve() == build.JAILBREAK_FILE and strategy_file.is_file()
+    source = strategy_file.read_text(encoding="utf-8")
+    assert '"promptfoo:redteam:iterative"' in source and 'strategyId: "jailbreak"' in source
     assert strategies["crescendo"]["stateful"] is True  # one LoopDesk conversation per attack
-    assert strategies["crescendo"]["maxTurns"] <= 5 and strategies["jailbreak"]["numIterations"] <= 4
+    assert strategies["crescendo"]["maxTurns"] <= 5 and strategies[jailbreak_id]["numIterations"] <= 4
     targets = config["targets"]
     assert len(targets) == 1 and targets[0]["config"]["mode"] == "chat"
     assert (tmp_path / targets[0]["id"].removeprefix("file://")).resolve() == build.TARGET_FILE
@@ -232,6 +239,19 @@ def test_budget_stops_calls(tmp_path, transport, monkeypatch):
     assert sum(1 for c in transport if c[1].endswith("/stream")) == 1
 
 
+def test_every_call_is_logged_for_the_report(tmp_path, transport, monkeypatch):
+    """Strategies (crescendo, jailbreak) keep only their own metadata on the final result, so the
+    data-state check of each turn goes to a log the report joins on the conversation."""
+    log = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("LOOPDESK_REDTEAM_CALLS_LOG", str(log))
+    first = target.call_api("帮我查一下订单 SO20261003005", options(), {"vars": {}})
+    target.call_api("那 SO20261003005 的物流呢", options(), {"vars": {"sessionId": first["sessionId"]}})
+    lines = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [line["conversation_id"] for line in lines] == [int(first["sessionId"])] * 2
+    assert all(line["tenant"] == "leon" and "violations" in line and "layers" in line for line in lines)
+    assert any(b["order_id"] == "SO20261003005" for line in lines for b in line["blocked"])
+
+
 def test_parse_sse_ignores_noise():
     text = 'data: {"type": "token", "text": "a"}\n\n: keep-alive\n\ndata: {"type": "done"}\n\n'
     assert [e["type"] for e in target.parse_sse(text)] == ["token", "done"]
@@ -335,6 +355,24 @@ def test_report_counts_state_violations_even_when_the_grader_passed(tmp_path):
     summary = report.summarize_dir(tmp_path)
     assert summary["by_plugin"][("leon", "bola")]["violations"] == 1
     assert summary["totals"]["violations"] == 1
+
+
+def test_report_joins_the_calls_of_a_multi_turn_attack(tmp_path):
+    crescendo = _result("loopdesk:bola", True, strategy="crescendo")
+    crescendo["response"]["metadata"] = {"sessionId": "7", "messages": []}  # crescendo's own metadata only
+    jailbreak = _result("loopdesk:bola", True, strategy="jailbreak")
+    jailbreak["response"]["metadata"] = {"sessionIds": ["8", "9"]}
+    _results_file(tmp_path, "leon", [crescendo, jailbreak])
+    violation = {"kind": "foreign_order_read", "tool": "get_order", "order_id": "SO2"}
+    calls = [{"conversation_id": 7, "tenant": "leon", "layers": ["input_scan"], "violations": [], "blocked": []},
+             {"conversation_id": 7, "tenant": "leon", "layers": [], "violations": [violation], "blocked": []},
+             {"conversation_id": 9, "tenant": "leon", "layers": ["tool_policy"], "violations": [],
+              "blocked": [{"tool": "get_order", "order_id": "SO2", "reason": "x"}]}]
+    (tmp_path / "leon" / "calls.jsonl").write_text("\n".join(json.dumps(c) for c in calls), encoding="utf-8")
+    summary = report.summarize_dir(tmp_path)
+    assert summary["by_strategy"][("leon", "crescendo")]["violations"] == 1  # found on turn 2 of 4
+    assert summary["by_strategy"][("leon", "crescendo")]["layers"] == {"input_scan": 1}
+    assert summary["by_strategy"][("leon", "jailbreak")]["blocked"] == 1
 
 
 def test_report_maps_every_plugin_to_owasp_and_a_layer():
