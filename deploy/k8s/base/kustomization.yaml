@@ -1,0 +1,21 @@
+# LoopDesk on Kubernetes: kubectl apply -k deploy/k8s/base (after creating the Secret, see docs/DEPLOYMENT.md).
+# Validated with kubeconform in CI; deploy/k8s/overlays/kind is deployed to a kind cluster by .github/workflows/k8s.yml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: loopdesk
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: loopdesk
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - migrate-job.yaml
+  - cronjobs.yaml
+images:
+  - name: loopdesk
+    newName: registry.example.com/loopdesk  # your registry: docker build -t <registry>/loopdesk:<tag> . && docker push
+    newTag: "1.0.0"

@@ -1,0 +1,18 @@
+# Settings that are not secret. The secret ones (database URL, JWT secret, audit key, model key) come
+# from the Secret "loopdesk-secrets", which this directory does not create: see docs/DEPLOYMENT.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loopdesk-config
+data:
+  LOOPDESK_SEED_DEMO: "0"            # production: no demo tenants or accounts
+  LOOPDESK_AUTO_MIGRATE: "0"         # the Job loopdesk-migrate migrates; replicas wait for it
+  LOOPDESK_LOG_FORMAT: json
+  LOOPDESK_CORS_ORIGINS: https://support.example.com
+  # Any OpenAI-compatible endpoint; with LOOPDESK_LLM_API_KEY in the Secret this selects it.
+  LOOPDESK_LLM_BASE_URL: https://api.deepseek.com/v1
+  LOOPDESK_LLM_MODEL: replace-with-the-model-id
+  LOOPDESK_RUN_DEADLINE_SECONDS: "45"
+  # uvicorn trusts X-Forwarded-For only from these addresses (the ingress controller's pods), so the
+  # login limit sees the customer's IP. Never "*": anyone could then pick an IP and skip the limit.
+  FORWARDED_ALLOW_IPS: 10.0.0.0/8

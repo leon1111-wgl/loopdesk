@@ -1,0 +1,60 @@
+name: Kubernetes deploy (kind)
+
+# Deploys deploy/k8s/overlays/kind (the base manifests plus an in-cluster PostgreSQL, demo data and the
+# offline model) to a throwaway kind cluster on the runner: the migration Job runs, the replica waits
+# for it, becomes ready on /api/ready, and answers one question through the Service. CI validates the
+# manifests on every push (kubeconform); this proves they deploy. A test of the manifests, not a load test.
+on:
+  push:
+    branches: [main]
+    paths:
+      - deploy/k8s/**
+      - Dockerfile
+      - backend/migrations/**
+      - backend/app/ops/migrate.py
+      - backend/app/ops/schema_wait.py
+      - .github/workflows/k8s.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kind:
+    name: Apply to kind, migrate, smoke-test through the Service
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: loopdesk
+      - name: Build the image and load it into the cluster
+        run: |
+          docker build -t loopdesk:ci .
+          kind load docker-image loopdesk:ci --name loopdesk
+      - name: Apply
+        run: kubectl apply -k deploy/k8s/overlays/kind
+      - name: The migration Job finishes, then the replica becomes ready
+        run: |
+          began=$(date +%s)
+          kubectl -n loopdesk wait --for=condition=complete job/loopdesk-migrate --timeout=300s
+          kubectl -n loopdesk logs job/loopdesk-migrate
+          kubectl -n loopdesk rollout status deployment/loopdesk --timeout=300s
+          echo "migrated and ready in $(( $(date +%s) - began )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: One answer through the Service
+        run: |
+          kubectl -n loopdesk port-forward service/loopdesk 8000:80 > /dev/null 2>&1 &
+          sleep 3
+          python3 backend/app/ops/smoke.py http://localhost:8000 --provider mock | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: A periodic job runs with the same image and settings
+        run: |
+          kubectl -n loopdesk create job stale-runs-now --from=cronjob/loopdesk-stale-runs
+          kubectl -n loopdesk wait --for=condition=complete job/stale-runs-now --timeout=120s
+          kubectl -n loopdesk logs job/stale-runs-now
+      - name: State
+        if: always()
+        run: |
+          kubectl -n loopdesk get all,hpa,pdb,cronjob
+          kubectl -n loopdesk describe pods | tail -n 80
+          kubectl -n loopdesk logs deployment/loopdesk --all-containers --tail=100 || true

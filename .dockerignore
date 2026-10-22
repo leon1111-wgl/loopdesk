@@ -1,0 +1,19 @@
+# Keep the build context small and free of local state: the key in .env, databases, caches.
+.git
+.env
+.env.*
+!.env.example
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.db
+**/*.db-*
+**/node_modules
+frontend/dist
+frontend/test-results
+frontend/playwright-report
+backend/reports
+deploy
+docs
+demo

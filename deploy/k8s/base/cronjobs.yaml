@@ -1,0 +1,230 @@
+# The periodic jobs docs/DEPLOYMENT.md asks for. Each one is safe to run on several instances at once
+# (conditional updates), so Forbid only avoids piling up runs behind a slow database.
+---
+# Ends runs a killed process left running (docs/DEPLOYMENT.md, 中断运行的收尾).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: loopdesk-stale-runs
+  labels:
+    app.kubernetes.io/name: loopdesk
+    app.kubernetes.io/component: stale-runs
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: loopdesk
+            app.kubernetes.io/component: stale-runs
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: job
+              image: loopdesk
+              command: ["python", "-m", "app.ops.stale_runs"]
+              envFrom:
+                - configMapRef:
+                    name: loopdesk-config
+                - secretRef:
+                    name: loopdesk-secrets
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 50m, memory: 256Mi}
+                limits: {memory: 512Mi}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
+---
+# Answers channel messages whose process died after acknowledging them.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: loopdesk-channel-retry
+  labels:
+    app.kubernetes.io/name: loopdesk
+    app.kubernetes.io/component: channel-retry
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: loopdesk
+            app.kubernetes.io/component: channel-retry
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: job
+              image: loopdesk
+              command: ["python", "-m", "app.ops.channel_retry"]
+              envFrom:
+                - configMapRef:
+                    name: loopdesk-config
+                - secretRef:
+                    name: loopdesk-secrets
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 50m, memory: 256Mi}
+                limits: {memory: 512Mi}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
+---
+# Settles refunds the payment system has not answered; follows the ones processing.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: loopdesk-refund-reconcile
+  labels:
+    app.kubernetes.io/name: loopdesk
+    app.kubernetes.io/component: refund-reconcile
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: loopdesk
+            app.kubernetes.io/component: refund-reconcile
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: job
+              image: loopdesk
+              command: ["python", "-m", "app.ops.refund_reconcile"]
+              envFrom:
+                - configMapRef:
+                    name: loopdesk-config
+                - secretRef:
+                    name: loopdesk-secrets
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 50m, memory: 256Mi}
+                limits: {memory: 512Mi}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
+---
+# Deletes trace details and masks texts past the retention period.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: loopdesk-retention
+  labels:
+    app.kubernetes.io/name: loopdesk
+    app.kubernetes.io/component: retention
+spec:
+  schedule: "30 3 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: loopdesk
+            app.kubernetes.io/component: retention
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: job
+              image: loopdesk
+              command: ["python", "-m", "app.ops.retention", "--days", "90"]
+              envFrom:
+                - configMapRef:
+                    name: loopdesk-config
+                - secretRef:
+                    name: loopdesk-secrets
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: {cpu: 50m, memory: 256Mi}
+                limits: {memory: 512Mi}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi

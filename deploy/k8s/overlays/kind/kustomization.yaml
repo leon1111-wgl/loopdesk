@@ -1,0 +1,44 @@
+# The base on a throwaway kind cluster with an in-cluster PostgreSQL, the demo data and the offline
+# model: what .github/workflows/k8s.yml deploys and smoke-tests. Not for production (the secrets
+# below are published test values and the database lives in an emptyDir).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: loopdesk
+resources:
+  - ../../base
+  - postgres.yaml
+images:
+  - name: registry.example.com/loopdesk
+    newName: loopdesk
+    newTag: ci  # built in the workflow and loaded with `kind load docker-image loopdesk:ci`
+secretGenerator:
+  - name: loopdesk-secrets
+    literals:
+      - LOOPDESK_DATABASE_URL=postgresql+psycopg://loopdesk:loopdesk@postgres:5432/loopdesk
+      - LOOPDESK_JWT_SECRET=kind-only-test-secret-not-for-any-real-deployment
+      - LOOPDESK_AUDIT_KEY=kind-only-audit-key-not-for-any-real-deployment
+generatorOptions:
+  disableNameSuffixHash: true
+patches:
+  - target: {kind: ConfigMap, name: loopdesk-config}
+    patch: |-
+      - op: replace
+        path: /data/LOOPDESK_SEED_DEMO
+        value: "1"
+      - op: replace
+        path: /data/LOOPDESK_CORS_ORIGINS
+        value: http://localhost:8000
+      - op: remove
+        path: /data/LOOPDESK_LLM_BASE_URL
+      - op: remove
+        path: /data/LOOPDESK_LLM_MODEL
+  - target: {kind: Deployment, name: loopdesk}
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target: {kind: HorizontalPodAutoscaler, name: loopdesk}
+    patch: |-
+      - op: replace
+        path: /spec/minReplicas
+        value: 1

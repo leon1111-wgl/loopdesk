@@ -1,3 +1,12 @@
+# The whole stack in one command: docker compose up -d --build --wait  (then http://localhost:8000)
+#
+# Without a .env the offline model answers. For a real model, a .env next to this file needs three
+# lines, any OpenAI-compatible endpoint (README, "Run it yourself with a real model"):
+#   LOOPDESK_LLM_BASE_URL=https://api.deepseek.com/v1
+#   LOOPDESK_LLM_API_KEY=<your key>
+#   LOOPDESK_LLM_MODEL=<model id from the vendor console>
+# Demo accounts and SYNTHETIC data are seeded; before a real deployment read docs/DEPLOYMENT.md
+# (LOOPDESK_SEED_DEMO=0, your own JWT secret and audit key).
 services:
   db:
     image: postgres:16-alpine
@@ -14,16 +23,24 @@ services:
 
   app:
     build: .
+    image: loopdesk:local
     ports:
       - "8000:8000"
     environment:
       LOOPDESK_DATABASE_URL: postgresql+psycopg://loopdesk:loopdesk@db:5432/loopdesk
       LOOPDESK_JWT_SECRET: ${LOOPDESK_JWT_SECRET:-change-me-to-a-long-random-string-before-deploying}
-      LOOPDESK_LLM_PROVIDER: ${LOOPDESK_LLM_PROVIDER:-mock}
+      LOOPDESK_AUDIT_KEY: ${LOOPDESK_AUDIT_KEY:-}
+      LOOPDESK_SEED_DEMO: ${LOOPDESK_SEED_DEMO:-1}
+      # Empty means "not set": with a base URL (or a preset) and a key the OpenAI-compatible adapter is
+      # used, both tiers run LOOPDESK_LLM_MODEL, and no demo traffic is sent to the model at startup.
+      LOOPDESK_LLM_PROVIDER: ${LOOPDESK_LLM_PROVIDER:-}
       LOOPDESK_LLM_PRESET: ${LOOPDESK_LLM_PRESET:-}
+      LOOPDESK_LLM_BASE_URL: ${LOOPDESK_LLM_BASE_URL:-}
       LOOPDESK_LLM_API_KEY: ${LOOPDESK_LLM_API_KEY:-}
-      LOOPDESK_LLM_MODEL_STRONG: ${LOOPDESK_LLM_MODEL_STRONG:-mock-strong}
-      LOOPDESK_LLM_MODEL_FAST: ${LOOPDESK_LLM_MODEL_FAST:-mock-fast}
+      LOOPDESK_LLM_MODEL: ${LOOPDESK_LLM_MODEL:-}
+      LOOPDESK_LLM_MODEL_STRONG: ${LOOPDESK_LLM_MODEL_STRONG:-}
+      LOOPDESK_LLM_MODEL_FAST: ${LOOPDESK_LLM_MODEL_FAST:-}
+      LOOPDESK_PRICES: ${LOOPDESK_PRICES:-}
       LOOPDESK_MOCK_STREAM_DELAY: "0.02"
       LOOPDESK_CORS_ORIGINS: http://localhost:8000
     depends_on:

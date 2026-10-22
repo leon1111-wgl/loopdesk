@@ -15,8 +15,9 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt "psycopg[binary]>=3.2"
 COPY backend/ ./
 COPY --from=web /web/dist /app/frontend/dist
-RUN useradd --create-home loopdesk && chown -R loopdesk /app
-USER loopdesk
+# A numeric user, so Kubernetes can check runAsNonRoot (deploy/k8s runs it as 10001).
+RUN useradd --create-home --uid 10001 loopdesk && chown -R loopdesk /app
+USER 10001
 EXPOSE 8000
 # Readiness = database reachable, schema at the latest migration, retrieval indexes warm (see /api/ready).
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \

@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loopdesk
+  labels:
+    app.kubernetes.io/name: loopdesk
+    app.kubernetes.io/component: api
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loopdesk
+      app.kubernetes.io/component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loopdesk
+        app.kubernetes.io/component: api
+    spec:
+      automountServiceAccountToken: false
+      # A streamed answer runs for up to the run deadline (45 s); give it time to finish on a rollout.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: loopdesk
+              app.kubernetes.io/component: api
+      initContainers:
+        # Replicas never migrate (LOOPDESK_AUTO_MIGRATE=0) and must not serve an old schema.
+        - name: wait-for-schema
+          image: loopdesk
+          command: ["python", "-m", "app.ops.schema_wait", "--timeout", "600"]
+          envFrom:
+            - configMapRef:
+                name: loopdesk-config
+            - secretRef:
+                name: loopdesk-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: api
+          image: loopdesk
+          # One process per pod; scale with replicas (the HPA), not uvicorn workers.
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: loopdesk-config
+            - secretRef:
+                name: loopdesk-secrets
+          # Ready = database reachable, schema at the latest migration, retrieval indexes warm.
+          # The model is not checked: without it customers get the quoted policy or a person.
+          readinessProbe:
+            httpGet: {path: /api/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          startupProbe:
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          lifecycle:
+            preStop:  # let the Service stop sending traffic before the process gets SIGTERM
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp  # jieba's dictionary cache; the root filesystem is read-only
+          emptyDir:
+            sizeLimit: 256Mi

@@ -121,11 +121,40 @@ jobs:
             frontend/test-results
 
   docker:
-    name: Docker image builds
+    name: docker compose up + smoke check (offline model)
     runs-on: ubuntu-latest
     needs: [backend, frontend, e2e]
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t loopdesk:ci .
+      - name: The whole stack in one command, as the README says
+        run: |
+          began=$(date +%s)
+          docker compose up -d --build --wait --wait-timeout 300
+          echo "stack built and ready in $(( $(date +%s) - began )) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Ready, healthy, one answer from the offline model
+        run: python3 backend/app/ops/smoke.py http://localhost:8000 --provider mock
       - name: The image can resolve tenant time zones
-        run: docker run --rm loopdesk:ci python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('Asia/Shanghai'))"
+        run: docker run --rm loopdesk:local python -c "from zoneinfo import ZoneInfo; print(ZoneInfo('Asia/Shanghai'))"
+      - name: Logs
+        if: failure()
+        run: docker compose logs --no-color --tail 300
+      - if: always()
+        run: docker compose down -v
+
+  k8s:
+    name: Kubernetes manifests (kustomize + kubeconform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kubeconform
+        run: |
+          base=https://github.com/yannh/kubeconform/releases/download/v0.6.7
+          curl -fsSLO "$base/kubeconform-linux-amd64.tar.gz" && curl -fsSLO "$base/CHECKSUMS"
+          sha256sum -c --ignore-missing CHECKSUMS
+          tar xzf kubeconform-linux-amd64.tar.gz kubeconform && sudo mv kubeconform /usr/local/bin/
+      - name: Render the base and every overlay, validate against the Kubernetes 1.31 schemas
+        run: |
+          for dir in deploy/k8s/base deploy/k8s/overlays/*/; do
+            echo "== $dir"
+            kubectl kustomize "$dir" | kubeconform -strict -summary -kubernetes-version 1.31.0 -
+          done
