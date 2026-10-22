@@ -39,6 +39,8 @@ ACTIONS = {
     "tenant.update": "修改租户配置",
     "user.erase": "抹除个人数据",
     "user.sign_out": "强制下线",
+    "user.disable": "停用账号",
+    "user.enable": "恢复账号",
     "kb.document.create": "新增知识文档",
     "kb.document.update": "编辑知识文档",
     "kb.document.delete": "删除知识文档",

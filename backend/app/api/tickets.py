@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..audit import record
 from ..db import get_db
 from ..models import Conversation, Message, Tenant, Ticket, User
-from ..security import Principal, require_staff
+from ..security import Principal, account_enabled, hold_account, require_staff
 from .common import as_utc, get_owned, iso, masked
 from .handoffs import _deliver
 
@@ -76,7 +76,9 @@ def _move(db: Session, principal: Principal, ticket_id: int, allowed: tuple[str,
     ticket = get_owned(db, Ticket, ticket_id, principal.tenant.id)
     if ticket.kind != "issue":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "资源不存在")
-    moved = db.execute(update(Ticket).where(Ticket.id == ticket.id, Ticket.status.in_(allowed)).values(**values)
+    hold_account(db, principal.user.id)
+    moved = db.execute(update(Ticket).where(Ticket.id == ticket.id, Ticket.status.in_(allowed),
+                                            account_enabled(principal.user.id)).values(**values)
                        .execution_options(synchronize_session=False)).rowcount
     if moved != 1:
         db.rollback()

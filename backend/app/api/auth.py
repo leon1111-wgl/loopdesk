@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -13,9 +14,9 @@ from ..audit import changes, record
 from ..db import get_db
 from ..guardrails.injection import clean_domain
 from ..localtime import is_valid_zone
-from ..models import Tenant, User
-from ..security import (DUMMY_PASSWORD_HASH, Principal, create_token, get_principal, rate_limiter, require_admin,
-                        require_staff, shared_rate_limiter, verify_password)
+from ..models import Ticket, Tenant, User
+from ..security import (DUMMY_PASSWORD_HASH, STAFF_ROLES, Principal, account_enabled, create_token, get_principal,
+                        rate_limiter, require_admin, require_staff, shared_rate_limiter, verify_password)
 from ..seed import DEMO_PASSWORD, FEATURED_TENANT, TENANTS
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -86,6 +87,10 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)) -> dic
     password_ok = verify_password(body.password, user.password_hash if user else DUMMY_PASSWORD_HASH)
     if user is None or not password_ok:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "邮箱或密码错误")
+    if user.disabled_at is not None:  # said only to someone who knows the password
+        release(ip_key, ip_hit)
+        release(email_key, email_hit)
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "账号已停用，请联系管理员")
     # Only failures use up the budget, so an office behind one NAT or a user on several
     # devices is not locked out. Every attempt still holds its slot while the (slow)
     # password check runs, so a burst of parallel guesses cannot slip past the limit.
@@ -198,6 +203,10 @@ def erase_personal_data(user_id: int, principal: Principal = Depends(require_adm
     target = get_owned(db, User, user_id, principal.tenant.id)
     if target.id == principal.user.id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "不能抹除自己的账号")
+    if target.role in STAFF_ROLES:
+        # Erasure renames the account, and approvals, tickets and the audit log show handlers by
+        # their account: every decision the person made would be signed "已注销用户" (N-102).
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "员工账号请停用（POST /api/admin/users/{id}/disable），不能抹除")
     try:
         erased = erase_user(db, target.id, principal)
     except RunInFlight as exc:
@@ -219,3 +228,81 @@ def force_sign_out(user_id: int, principal: Principal = Depends(require_admin), 
     record(db, principal, "user.sign_out", f"user:{target.id}")  # by id, like user.erase
     db.commit()
     return {"user_id": target.id, "signed_out": True}
+
+
+
+def _staff_target(db: Session, principal: Principal, user_id: int) -> User:
+    """The account an admin is disabling or enabling. Both account rows are locked in id order
+    (PostgreSQL), so two admins disabling each other at once run one after the other; the write
+    itself is conditional on the admin still being enabled (account_enabled), which is what holds
+    on SQLite. The tenant row is not locked here: audit entries lock it last, after the tickets."""
+    from .common import get_owned
+
+    target = get_owned(db, User, user_id, principal.tenant.id)
+    if target.id == principal.user.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "不能停用自己的账号")
+    if target.role not in STAFF_ROLES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "顾客账号不能停用；要删除顾客数据请用个人数据抹除")
+    db.execute(select(User.id).where(User.id.in_((principal.user.id, target.id))).order_by(User.id).with_for_update())
+    return target
+
+
+def _set_disabled(db: Session, principal: Principal, target: User, value: datetime | None) -> bool:
+    """One conditional UPDATE: True when it changed the account, False when it was already so.
+    Raises 401 when the admin was disabled in the meantime."""
+    current = User.disabled_at.is_(None) if value is not None else User.disabled_at.is_not(None)
+    values = {"disabled_at": value}
+    if value is not None:
+        values["token_version"] = User.token_version + 1  # every token the person holds stops working
+    changed = db.execute(update(User).where(User.id == target.id, current, account_enabled(principal.user.id))
+                         .values(**values).execution_options(synchronize_session=False)).rowcount
+    if not changed and db.execute(select(User.disabled_at).where(User.id == principal.user.id)).scalar_one():
+        db.rollback()
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号已停用，请联系管理员")
+    return bool(changed)
+
+
+def staff_out(user: User) -> dict:
+    return {"id": user.id, "email": user.email, "name": user.name, "role": user.role,
+            "disabled_at": user.disabled_at.isoformat() if user.disabled_at else None}
+
+
+@router.get("/admin/users")
+def list_staff(principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> list[dict]:
+    """The tenant's staff accounts and whether each one is disabled."""
+    users = db.execute(select(User).where(User.tenant_id == principal.tenant.id, User.role.in_(STAFF_ROLES))
+                       .order_by(User.id)).scalars().all()
+    return [staff_out(user) for user in users]
+
+
+@router.post("/admin/users/{user_id}/disable")
+def disable_user(user_id: int, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """A member of staff leaves (N-102): they can no longer sign in, every token they hold stops
+    working, and the tickets and handoffs they had open go back to the queue for someone else.
+    Their name stays on what they handled. Customers are erased instead, never disabled."""
+    target = _staff_target(db, principal, user_id)
+    requeued = 0
+    if _set_disabled(db, principal, target, datetime.now(timezone.utc)):
+        # Claims and replies share-lock the taker's account row and re-check it in their UPDATE
+        # (hold_account, account_enabled), so nothing can be assigned to them after this.
+        requeued = db.execute(
+            update(Ticket).where(Ticket.tenant_id == principal.tenant.id, Ticket.assignee_id == target.id,
+                                 Ticket.status.in_(("open", "in_progress")))
+            .values(status="open", assignee_id=None).execution_options(synchronize_session=False)
+        ).rowcount
+        record(db, principal, "user.disable", f"user:{target.id}", requeued=requeued)
+    db.commit()
+    db.refresh(target)
+    return {**staff_out(target), "requeued": requeued}
+
+
+@router.post("/admin/users/{user_id}/enable")
+def enable_user(user_id: int, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Undo a disable (rehired, or disabled by mistake). The old password works again; tokens
+    revoked at the disable stay revoked."""
+    target = _staff_target(db, principal, user_id)
+    if _set_disabled(db, principal, target, None):
+        record(db, principal, "user.enable", f"user:{target.id}")
+    db.commit()
+    db.refresh(target)
+    return staff_out(target)

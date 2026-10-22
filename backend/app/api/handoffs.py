@@ -15,7 +15,7 @@ from ..audit import record
 from ..channels.feishu import FeishuClient
 from ..db import get_db
 from ..models import Conversation, Message, Ticket, User
-from ..security import Principal, require_staff
+from ..security import Principal, account_enabled, hold_account, require_staff
 from ..services import get_services
 from .chat import message_out
 from .common import as_utc, get_owned, iso, masked
@@ -101,8 +101,9 @@ def _transition(db: Session, ticket: Ticket, to: str, user_id: int, **values) ->
     """Change a live ticket in one conditional UPDATE. The check in _active is a read: a reply
     and a close arriving together could both pass it, and the reply would reopen a ticket that
     had just been closed. The first person to act owns the ticket (COALESCE keeps an owner)."""
+    hold_account(db, user_id)
     claimed = db.execute(
-        update(Ticket).where(Ticket.id == ticket.id, Ticket.status.in_(handoff.ACTIVE))
+        update(Ticket).where(Ticket.id == ticket.id, Ticket.status.in_(handoff.ACTIVE), account_enabled(user_id))
         .values(status=to, assignee_id=func.coalesce(Ticket.assignee_id, user_id), **values)
         .execution_options(synchronize_session="fetch")
     ).rowcount

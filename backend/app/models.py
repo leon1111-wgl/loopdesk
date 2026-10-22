@@ -61,6 +61,9 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     # Carried in every token; bumping it (erasure) invalidates all tokens issued before.
     token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Set when staff leave (N-102): the account can no longer sign in or be assigned work, but
+    # keeps its name, so approvals, tickets and the audit log still say who did what.
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

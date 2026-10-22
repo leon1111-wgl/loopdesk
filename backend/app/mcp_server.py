@@ -34,6 +34,8 @@ def _call(services: Services, handler, args: dict) -> str:
         user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
         if user is None:
             return json.dumps({"error": f"MCP 身份 {email} 不存在"}, ensure_ascii=False)
+        if user.disabled_at is not None:  # a member of staff who left keeps their laptop's MCP config
+            return json.dumps({"error": f"MCP 身份 {email} 已停用"}, ensure_ascii=False)
         tenant = db.get(Tenant, user.tenant_id)
         ctx = ToolContext(db=db, settings=services.settings, tenant=tenant, user=user,
                           embedder=services.embedder, run_id=uuid.uuid4().hex, conversation_id=None, dry_run=True,

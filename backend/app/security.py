@@ -93,9 +93,33 @@ def principal_from_token(db: Session, token: str) -> Principal:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在")
     if claims.get("ver", 0) != user.token_version:  # revoked: issued before an erasure
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "登录已失效，请重新登录")
+    if user.disabled_at is not None:  # disabling revokes the tokens too; this holds if that ever slips
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号已停用，请联系管理员")
     tenant = db.get(Tenant, user.tenant_id)
     identify(tenant.id, user.id)
     return Principal(user, tenant)
+
+
+def account_enabled(user_id: int):
+    """SQL condition for a write that gives a person work or acts as them: their account is not
+    disabled at the moment the write runs. The check in get_principal is a read at the start of
+    the request, so a disable committed in between would otherwise lose the race (N-102)."""
+    from sqlalchemy import exists
+    from sqlalchemy.orm import aliased
+
+    account = aliased(User)
+    return exists().where(account.id == user_id, account.disabled_at.is_(None))
+
+
+def hold_account(db: Session, user_id: int) -> None:
+    """Share-lock the caller's account row (PostgreSQL) before taking work: a disable updates that
+    row, so it waits for this request to commit and then requeues what it took, or this request
+    waits for the disable and is refused. SQLite serialises writers; account_enabled covers it."""
+    from sqlalchemy import select
+
+    disabled = db.execute(select(User.disabled_at).where(User.id == user_id).with_for_update(read=True)).scalar_one()
+    if disabled is not None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号已停用，请联系管理员")
 
 
 def require_roles(*roles: str):
