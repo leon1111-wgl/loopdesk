@@ -17,6 +17,9 @@ class ToolSpec:
     name: str
     description: str
     parameters: dict[str, Any]
+    # Not sent to any vendor: what the offline model plans with for a tenant-declared tool (the
+    # phrases that call for it, the read tools it needs first). A real model reads the description.
+    hints: dict[str, Any] | None = None
 
 
 @dataclass

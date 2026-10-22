@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from . import admission
 from .api import answer_cache as answer_cache_api
 from .api import (approvals, audit, auth, channels, chat, evals, exports, flywheel, handoffs, kb, metrics, refunds,
-                  tickets, traces, voice)
+                  tickets, tools_admin, traces, voice)
 from .config import Settings, get_settings, set_settings
 from .db import current_revision, init_engine, new_session, prepare_database, schema_status
 from .observability import configure_logging
@@ -140,7 +140,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     sweep_abandoned_runs(settings)
     prewarm.start(settings.prewarm_index)  # after seeding, so the demo's documents are included
     for module in (auth, chat, kb, approvals, refunds, handoffs, tickets, traces, flywheel, evals, metrics, exports,
-                   channels, audit, voice, answer_cache_api):
+                   channels, audit, voice, answer_cache_api, tools_admin):
         app.include_router(module.router)
 
     @app.get("/api/ready", tags=["meta"])

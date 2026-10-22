@@ -179,14 +179,15 @@ class MockLLM(LLMProvider):
             if m.role == "tool" and m.name:
                 results.setdefault(m.name, []).append(_loads(m.content))
 
-        call = self._next_call(user_text, called, results, available)
+        custom = {t.name: t for t in tools if (t.hints or {}).get("custom")}
+        call = self._next_call(user_text, called, results, available, custom)
         if call is not None:
             name, args = call
             tool_call = ToolCall(id=f"mock_{len(called) + 1}_{name}", name=name, arguments=args)
             completion = estimate_tokens(json.dumps(args, ensure_ascii=False))
             return ChatResult("", [tool_call], Usage(prompt_tokens, completion, True), model, "tool_calls")
 
-        content = self._compose(user_text, results)
+        content = self._compose(user_text, results, custom)
         if options.get("inject_hallucination"):
             content += HALLUCINATION
         return ChatResult(content, [], Usage(prompt_tokens, estimate_tokens(content), True), model)
@@ -202,8 +203,14 @@ class MockLLM(LLMProvider):
         yield StreamEvent(type="done", result=result)
 
     # ------------------------------------------------------------------ planning
-    def _next_call(self, text: str, called: list[str], results: dict, available: set[str]):
+    def _next_call(self, text: str, called: list[str], results: dict, available: set[str],
+                   custom: dict[str, ToolSpec] | None = None):
         main, extra = split_intents(text)
+        if wants_human(main) and "handoff_to_human" in available and "handoff_to_human" not in called:
+            return "handoff_to_human", {"reason": main[:120]}
+        plan = plan_custom(main, custom or {}, called, results)
+        if plan is not None:
+            return plan.call
         call = self._main_call(main, called, results, available)
         if call is not None:
             return call
@@ -298,8 +305,10 @@ class MockLLM(LLMProvider):
         return None
 
     # ------------------------------------------------------------------ answering
-    def _compose(self, text: str, results: dict[str, list[dict[str, Any]]]) -> str:
+    def _compose(self, text: str, results: dict[str, list[dict[str, Any]]],
+                 custom: dict[str, ToolSpec] | None = None) -> str:
         text, extra = split_intents(text)
+        custom_parts = compose_custom(text, results, custom or {})
         searches = results.get("search_knowledge") or []
         extra_search = next((r for r in searches if extra and r.get("query") == extra), None)
         results = {**results, "search_knowledge": [r for r in searches if r is not extra_search]}
@@ -311,6 +320,7 @@ class MockLLM(LLMProvider):
         handoff = last("handoff_to_human")
         if handoff:
             parts.append(handoff.get("message") or handoff.get("error", ""))
+        parts.extend(custom_parts)
 
         listing = last("list_my_orders")
         if listing and not results.get("get_order"):
@@ -370,7 +380,7 @@ class MockLLM(LLMProvider):
             query = ("退款 到账 工作日" if (refund and not refund_failed) or progress
                      else expand_query(refund_question(text) if inquiry else text))
             if not refund_failed:
-                limit = 1 if (refund or ticket or progress) else 3
+                limit = 1 if (refund or ticket or progress or custom_parts) else 3
                 sentences = self._extract(query, knowledge.get("results") or [], limit)
                 if sentences:
                     parts.extend(sentences)
@@ -480,3 +490,125 @@ class MockLLM(LLMProvider):
         question = str(data.get("question", "")).strip().rstrip("？?")
         correction = str(data.get("correction", "")).strip()
         return f"## {question}\n\n{correction}\n"
+
+
+# ---------------------------------------------------------------- tenant-declared tools
+# The offline model has no language understanding. For a tool a tenant declared (app/tooling) it
+# goes by what the tool declares: the phrases that call for it (hints.intents), the read tools it
+# needs first (hints.requires), and its parameters' patterns, enums and defaults. A real model reads
+# the description instead. A write or money tool is not called for a question about it ("如果退年费会
+# 怎样", "能退吗"): only for a request.
+_HYPOTHETICAL = re.compile(r"如果|要是|假如|假设|万一|的话|能不能|可不可以|可以吗|能吗|吗[？?]?$|什么条件|怎么(?:申请|办理)|多久")
+_CURRENCY_AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*(?:港币|港元|元|块|HKD|CNY|RMB|USD|美元|MOP)", re.IGNORECASE)
+
+
+class CustomPlan:
+    def __init__(self, call: tuple[str, dict[str, Any]] | None, missing: tuple[str, str] | None = None):
+        self.call, self.missing = call, missing
+
+
+def _matches(text: str, spec: ToolSpec) -> int:
+    norm = normalize_width(text).lower()
+    return sum(1 for phrase in (spec.hints or {}).get("intents") or [] if phrase.lower() in norm)
+
+
+def _best(text: str, custom: dict[str, ToolSpec]) -> ToolSpec | None:
+    scored = [(_matches(text, spec), -i, spec) for i, spec in enumerate(custom.values())]
+    scored = [s for s in scored if s[0] > 0]
+    if not scored:
+        return None
+    best = max(scored, key=lambda s: (s[0], s[1]))[2]
+    if (best.hints or {}).get("risk") in ("write", "money") and _HYPOTHETICAL.search(text.strip()):
+        return None  # a question about the action: the knowledge base answers it
+    return best
+
+
+def _fill(spec: ToolSpec, text: str, results: dict[str, list[dict[str, Any]]]) -> tuple[dict[str, Any], str | None]:
+    """Arguments from the customer's words and earlier results; the first required one missing."""
+    props = (spec.parameters or {}).get("properties") or {}
+    required = (spec.parameters or {}).get("required") or []
+    earlier = [r for name in (spec.hints or {}).get("requires") or [] for r in results.get(name) or []
+               if not r.get("error")]
+    norm = normalize_width(text)
+    args: dict[str, Any] = {}
+    for name, prop in props.items():
+        value: Any = None
+        if prop.get("pattern"):  # "^HB\\d{8}$" finds "HB10020031" (or "hb10020031") in the sentence
+            pattern = prop["pattern"].lstrip("^").rstrip("$")
+            match = re.search(pattern, norm) or re.search(pattern, norm.upper())
+            if match:
+                value = match.group(0)
+        if value is None and prop.get("enum"):
+            # In the order they are said, each value once: "HKD 换 CNY" gives base HKD and quote CNY.
+            mentioned = sorted((norm.lower().find(str(e).lower()), e) for e in prop["enum"]
+                               if str(e).lower() in norm.lower())
+            value = next((e for _, e in mentioned if e not in args.values()), None)
+        if value is None and prop.get("type") in ("number", "integer"):
+            match = _CURRENCY_AMOUNT.search(norm)
+            if match and name in ("amount", "value"):
+                value = float(match.group(1))
+        if value is None:
+            value = next((r[name] for r in reversed(earlier) if r.get(name) is not None), None)
+        if value is None and "default" in prop:
+            continue  # the tool fills its own default
+        if value is None:
+            if name in required:
+                return args, prop.get("description") or name
+            continue
+        args[name] = value
+    return args, None
+
+
+def plan_custom(text: str, custom: dict[str, ToolSpec], called: list[str],
+                results: dict[str, list[dict[str, Any]]]) -> CustomPlan | None:
+    """The next call for a tenant tool, a plan that stops (ask, or explain an error), or None when no
+    declared tool fits and the built-in planning goes on."""
+    spec = _best(text, custom)
+    if spec is None:
+        return None
+    steps = [*((spec.hints or {}).get("requires") or []), spec.name]
+    for name in steps:
+        if name in called:
+            outputs = results.get(name) or []
+            if outputs and outputs[-1].get("error"):
+                return CustomPlan(None)  # the answer explains the error; nothing after it runs
+            continue
+        step = custom.get(name)
+        if step is None:
+            return CustomPlan(None)
+        args, missing = _fill(step, text, results)
+        if missing:
+            return CustomPlan(None, (step.name, missing))
+        return CustomPlan((name, args))
+    return CustomPlan(None)
+
+
+def _label(spec: ToolSpec | None, name: str) -> str:
+    return str((spec.hints or {}).get("label") or name) if spec else name
+
+
+def compose_custom(text: str, results: dict[str, list[dict[str, Any]]], custom: dict[str, ToolSpec]) -> list[str]:
+    parts: list[str] = []
+    spec = _best(text, custom)
+    if spec is not None:
+        plan = plan_custom(text, custom, [n for n in custom if n in results], results)
+        if plan is not None and plan.missing and plan.missing[0] not in results:
+            return [f"请提供{plan.missing[1]}，我来为您办理{_label(custom.get(plan.missing[0]), plan.missing[0])}。"]
+    for name, spec in custom.items():
+        for output in results.get(name) or []:
+            label = _label(spec, name)
+            if output.get("error"):
+                line = f"{label}未能办理：{output['error']}。"
+                if output.get("restricted"):
+                    line += f"{output.get('appeal', '')}"
+                parts.append(line)
+            elif output.get("status") == "rejected":
+                parts.append(str(output.get("message") or f"{label}未通过人工审核。"))
+                parts.append(REJECTED_NEXT_STEP)
+            elif output.get("message"):
+                parts.append(str(output["message"]))
+            elif (spec.hints or {}).get("risk") == "read":
+                facts = "，".join(f"{k}：{v}" for k, v in output.items() if not isinstance(v, (dict, list)))
+                if facts:
+                    parts.append(f"{label}结果：{facts}。")
+    return parts

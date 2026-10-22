@@ -65,6 +65,19 @@ ACTIONS = {
     "ticket.close": "处理完成工单",
     # A customer's spoken consent to a money action (voice channel): what was read back, whether it was heard.
     "voice.confirm": "顾客口头确认资金操作",
+    # Tenant-declared tools and MCP servers (app/tooling), the agent registry (app/governance).
+    "tool.create": "新增工具",
+    "tool.update": "修改工具",
+    "tool.delete": "删除工具",
+    "mcp.create": "接入 MCP Server",
+    "mcp.update": "修改 MCP Server",
+    "mcp.sync": "同步 MCP 工具清单",
+    "agent.create": "登记 Agent",
+    "agent.update": "修改 Agent",
+    "agent.suspend": "停用 Agent（紧急停用开关）",
+    "agent.resume": "恢复 Agent",
+    "review.request": "顾客申请复核",
+    "review.resolve": "完成复核",
 }
 MAX_DIFF_CHARS = 4000
 anchor_logger = logging.getLogger("loopdesk.audit")
@@ -89,6 +102,8 @@ def _mac(entry: AuditLog) -> str:
 
 def record(db: Session, principal: Principal, action: str, target: str = "", **detail: Any) -> AuditLog:
     assert action in ACTIONS, action
+    if principal.tenant.data_residency:  # a residency tag on everything this tenant's audit log holds
+        detail.setdefault("residency", principal.tenant.data_residency)
     seq = db.execute(update(Tenant).where(Tenant.id == principal.tenant.id).values(audit_seq=Tenant.audit_seq + 1)
                      .returning(Tenant.audit_seq).execution_options(synchronize_session=False)).scalar_one()
     entry = AuditLog(tenant_id=principal.tenant.id, actor_id=principal.user.id, action=action, target=target,

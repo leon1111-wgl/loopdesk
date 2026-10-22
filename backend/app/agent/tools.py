@@ -59,6 +59,8 @@ class ToolContext:
     run_id: str
     conversation_id: int | None
     dry_run: bool = False
+    # The eval sandbox and demo traffic: tenant tools reach only the synthetic merchant systems.
+    sandboxed: bool = False
     evidence: list[Evidence] = field(default_factory=list)
     approval_id: int | None = None  # set when executing a call a human approved
     # The order and payment systems (app/integrations); the demo tables when not given.
@@ -67,6 +69,8 @@ class ToolContext:
     deadline: float | None = None  # the run's, time.monotonic(): gateway calls make no attempts past it
     customer_text: str = ""  # what the customer wrote this turn, PII-masked (the handoff ticket quotes it)
     reranker: Any = None  # app.rag.rerank.Reranker, when one is configured (W5)
+    tools: "ToolRegistry | None" = None  # the tools of this tenant's agent (app/tooling/toolset.py)
+    commerce: Any = None  # the Commerce the run uses: routes tenant tools in the sandbox (app/integrations)
 
     def __post_init__(self) -> None:
         if self.orders is None:
@@ -91,11 +95,13 @@ class ApprovalNeed:
     ``reason`` is for the reviewer and staff: every rule that fired, with its numbers.
     ``customer_note`` is the part a customer may be told, i.e. public policy only. Risk
     controls stay internal: "a fourth refund within 30 days needs review" teaches people
-    to make three.
+    to make three. ``approver_role`` names who may approve when the tool's policy says so
+    (a tenant tool); otherwise the refund rule by amount applies (api/approvals.py).
     """
 
     reason: str
     customer_note: str = ""
+    approver_role: str | None = None
 
 
 class ApprovalRequired(Exception):
@@ -123,9 +129,15 @@ class ToolDef:
     precheck: Handler | None = None
     approval: Policy | None = None
     executed: Executed | None = None
+    # Tenant-declared tools (app/tooling): where it comes from, what people call it, how an
+    # amount in its arguments is written ("HKD 120.00"), and the offline model's hints.
+    source: str = "builtin"  # builtin | http | mcp
+    label: str = ""
+    amount_text: Callable[[dict[str, Any], str], str] | None = None  # (arguments, tenant currency)
+    hints: dict[str, Any] | None = None
 
     def spec(self) -> ToolSpec:
-        return ToolSpec(self.name, self.description, self.parameters)
+        return ToolSpec(self.name, self.description, self.parameters, self.hints)
 
 
 class ToolRegistry:

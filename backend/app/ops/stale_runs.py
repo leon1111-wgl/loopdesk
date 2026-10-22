@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit, telemetry
 from ..agent.business_tools import build_registry
+from ..tooling.toolset import toolset_for
 from ..agent.runtime import APPROVED_FALLBACK_TEXT, REWRITE_BUDGET_SECONDS, rejected_result
 from ..agent.tools import ToolRegistry
 from ..agent.tracing import Tracer
@@ -136,9 +137,12 @@ def _settle(db: Session, run: Run, registry: ToolRegistry, settings: Settings) -
     approval = _resumed_approval(db, run)
     if approval is None:
         return "notified" if _notify(db, run) else None
+    # The tenant's own tools too (app/tooling): their ledger says whether the call went out.
+    tool = registry.get(approval.tool_name) or toolset_for(db, db.get(Tenant, approval.tenant_id), registry,
+                                                           include_disabled=True).get(approval.tool_name)
     if approval.status == "rejected":
-        return _answer(db, run, rejected_result(approval.tool_name, approval.comment)["message"])
-    tool = registry.get(approval.tool_name)
+        label = tool.label if tool is not None else ""
+        return _answer(db, run, rejected_result(approval.tool_name, approval.comment, label)["message"])
     if tool is None or tool.executed is None:
         logger.error("approval %s: cannot tell whether %s ran before its run was interrupted; the decision "
                      "stands, check it by hand", approval.id, approval.tool_name)

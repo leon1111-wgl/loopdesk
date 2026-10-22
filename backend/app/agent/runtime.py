@@ -49,6 +49,8 @@ from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
 from .status_templates import case_state, compose as compose_status
 from .tools import ApprovalNeed, ApprovalRequired, Evidence, ToolContext, ToolError, ToolRegistry, ToolUnavailable
+from ..tooling.output_scan import scan_output
+from ..tooling.toolset import toolset_for
 from .tracing import Tracer
 from .verifier import Verification, verify_answer
 
@@ -99,6 +101,7 @@ class ToolOutcome:
     reason: str = ""  # for reviewers and staff
     customer_note: str = ""  # what a customer may be told about the approval
     arguments: dict[str, Any] | None = None  # normalized arguments a human is asked to approve
+    approver_role: str | None = None  # who may approve, when the tool's policy names it
 
 
 
@@ -113,11 +116,11 @@ def decided_text(status: str, comment: str | None = None) -> str:
     return "提交人已撤回这笔申请，不能再审批" if comment == REQUESTER_WITHDREW else "顾客已撤回这笔申请，不能再审批"
 
 
-def rejected_result(tool: str, comment: str) -> dict[str, Any]:
+def rejected_result(tool: str, comment: str, label: str = "") -> dict[str, Any]:
     """A rejection as a tool result: the model words the answer from it, and a resume killed
     before that tells the customer its message as it stands (app.ops.stale_runs)."""
     return {"status": "rejected", "comment": comment,
-            "message": f"{TOOL_LABEL.get(tool, '该操作')}申请未通过人工审核。审核意见：{comment or '无'}。"}
+            "message": f"{label or TOOL_LABEL.get(tool, '该操作')}申请未通过人工审核。审核意见：{comment or '无'}。"}
 
 
 def _plain(chunk: str) -> str:
@@ -410,7 +413,8 @@ class AgentRuntime:
                     # If the model then fails, the degraded reply is what was done, not a guess.
                     state["executed_message"] = str(outcome.output.get("message") or APPROVED_FALLBACK_TEXT)
             else:
-                outcome = ToolOutcome("result", rejected_result(call.name, comment))
+                tool = self._tools(ctx).get(call.name)
+                outcome = ToolOutcome("result", rejected_result(call.name, comment, tool.label if tool else ""))
                 state["acted"] = True  # the customer must hear "rejected", not a quoted refund policy
                 ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
             messages.append(self._tool_message(call, outcome))
@@ -471,7 +475,7 @@ class AgentRuntime:
     def _loop(self, run: Run, tracer: Tracer, ctx: ToolContext, state: dict[str, Any],
               messages: list[LLMMessage], queue: list[ToolCall], started: float) -> Iterator[dict[str, Any]]:
         stream_tokens = self.settings.evidence_mode != "strict" and not self._judging()
-        specs = [t.spec() for t in self.registry.for_role(ctx.user.role)]
+        specs = [t.spec() for t in self._tools(ctx).for_role(ctx.user.role)]
         # One budget for the whole run: without it, 6 steps x 2 model tiers x 3 attempts x 60 s
         # could hold a connection and a worker thread for over half an hour.
         budget = self.settings.run_deadline_seconds
@@ -495,7 +499,7 @@ class AgentRuntime:
                 # channel (N-078), is never cached: the next customer gets a full search.
                 if outcome.is_error or outcome.output.get("degraded"):
                     state["tool_errors"] = state.get("tool_errors", 0) + 1
-                elif (tool := self.registry.get(call.name)) and tool.risk != "read":
+                elif (tool := self._tools(ctx).get(call.name)) and tool.risk != "read":
                     state["acted"] = True  # something changed: a policy quote would not say so
                 if outcome.output.get("degraded") and not run.error:
                     # Counted as a failure (dashboard, loopdesk_run_errors_total, not "resolved"):
@@ -637,8 +641,8 @@ class AgentRuntime:
 
     # ================================================================ tools
     def _run_tool(self, tracer: Tracer, ctx: ToolContext, call: ToolCall) -> ToolOutcome:
-        tool = self.registry.get(call.name)
-        allowed = {t.name for t in self.registry.for_role(ctx.user.role)}
+        tool = self._tools(ctx).get(call.name)
+        allowed = {t.name for t in self._tools(ctx).for_role(ctx.user.role)}
         with (tracer.span("tool", call.name, {"arguments": call.arguments, "risk": tool.risk if tool else None}) as span,
               _integration_calls(span, ctx.deadline)):
             if tool is None or call.name not in allowed:
@@ -660,20 +664,30 @@ class AgentRuntime:
                         span.set(approval_required=True, reason=need.reason, customer_note=need.customer_note,
                                  arguments=args)
                         return ToolOutcome("approval", reason=need.reason, customer_note=need.customer_note,
-                                           arguments=args)
+                                           arguments=args, approver_role=need.approver_role)
                     try:
                         output = tool.handler(ctx, args)
                     except ApprovalRequired as exc:  # a re-check under the handler's locks (N-039)
                         span.set(approval_required=True, reason=exc.need.reason,
                                  customer_note=exc.need.customer_note, arguments=args, rechecked=True)
                         return ToolOutcome("approval", reason=exc.need.reason, customer_note=exc.need.customer_note,
-                                           arguments=args)
+                                           arguments=args, approver_role=exc.need.approver_role)
+                    # Tool output is untrusted text (a merchant system, an MCP server): what tries to
+                    # instruct the model or reads like a fraud script never reaches it.
+                    output, held = scan_output(call.name, output, _channels(ctx),
+                                               mask=bool((tool.hints or {}).get("returns_pii")))
+                    if held:
+                        span.set(output_held=held)
                     outcome = ToolOutcome("result", output)
                 except ToolError as exc:
                     if isinstance(exc, ToolUnavailable) and ctx.approval_id is not None:
                         raise  # carrying out a reviewer's decision: resume() puts the approval back
                     span.status = "rejected"
-                    outcome = ToolOutcome("result", {"error": str(exc)}, True)
+                    refusal, held = scan_output(call.name, dict(getattr(exc, "output", None) or {"error": str(exc)}),
+                                                _channels(ctx))  # a refusal's code and wording are tool output too
+                    if held:
+                        span.set(output_held=held)
+                    outcome = ToolOutcome("result", refusal, True)
                 except Exception as exc:  # unexpected bug: keep the loop alive, surface in trace
                     self.db.rollback()
                     span.status = "error"
@@ -686,6 +700,11 @@ class AgentRuntime:
         if call.name != "search_knowledge" or outcome.is_error:
             ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
         return outcome
+
+    def _tools(self, ctx: ToolContext) -> ToolRegistry:
+        """This tenant's tools (built-in plus declared, app/tooling); the process registry for a
+        context built without them."""
+        return ctx.tools if ctx.tools is not None else self.registry
 
     @staticmethod
     def _past_deadline(state: dict[str, Any]) -> bool:
@@ -826,11 +845,16 @@ class AgentRuntime:
     def _pause(self, run, tracer, ctx, state, messages, call, queue, outcome, started):
         args = outcome.arguments or call.arguments
         amount = args.get("amount")
-        amount_text = f"（¥{float(amount):.2f}）" if amount is not None else ""
+        tool = self._tools(ctx).get(call.name)
+        if tool is not None and tool.amount_text is not None:  # a tenant tool: its own currency
+            money = tool.amount_text(args, ctx.tenant.currency or "CNY")
+            amount_text = f"（{money}）" if money else ""
+        else:
+            amount_text = f"（¥{float(amount):.2f}）" if amount is not None else ""
         # The approval record keeps the full reason for the reviewer; a customer only hears
         # the public part of it (see ApprovalNeed).
         shown = outcome.reason if ctx.is_staff else outcome.customer_note
-        label = TOOL_LABEL.get(call.name, '操作')
+        label = (tool.label if tool is not None else "") or TOOL_LABEL.get(call.name, '操作')
         if ctx.is_staff:  # filed for a customer, not the staff member's own (N-146)
             order = f"订单 {args['order_id']} 的" if args.get("order_id") else ""
             text = (f"已为顾客提交{order}{label}申请{amount_text}，等待另一位员工审核"
@@ -846,7 +870,7 @@ class AgentRuntime:
         approval = Approval(
             tenant_id=ctx.tenant.id, run_id=run.id, conversation_id=ctx.conversation_id,
             requested_by=ctx.user.id, tool_name=call.name, tool_call_id=call.id, arguments=args,
-            reason=outcome.reason, evidence=[e.to_dict() for e in ctx.evidence],
+            reason=outcome.reason, evidence=[e.to_dict() for e in ctx.evidence], approver_role=outcome.approver_role,
         )
         self.db.add(approval)
         self.db.flush()  # its id goes into the run state and the paused message
@@ -1000,6 +1024,8 @@ class AgentRuntime:
             dry_run=dry_run, evidence=evidence, customer_text=run.input_text or "",
             orders=self.commerce.orders(tenant, self.db), refunds=self.commerce.refunds(tenant, self.db),
             reranker=self.reranker,
+            tools=toolset_for(self.db, tenant, self.registry), commerce=self.commerce,
+            sandboxed=getattr(self.commerce, "sandboxed", False),
         )
 
     def _forward_to_human(self, conversation: Conversation) -> Iterator[dict[str, Any]]:

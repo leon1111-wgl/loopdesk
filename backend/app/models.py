@@ -48,6 +48,19 @@ class Tenant(Base):
     # and the answer cache compare it instead of counting the chunks on every search.
     kb_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     audit_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")  # last audit entry's number
+    # Script customers read (zh-Hans | zh-Hant-HK | zh-Hant-TW): answers are converted at the edge
+    # (app/governance/script.py); stored text stays simplified, what knowledge and checks work in.
+    locale: Mapped[str] = mapped_column(String(16), default="zh-Hans", server_default="zh-Hans")
+    currency: Mapped[str] = mapped_column(String(3), default="CNY", server_default="CNY")  # ISO 4217
+    # Where this tenant's personal data may be processed (e.g. "GBA"), and the regions that counts
+    # as: tools and MCP servers declare a region, audit entries carry the tag (app/governance/residency.py).
+    data_residency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    allowed_regions: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    # Hosts the tenant's own tools and MCP servers may call. Set by the platform operator (tenant
+    # pack), read-only through the tenant API: an admin session cannot point a tool elsewhere.
+    tool_hosts: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    # Disclosure texts per channel, the appeal path, the review SLA, suggestions (app/governance).
+    governance: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -194,6 +207,8 @@ class Approval(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | approved | rejected | withdrawn (by the customer, N-127)
     reviewer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     comment: Mapped[str] = mapped_column(Text, default="")
+    # Who may approve, when the tool's own policy says (a tenant tool); NULL: the refund rule by amount.
+    approver_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -283,6 +298,8 @@ class Ticket(Base):
     # from today's tenant settings), and what was done about it.
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolution: Mapped[str] = mapped_column(Text, default="", server_default="")
+    # A review request (kind "review", 申请复核): the assistant message whose decision is contested.
+    message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Feedback(Base):
@@ -483,3 +500,109 @@ class AuditLog(Base):
     seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mac: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+
+
+class McpServer(Base):
+    """An external MCP server a tenant attached (Streamable HTTP). Its tools come in as TenantTool
+    rows of kind "mcp", disabled until an administrator has set their risk and approval policy."""
+
+    __tablename__ = "mcp_servers"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_mcp_servers_name"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(48))
+    url: Mapped[str] = mapped_column(String(512))
+    auth: Mapped[dict] = mapped_column(JSON, default=dict)  # {"secret": "<ref>", "scheme": "bearer"}: a reference, never the secret
+    region: Mapped[str] = mapped_column(String(16), default="")  # where it processes data (residency)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TenantTool(Base):
+    """A tool a tenant declared (app/tooling): an HTTP endpoint of its own systems, or a tool of an
+    MCP server it attached. Same risk tiers and approval flow as the built-in tools."""
+
+    __tablename__ = "tenant_tools"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_tenant_tools_name"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(48))
+    label: Mapped[str] = mapped_column(String(64), default="")  # what customers and reviewers read: "年费退还"
+    description: Mapped[str] = mapped_column(Text, default="")
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)  # JSON Schema, the subset in tooling/schema.py
+    kind: Mapped[str] = mapped_column(String(8), default="http")  # http | mcp
+    binding: Mapped[dict] = mapped_column(JSON, default=dict)  # http: method, url, auth, timeout, result, errors
+    mcp_server_id: Mapped[int | None] = mapped_column(ForeignKey("mcp_servers.id"), nullable=True)
+    remote_name: Mapped[str | None] = mapped_column(String(128), nullable=True)  # the tool's name on that server
+    # The server's definition (description + schema) as an administrator reviewed it; a server that
+    # later changes it gets the tool disabled until someone looks again.
+    definition_hash: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    risk: Mapped[str] = mapped_column(String(8), default="read")  # read | write | money
+    approval: Mapped[dict] = mapped_column(JSON, default=dict)  # mode never|threshold|always, approver, limits
+    roles: Mapped[list] = mapped_column(JSON, default=list)
+    flags: Mapped[dict] = mapped_column(JSON, default=dict)  # sends_pii, returns_pii, region
+    hints: Mapped[dict] = mapped_column(JSON, default=dict)  # intents (offline model), requires (prior tools)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active | needs_review (MCP definition changed)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ToolExecution(Base):
+    """LoopDesk's record of every write or money call a tenant tool sent, written before it is sent,
+    under the idempotency key every attempt reuses (the refund ledger's pattern for any tool). An
+    approval executes its call once: a retried resume finds this row and its key."""
+
+    __tablename__ = "tool_executions"
+    __table_args__ = (
+        Index("uq_tool_executions_key", "idempotency_key", unique=True),
+        Index("ix_tool_executions_approval", "approval_id"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    tool_id: Mapped[int | None] = mapped_column(ForeignKey("tenant_tools.id"), nullable=True)
+    tool_name: Mapped[str] = mapped_column(String(48))
+    tool_version: Mapped[int] = mapped_column(Integer, default=1)
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    approval_id: Mapped[int | None] = mapped_column(ForeignKey("approvals.id"), nullable=True)
+    conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    arguments: Mapped[dict] = mapped_column(JSON, default=dict)
+    # pending (sent, no answer yet: it may have been done) | succeeded | failed (refused) | unknown
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)  # the output the model saw
+    error: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    ticket_id: Mapped[int | None] = mapped_column(ForeignKey("tickets.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Agent(Base):
+    """The agent registry (HKMA ART, 2026: a registry of material AI agents, accountability by
+    purpose, human intervention): who owns each agent, what it is for, which tools it may use,
+    and a kill switch. A suspended agent answers nobody: every message goes to a person."""
+
+    __tablename__ = "agents"
+    __table_args__ = (UniqueConstraint("tenant_id", "key", name="uq_agents_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    key: Mapped[str] = mapped_column(String(48))
+    name: Mapped[str] = mapped_column(String(128))
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)  # the accountable person
+    channels: Mapped[list] = mapped_column(JSON, default=list)  # web | feishu | voice | api
+    tools: Mapped[list | None] = mapped_column(JSON, nullable=True)  # allowed tool names; NULL: every enabled tool
+    risk_tier: Mapped[str] = mapped_column(String(16), default="high")  # low | medium | high (money actions)
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active | suspended
+    suspended_reason: Mapped[str] = mapped_column(String(500), default="", server_default="")
+    suspended_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

@@ -285,6 +285,18 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.refund_recon
 
 `backend/tests/fake_commerce.py` 是按这份约定写的进程内假服务（经 `httpx.MockTransport` 调用，不走网络），`backend/tests/test_integrations.py` 覆盖查单、越权、物流、自动退款、审批退款、回复丢失后的重发、同一个键还在处理时的 409、无回音、拒绝、订单系统故障（包括执行审批时）、累计风控、对账、升级成工单和多实例对账。接入自己的系统时，可以照着它写契约测试。
 
+## 租户自定义工具（HTTP 与 MCP）
+
+租户管理员在控制台或 `/api/admin/tools`、`/api/admin/mcp-servers` 声明工具和 MCP Server；平台运营方负责三件事：
+
+1. **出站白名单**（管理员接口只读）：`python -m app.ops.tool_hosts --tenant <slug> --set api.example.com,mcp.example.com`。只允许 https 443，解析出私网、回环、链路本地（169.254.169.254）、组播或保留地址的一律拒绝。
+2. **密钥**：工具里写 `"auth": {"secret": "ACME_API", "scheme": "bearer"}`，部署里设 `LOOPDESK_SECRET_ACME_API=<令牌>` 和 `LOOPDESK_SECRET_ACME_API_TENANT=<slug>`（绑定租户，缺一不可）。可选 `"signing_secret"` 按订单网关同样的方式做 HMAC 签名。
+3. **定时任务**：`*/5 * * * * python -m app.ops.tool_reconcile`，把进程在发送和保存结果之间中断留下的写操作交给人工（标为 unknown 并开工单，不会自动重发）。
+
+对方系统需要遵守的约定：按 `X-LoopDesk-Customer`（顾客登录邮箱）或 `X-LoopDesk-Staff` 限定数据范围；写操作支持 `Idempotency-Key`（不支持的在绑定里写 `"idempotency": "none"`，那就只发一次）；拒绝时返回 4xx 和 `{"code": "...", "message": "..."}`，`code` 在工具的 `errors` 里登记给顾客的说法，标 `"restriction": true` 的会附上租户的申诉渠道；收到 `X-LoopDesk-Dry-Run: 1` 时只校验、不办理（只有演示用的虚构系统会收到）。
+
+升级：迁移 0026 新增 `tenant_tools`、`mcp_servers`、`tool_executions`、`agents` 四张表和租户的几个字段，只加不改，可以和旧版本实例同时运行。
+
 ## 接入国产大模型
 
 | 厂商 | `LLM_PRESET` | Base URL | 模型 ID 从哪里获取 |

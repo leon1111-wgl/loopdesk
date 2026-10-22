@@ -32,7 +32,10 @@ class DecisionIn(BaseModel):
 def required_role(a: Approval, tenant: Tenant) -> str:
     """Who may approve: above the tenant's threshold, an administrator only. The four-eyes rule
     alone (no self-approval) left any single agent able to release any amount, because the
-    requester is usually the customer."""
+    requester is usually the customer. A tenant-declared tool's policy names the role itself (in its
+    own amounts and currency), and that is the one enforced."""
+    if a.approver_role:
+        return a.approver_role
     return reviewer_role(tenant, float((a.arguments or {}).get("amount") or 0))
 
 
@@ -95,6 +98,8 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
     if (body.decision == "approve" and required_role(approval, principal.tenant) == "admin"
             and principal.user.role != "admin"):
         threshold = principal.tenant.approval_admin_threshold
+        if approval.approver_role:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "按这个工具的审批策略，需要管理员审批（坐席可以驳回）")
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"金额超过 ¥{threshold:.0f}，需要管理员审批（坐席可以驳回）")
     services = get_services()
     # Resuming runs the agent (and may call the model): it takes a slot like a chat message (N-189).
