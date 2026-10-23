@@ -77,7 +77,17 @@ def asks_for_person(text: str) -> bool:
 # question about refunds ("如果退款的话…", "退款是原路退回吗", "refund rules?") is answered, not filed; a bare
 # statement ("SO… 退货退款") is still a request. A conditional followed by a question is not a request
 # (N-095, `_asks_what_if`): "如果我申请退款，优惠券会退吗" asks what would happen.
-REFUND_RE = re.compile(r"退款|退钱|退货|退掉|退我|refund", re.IGNORECASE)
+# An amount or a share is a refund too (N-155): "退 100 块补偿就行", "退 9999 元", "退一半", "退个差价". Not a count
+# ("退 2 块屏幕膜"), a coupon ("退10元优惠券"), half of something else ("退一半运费"), or what someone else did or said
+# ("商家只退 50 元太少了", "你们说退 100 元，到现在没收到"): the unit is followed by an end, a non-Chinese character or
+# a word that keeps the demand going, and nothing in front of 退 says it is reported.
+# "只退 100 元就行" is a demand; "只退 50 元太少了" is not.
+_AMOUNT_OF = r"\s*(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:元|块)钱?)"
+REFUND_AMOUNT = (r"(?<!只)(?<!说)(?<!说好)(?<!答应)(?<!承诺)(?<!才)退" + _AMOUNT_OF
+                 + r"(?=$|[^一-鿿]|补偿|赔偿|差价|到|就|吧|给|啊|呀|呗|行|好|谢)"
+                 + r"|只退" + _AMOUNT_OF + r"(?=就行|就好|就可以|吧)")
+REFUND_RE = re.compile(r"退款|退钱|退货|退掉|退我|" + REFUND_AMOUNT + r"|退(?:一半|个?差价)(?!运费|邮费|的?运费)|refund",
+                       re.IGNORECASE)
 REFUND_APPLY_RE = re.compile(
     r"我要退|申请退|帮我退|给我退|想退|要退|退一下|退掉|请(?:帮我|直接)?退|直接退|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退"
     r"|退我(?!的)|(?:给|帮|为)(?:客户|顾客|他|她|这位顾客)退"
@@ -88,6 +98,7 @@ NEGATED_REFUND_RE = re.compile(
     r"(?:不是要?|不是想|不想要?|不要|不需要|不用|不打算|没打算|没说要|没想|并不想|先别|别|暂时不|暂不|先不)(?:给我|帮我)?"
     r"(?:申请|开|发起)?(?:退款|退钱|退费|退货|退掉|退了|退我的钱)"
     r"|(?<!为什么)(?<!怎么)(?<!凭什么)(?<!还)不退(?:款|货|钱)(?!.{0,2}就)了?|(?:先|就|还是)?不退了"
+    r"|(?<!为什么)(?<!怎么)(?<!凭什么)(?<!还)不(?:想|要|用)?退\s*(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:元|块))(?!.{0,2}就)了?"
     r"|(?:退款|退货)(?:就|先|还是)?(?:算了|不必了|不用了|不要了|放一放)|取消(?:这笔|这个)?退款(?:申请)?"
     r"|(?:don'?t|do\s+not|didn'?t|did\s+not|haven'?t|have\s+not|never)\s+(?:want(?:ed)?|need(?:ed)?|ask(?:ed)?\s+for"
     r"|request(?:ed)?)\s+(?:a\s+|any\s+|the\s+)?refunds?"
@@ -98,7 +109,7 @@ _ONLY_ASKING_RE = re.compile(r"只是问问|就问问|问问而已|随便问问|
                              re.IGNORECASE)
 # Asking about refunds, unless a request is made too ("如果不能换货就退款").
 REFUND_INQUIRY_RE = re.compile(
-    _ONLY_ASKING_RE.pattern + r"|如果|要是|(?:退款|退货|退)的话|咨询一下|想?问一?下|规则|政策|流程|吗|[？?]|多久|多长时间|怎么|如何"
+    _ONLY_ASKING_RE.pattern + r"|呢(?=[\s，,。.！!？?~～]*$)|哪|如果|要是|(?:退款|退货|退)的话|咨询一下|想?问一?下|规则|政策|流程|吗|[？?]|多久|多长时间|怎么|如何"
     r"|是否|能不能|可不可以|会不会|有没有|(?<![A-Za-z])(?:if|how|what|when|does|do|is|can|will)(?![A-Za-z])",
     re.IGNORECASE)
 

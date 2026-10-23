@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 
 from ..llm.base import LLMMessage, LLMProvider
-from ..textutil import ORDER_ID_RE
+from ..textutil import ORDER_ID_RE, REFUND_AMOUNT, REFUND_RE, refund_withdraw_requested
 
 _LEADING = ("那么", "那", "还有", "另外", "这个", "那个", "它", "如果", "要是")
 _QUESTION_WORDS = re.compile(r"有什么|有哪些|是什么|是多少|怎么|如何|多久|多少|能不能|可不可以|可以吗|吗|呢|[？?。！!]+")
@@ -138,3 +138,41 @@ def rewrite_followup(provider: LLMProvider, model: str, history: list[LLMMessage
         except Exception:  # rewriting is an optimisation; never fail the turn because of it
             pass
     return Rewrite(rule_rewrite(text, previous), "rule"), 0, 0
+
+
+# What a turn about the order in hand is made of (N-155): a refund, an amount, taking one back, where the parcel is,
+# and fillers. Anything left over ("我的马克杯", "另一单", "一般…要几天", "投诉快递员") may be about another order or a
+# policy, so it is not carried: those still list the orders and ask which one, or search the policy.
+_CARRY_WORDS = re.compile(
+    REFUND_AMOUNT + r"|[¥￥]?\d+(?:\.\d+)?\s*(?:元|块)钱?"
+    r"|退款申请|退款|退钱|退货|退掉|退我|退一半|退个?差价|撤回|撤销|收回|取消|作废"
+    r"|物流|快递|包裹|到哪了|到哪儿了|到哪|发货了|签收了|送到了|什么时候到|到了"
+    r"|嗯|啊|哦|噢|呃|好的|好|行|可以|那|就|吧|呢|吗|了|的|呀|哈|呗|麻烦|请|帮我|给我|我要|我想|想|要|申请|直接|一下"
+    r"|也|还是|现在|补偿|赔偿|就行|快点|赶紧|马上|算了|怎么样|查|看看|只|谢谢|谢了|多谢|全额|全部|全款|退了|原卡|原路|差价"
+    r"|质量问题|有问题"
+    r"|[\s，,。.！!？?~～、…]")
+# The previous turn disowned its order ("不对，不是 SO…，是另一单"): nothing to carry.
+_DISOWNED = re.compile(r"不是\s*(?:订单\s*)?SO\d|不对[，,\s]*不是|(?:另一|别的|其他|其它)(?:单|订单|笔)", re.IGNORECASE)
+
+
+_PARCEL = re.compile(r"物流|快递|包裹|到哪|发货了|签收了|送到了|什么时候到|到了")
+
+
+def carry_order(text: str, previous_user_question: str | None) -> str | None:
+    """"SO20261003005 耳机有杂音" → "嗯 退款 100 元": the refund is for that order (N-155).
+
+    A turn that names no order and says nothing but "refund (this much) / take it back / where is it" gets the
+    order the previous turn named, so neither the offline model nor a real one searches policy for "100 元".
+    Only one order carries: after "SO1 和 SO2" the agent still asks which one. Only a bare turn carries: money
+    never moves on an order the customer may not have meant ("我的马克杯想退款" lists the orders, as before).
+    The previous question is the standalone one, so the order keeps carrying turn after turn."""
+    if not previous_user_question or ORDER_ID_RE.search(text) or _DISOWNED.search(previous_user_question):
+        return None
+    named = list(dict.fromkeys(m.upper() for m in ORDER_ID_RE.findall(previous_user_question)))
+    if len(named) != 1:
+        return None
+    if not (REFUND_RE.search(text) or refund_withdraw_requested(text) or _PARCEL.search(text)):
+        return None
+    if _CARRY_WORDS.sub("", text) or text.strip().rstrip(_END_PUNCT).endswith("呢"):
+        return None  # "那退款呢" stays a follow-up question, rewritten as before; refund_requested reads it as a question
+    return f"{named[0]} {text.strip()}"

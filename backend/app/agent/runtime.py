@@ -40,7 +40,7 @@ from ..llm.breaker import CircuitBreaker
 from ..llm.router import ModelRouter
 from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
-from .rewrite import Frame, frame_of, is_followup, next_frame, rewrite_followup
+from .rewrite import Frame, carry_order, frame_of, is_followup, next_frame, rewrite_followup
 from ..observability import request_id_var
 from ..security import Principal
 from .. import telemetry
@@ -239,7 +239,17 @@ class AgentRuntime:
 
             # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
             question = pii.masked
-            if is_followup(text, previous):
+            carried = carry_order(pii.masked, previous)
+            if carried is not None:  # "嗯 退款 100 元" right after "SO… 耳机有杂音": that order (N-155)
+                with tracer.span("rewrite", "order_context", {"question": pii.masked, "previous": previous}) as span:
+                    span.set(standalone=carried, method="order_context")
+                question = carried
+                if user_message is not None:
+                    after = frame_of(question)
+                    user_message.meta = {**(user_message.meta or {}), "standalone": question,
+                                         "frame": {"topic": after.topic, "predicate": after.predicate}}
+                yield {"type": "rewrite", "standalone": question, "method": "order_context"}
+            elif is_followup(text, previous):
                 with tracer.span("rewrite", "followup_rewrite", {"question": pii.masked, "previous": previous}) as span:
                     span.model = self.settings.llm_model_fast
                     # Rewriting is an optimisation with a rule fallback: a failing model is not asked,

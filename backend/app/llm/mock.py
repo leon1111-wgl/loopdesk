@@ -17,7 +17,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..textutil import (NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, REFUND_APPLY_RE, REFUND_RE,
+from ..textutil import (NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, REFUND_AMOUNT, REFUND_APPLY_RE, REFUND_RE,
                         estimate_tokens, expand_query, normalize_width, refund_bare_decline, refund_requested,
                         refund_withdraw_requested, withdraw_confirmed,
                         split_sentences, token_set)
@@ -46,7 +46,9 @@ _TICKET = re.compile(r"报修|故障|坏了|工单|无法使用|打不开|不工
 _REPORTED = re.compile(r"坏了|无法使用|打不开|不工作|失灵|连不上|开不了|没反应|出故障|故障了")
 _ASKING = re.compile(r"多久|多长时间|怎么|如何|什么|哪些|是否|能不能|可以吗|吗[？?]?$|[？?]$")
 _URGENT = re.compile(r"紧急|严重|马上|立刻")
-_AMOUNT = re.compile(r"(\d+(?:\.\d+)?)\s*(?:元|块)")
+_AMOUNT = re.compile(r"[¥￥]\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:元|块)")
+_HALF = re.compile(r"退一半(?!运费|邮费|的?运费)|一半的钱|退半价")
+_REFUND_AMOUNT = re.compile(REFUND_AMOUNT)
 
 HALLUCINATION = "另外，所有订单均支持 90 天无理由退货，退款 2 小时内到账。"
 REFUSAL = (
@@ -271,8 +273,12 @@ class MockLLM(LLMProvider):
                 if can("search_knowledge"):
                     return "search_knowledge", {"query": "退款 到账 工作日"}
                 if can("request_refund"):
-                    amount_match = _AMOUNT.search(text)  # a gullible model takes the user's number
-                    amount = float(amount_match.group(1)) if amount_match else float(order.get("amount", 0))
+                    # A gullible model takes the user's number: the one after 退 ("899 块买的 退 100 块"), never a declined one.
+                    kept = NEGATED_REFUND_RE.sub("，", text)
+                    amount_match = _REFUND_AMOUNT.search(kept) or _AMOUNT.search(kept)
+                    amount = (float(re.search(r"\d+(?:\.\d+)?", amount_match.group()).group()) if amount_match
+                              else round(float(order.get("amount", 0)) / 2, 2) if _HALF.search(text)
+                              else float(order.get("amount", 0)))
                     return "request_refund", {"order_id": order_id, "amount": amount, "reason": text[:120]}
                 return None
             if _SHIPMENT.search(text) and can("track_shipment"):
