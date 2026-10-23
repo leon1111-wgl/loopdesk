@@ -19,7 +19,7 @@ from typing import Any
 
 from ..textutil import (NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, REFUND_APPLY_RE, REFUND_RE,
                         estimate_tokens, expand_query, normalize_width, refund_bare_decline, refund_requested,
-                        refund_withdraw_requested,
+                        refund_withdraw_requested, withdraw_confirmed,
                         split_sentences, token_set)
 from .base import ChatResult, LLMMessage, LLMProvider, StreamEvent, ToolCall, ToolSpec, Usage
 
@@ -229,6 +229,9 @@ class MockLLM(LLMProvider):
                 return "track_shipment", {"order_id": found[len(tracked)]}
             return None
 
+        if not order_ids and withdraw_confirmed(text):  # "确认撤回": the tool takes the order from its own offer (N-145)
+            return ("withdraw_refund_request", {}) if can("withdraw_refund_request") else None
+
         if about_my_order(text) and "list_my_orders" in available:
             if can("list_my_orders"):
                 return "list_my_orders", {}
@@ -248,7 +251,8 @@ class MockLLM(LLMProvider):
             if order.get("error"):
                 return None
             # "我刚才的退款申请能撤回吗", or "不想退了" while one waits for review: take it back (N-127).
-            if refund_withdraw_requested(text) or (order.get("refund_awaiting_approval") and refund_bare_decline(text)):
+            if (refund_withdraw_requested(text) or withdraw_confirmed(text)
+                    or (order.get("refund_awaiting_approval") and refund_bare_decline(text))):
                 return ("withdraw_refund_request", {"order_id": order_id}) if can("withdraw_refund_request") else None
             if asks_refund_status(text):  # answer from the order's refunds; never file one
                 live = order.get("refund_awaiting_approval") or any(

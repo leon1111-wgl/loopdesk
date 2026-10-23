@@ -214,6 +214,8 @@ _NOT_WITHDRAW_RE = re.compile(
     rf"|(?:为什么|为啥|凭什么|谁)[^，,。！!？?]{{0,12}}{_WITHDRAW_VERB}|怎么回事|被{_WITHDRAW_VERB}"
     rf"|{_WITHDRAW_VERB}[^，,。！!？?]{{0,8}}?(?:以后|之后|后(?![悔面续]))"
     rf"|{_WITHDRAW_VERB}[^，,。！!？?]{{0,10}}算了|{_WITHDRAW_VERB}.*?(?:继续退|还是要?退)"
+    # "撤回不了吧 我还要退的", "cancel the refund? no, keep it": keeping it, wherever it is said (N-145)
+    r"|还要退|还得退|要继续退|(?<![A-Za-z])keep\s+(?:it|the\s+refund|my\s+refund)(?![A-Za-z])"
     r"|(?:don'?t|do\s+not|didn'?t|did\s+not)\s+(?:cancel|withdraw)|(?<![A-Za-z])(?:why|who)(?![A-Za-z])", re.IGNORECASE)
 
 
@@ -225,6 +227,19 @@ def refund_withdraw_requested(text: str) -> bool:
     text = _CJK_SPACE_RE.sub("", ORDER_ID_RE.sub("", normalize_width(text or "")))  # "撤回 SO… 的退款"
     return (bool(WITHDRAW_REFUND_RE.search(text)) and bool(REFUND_RE.search(text) or "退" in text)
             and not _NOT_WITHDRAW_RE.search(text))
+
+
+# The second step of a withdrawal (N-145): the customer's whole reply is the confirmation the offer asked for,
+# with or without the order number ("确认撤回 SO…", "好的，确认撤回", "是的，撤回"). "确认撤回吗？" asks; it does not.
+_WITHDRAW_CONFIRM_RE = re.compile(
+    r"(?:好的?|嗯|对|是的?|那就?|ok)*(?:确认|确定)?(?:要)?撤回(?:订单)?(?:这笔|我的|的)*(?:退款申请|申请|退款)?(?:吧|谢谢)?"
+    r"|(?:yes)?confirm(?:the)?withdraw(?:al)?", re.IGNORECASE)
+_CONFIRM_FILLER_RE = re.compile(r"[\s，,。.！!～~、]+|SO\d+", re.IGNORECASE)
+
+
+def withdraw_confirmed(text: str) -> bool:
+    """True when the message is nothing but a confirmation of a withdrawal offered the turn before."""
+    return bool(_WITHDRAW_CONFIRM_RE.fullmatch(_CONFIRM_FILLER_RE.sub("", normalize_width(text or ""))))
 
 
 def refund_bare_decline(text: str) -> bool:

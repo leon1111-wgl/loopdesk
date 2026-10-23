@@ -29,8 +29,8 @@ from ..models import Approval, Conversation, Message, Refund, Run, Tenant, Ticke
 from ..rag.conflicts import disputed
 from ..rag.retrieval import gate_options, hybrid_search
 from ..security import Principal
-from ..textutil import (REFUND_RE, normalize_width, refund_bare_decline, refund_declined, refund_requested,
-                        refund_withdraw_requested)
+from ..textutil import (ORDER_ID_RE, REFUND_RE, normalize_width, refund_bare_decline, refund_declined, refund_requested,
+                        refund_withdraw_requested, withdraw_confirmed)
 from . import handoff
 from .tools import ApprovalNeed, ApprovalRequired, ToolContext, ToolDef, ToolError, ToolRegistry, ToolUnavailable
 
@@ -658,16 +658,59 @@ def _end_paused_run(ctx: ToolContext, approval: Approval, now: datetime) -> None
             conversation.updated_at = now
 
 
+def _withdraw_offer(ctx: ToolContext) -> dict[str, Any] | None:
+    """The withdrawal this conversation's previous answer offered (N-145), read from that run's own tool
+    output, not from its wording. Only the answer right before this turn counts, and only if the offer was the
+    last thing that run did: an answer that went on to something else, or a customer turn left unanswered
+    since (a crash, a message forwarded to a person), ends it."""
+    if ctx.conversation_id is None:
+        return None
+    last = ctx.db.execute(select(Message).where(
+        Message.conversation_id == ctx.conversation_id, Message.role.in_(("assistant", "agent", "system")))
+        .order_by(Message.id.desc()).limit(1)).scalar_one_or_none()
+    run = ctx.db.get(Run, last.run_id) if last is not None and last.run_id else None
+    if run is None or run.id == ctx.run_id or run.user_id != ctx.user.id or run.status != "completed":
+        return None
+    if ctx.db.execute(select(func.count(Message.id)).where(
+            Message.conversation_id == ctx.conversation_id, Message.role == "user", Message.id > last.id)).scalar_one() > 1:
+        return None
+    if ((run.state or {}).get("tools") or [None])[-1] != "withdraw_refund_request":
+        return None
+    for item in reversed((run.state or {}).get("evidence") or []):
+        if item.get("kind") == "tool" and item.get("title") == "withdraw_refund_request":
+            try:
+                output = json.loads(item.get("text") or "{}")
+            except ValueError:
+                return None
+            return output if output.get("confirm_required") else None
+    return None
+
+
 def withdraw_refund_request(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    """The customer takes back their own refund application while it waits for review (N-127).
+    """The customer takes back their own refund application while it waits for review (N-127), in two
+    steps (N-145): the first call only states what withdrawing means and asks for "确认撤回"; the call in
+    the next turn, when that is all the customer wrote, withdraws exactly the applications offered.
     No money moves: the approval leaves the queue as "withdrawn", its paused run ends, and a reviewer
     who opens it afterwards gets 409 instead of paying out what the customer called off. A refund
     already filed with the payment system is not withdrawn here: that is a person's job."""
-    order = _load_order(ctx, _order_id(args))
+    from ..voice.confirm import classify_reply  # the closed set of yeses the voice read-back accepts
+
     text = normalize_width(ctx.customer_text)
+    offer = _withdraw_offer(ctx)
+    named = {m.upper() for m in ORDER_ID_RE.findall(text)}
+    confirming = (offer is not None and named <= {offer.get("order_id")}  # "确认撤回 SO…" naming another order is not this one
+                  and (withdraw_confirmed(text) or classify_reply(text) == "yes"))
+    # "不用了 / 算了不撤了" after the offer: keep it, do not ask again. "取消退款申请", "不退了" restate the
+    # withdrawal (classify_reply hears 取消 / 不退 as a no): they get the offer again, never "kept" (review).
+    if (offer is not None and classify_reply(text) == "no" and not refund_withdraw_requested(text)
+            and not refund_bare_decline(text)):
+        return {"withdrawn": False, "kept": True, "order_id": offer.get("order_id"),
+                "message": f"好的，不撤回订单 {offer.get('order_id')} 的退款申请。"}
+    fallback = offer if confirming else {"order_id": next(iter(named))} if len(named) == 1 else {}
+    order = _load_order(ctx, _order_id(args if args.get("order_id") else fallback))
     # A turn that files or chases a refund ("我要退款", "SO… 退了吧", "退款到哪了") never takes one back, whatever
     # the model makes of it; "撤回退款申请", "不想退了" and a bare "是的" after the model asked may.
-    if not refund_withdraw_requested(text) and (
+    if not refund_withdraw_requested(text) and not confirming and (
             refund_requested(text) or (REFUND_RE.search(text) and not refund_bare_decline(text))):
         raise ToolError("顾客这句话没有要求撤回退款申请，不能撤回。请回答顾客的问题。")
     mine = ctx.db.execute(select(Approval).join(Run, Run.id == Approval.run_id).where(
@@ -681,6 +724,15 @@ def withdraw_refund_request(ctx: ToolContext, args: dict[str, Any]) -> dict[str,
                    f"订单 {order.order_id} 的退款已提交到支付系统（退款单 #{live.id}），无法在线撤回；如需处理请转人工客服。")
         return {"withdrawn": False, "order_id": order.order_id, "refund_id": None if live is None else live.id,
                 "message": message}
+    offered = set(offer.get("approval_ids") or []) if confirming and offer.get("order_id") == order.order_id else set()
+    if not offered & {a.id for a in waiting}:  # step one: say what it means, take nothing back yet
+        amount = round(sum(float((a.arguments or {}).get("amount") or 0) for a in waiting), 2)
+        return {"withdrawn": False, "confirm_required": True, "order_id": order.order_id, "amount": amount,
+                "approval_ids": [a.id for a in waiting],
+                "message": f"订单 {order.order_id} 的退款申请（¥{amount:.2f}）目前仍在等待人工审核，还没有撤回。"
+                           "撤回后这笔款项不会退回，以后如需退款要重新申请、重新排队审核。"
+                           f"确定要撤回的话，请回复“确认撤回 {order.order_id}”。"}
+    waiting = [a for a in waiting if a.id in offered]  # one filed after the offer was not part of it
     amount = round(sum(float((a.arguments or {}).get("amount") or 0) for a in waiting), 2)
     if ctx.dry_run:
         return {"withdrawn": False, "order_id": order.order_id, "amount": amount,
@@ -839,12 +891,12 @@ def build_registry() -> ToolRegistry:
     ))
     registry.register(ToolDef(
         name="withdraw_refund_request",
-        description=("撤回顾客自己还在等待人工审核的退款申请（不会退钱）。只在顾客明确说撤回、取消退款申请或不想退了时调用；"
+        description=("撤回顾客自己还在等待人工审核的退款申请（不会退钱）。顾客说撤回、取消退款申请或不想退了时调用：第一次调用只返回"
+                     "说明并请顾客回复“确认撤回”，不会撤回；顾客下一句确认后再调用一次才真正撤回（确认时可不填订单号）。"
                      "已提交到支付系统的退款不能撤回，按返回的提示告知顾客。"),
         parameters={
             "type": "object",
-            "properties": {"order_id": {"type": "string", "description": "订单号"}},
-            "required": ["order_id"],
+            "properties": {"order_id": {"type": "string", "description": "订单号（顾客确认撤回时可省略）"}},
         },
         handler=withdraw_refund_request,
         risk="write",
