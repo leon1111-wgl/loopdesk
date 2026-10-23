@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+from anyio import to_thread
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 from fastapi.staticfiles import StaticFiles
 
+from . import admission
 from .api import answer_cache as answer_cache_api
 from .api import (approvals, audit, auth, channels, chat, evals, exports, flywheel, handoffs, kb, metrics, refunds,
                   tickets, traces, voice)
@@ -96,6 +100,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     check_audit_key(settings)
     set_settings(settings)
     init_engine(settings.database_url)
+    admission.configure(settings.max_inflight_runs)
     prepare_database(settings.database_url, settings.auto_migrate, settings.external_migrations)
     services = Services(settings)
     set_services(services)
@@ -111,10 +116,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             else:  # never hold up startup on a real model (N-032)
                 threading.Thread(target=_demo_traffic, args=(services,), name="demo-traffic", daemon=True).start()
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Sync endpoints run on this pool (40 threads by default). An admitted run holds a thread
+        # (the request, or the stream's relay) while it waits on the model, so leave room for
+        # everything else (N-158).
+        to_thread.current_default_thread_limiter().total_tokens = settings.max_inflight_runs + 40
+        yield
+
     app = FastAPI(
         title="LoopDesk API",
         version="1.0.0",
         description="证据优先、会自我进化的企业客服 Agent 平台",
+        lifespan=lifespan,
     )
     app.add_middleware(
         CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,
@@ -148,7 +162,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse({"status": "ready" if ok else "not_ready", "checks": checks}, status_code=200 if ok else 503)
 
     @app.get("/api/health", tags=["meta"])
-    def health() -> dict:
+    async def health() -> dict:  # on the event loop: answers even when every worker thread is busy (N-158)
         return {
             "status": "ok",
             "llm_provider": settings.llm_provider,

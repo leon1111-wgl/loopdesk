@@ -13,6 +13,9 @@ data:
   LOOPDESK_LLM_BASE_URL: https://api.deepseek.com/v1
   LOOPDESK_LLM_MODEL: replace-with-the-model-id
   LOOPDESK_RUN_DEADLINE_SECONDS: "45"
+  # Answers one pod holds open at once; more get 503 + Retry-After at once (docs/PERFORMANCE.md).
+  # overlays/inflight-autoscaling adds pods on this signal before that happens.
+  LOOPDESK_MAX_INFLIGHT_RUNS: "64"
   # Proxies whose X-Forwarded-For uvicorn believes, so the login limit counts each customer's IP: your
   # cluster's pod network, which the ingress controller connects from (set your own CIDR). uvicorn takes
   # the rightmost address not in this list, the one the controller appended, so clients outside the

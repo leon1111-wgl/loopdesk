@@ -8,6 +8,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..admission import get_admission
 from ..config import prompt_version_name
 from ..db import get_db
 from ..agent.outcome import is_refusal
@@ -236,4 +237,13 @@ def prometheus(db: Session = Depends(get_db)) -> str:
     errors = db.execute(select(func.count(Run.id)).where(Run.is_eval.is_(False), Run.error.isnot(None))).scalar_one()
     lines += ["# HELP loopdesk_run_errors_total Agent runs that hit an error (model, timeout, crash)",
               "# TYPE loopdesk_run_errors_total counter", f"loopdesk_run_errors_total {errors}"]
+    # Per process, unlike the totals above (which come from the shared database): scrape every pod.
+    # The autoscaler follows in-flight runs, since a pod waiting on the model is busy at low CPU (N-158).
+    admission = get_admission()
+    lines += ["# HELP loopdesk_inflight_runs Agent runs this process is serving now",
+              "# TYPE loopdesk_inflight_runs gauge", f"loopdesk_inflight_runs {admission.inflight}",
+              "# HELP loopdesk_inflight_runs_limit Runs this process admits at once (LOOPDESK_MAX_INFLIGHT_RUNS)",
+              "# TYPE loopdesk_inflight_runs_limit gauge", f"loopdesk_inflight_runs_limit {admission.limit}",
+              "# HELP loopdesk_runs_rejected_total Chat requests turned away with 503 because the process was full",
+              "# TYPE loopdesk_runs_rejected_total counter", f"loopdesk_runs_rejected_total {admission.rejected}"]
     return "\n".join(lines) + "\n"

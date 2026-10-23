@@ -216,6 +216,9 @@ class Settings:
     output_guard: str = "rules"
     pii_masking: bool = True
     rate_limit_per_minute: int = 30
+    # Agent runs one process holds open at once; past it chat requests get 503 + Retry-After at once
+    # (app/admission.py, N-158). The worker thread pool is sized from it.
+    max_inflight_runs: int = 64
     login_attempts_per_email: int = 10  # per minute, against password guessing on one account
     login_attempts_per_ip: int = 30  # per minute, against spraying many accounts from one client
     rate_limit_backend: str = "auto"  # login limits: database (shared by workers) on PostgreSQL, memory on SQLite
@@ -341,6 +344,9 @@ class Settings:
             raise ValueError(f"LOOPDESK_OUTPUT_GUARD must be rules or llm, not {s.output_guard!r}")
         s.pii_masking = _env_bool("PII_MASKING", s.pii_masking)
         s.rate_limit_per_minute = _env_int("RATE_LIMIT_PER_MINUTE", s.rate_limit_per_minute)
+        s.max_inflight_runs = _env_int("MAX_INFLIGHT_RUNS", s.max_inflight_runs)
+        if s.max_inflight_runs < 1:
+            raise ValueError("LOOPDESK_MAX_INFLIGHT_RUNS must be at least 1")
         s.login_attempts_per_email = _env_int("LOGIN_ATTEMPTS_PER_EMAIL", s.login_attempts_per_email)
         s.login_attempts_per_ip = _env_int("LOGIN_ATTEMPTS_PER_IP", s.login_attempts_per_ip)
         s.rate_limit_backend = _env("RATE_LIMIT_BACKEND") or s.rate_limit_backend

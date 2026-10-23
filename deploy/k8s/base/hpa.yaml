@@ -1,5 +1,7 @@
-# CPU is a proxy: a replica spends most of a real-model answer waiting on the model, so watch the
-# p95 of /api/chat too (docs/PERFORMANCE.md) before trusting this to keep latency down.
+# CPU alone under-reacts: a replica waiting on the model is full at 3% CPU (N-158, docs/PERFORMANCE.md).
+# With Prometheus and Prometheus Adapter (or KEDA) in the cluster, apply overlays/inflight-autoscaling
+# instead, which also scales on answers in flight. It is not in the base on purpose: an HPA with a
+# metric it cannot read still scales up on the others but never scales down.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

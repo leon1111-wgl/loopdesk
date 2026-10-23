@@ -5,10 +5,16 @@ concurrent clients for a fixed time against POST /api/chat, once per concurrency
 
     python -m app.evals.load_bench --concurrency 1,4,16 --duration 10 --report perf.json
     python -m app.evals.load_bench --database-url postgresql+psycopg://... --workers 4
+    python -m app.evals.load_bench --model-latency 6 --concurrency 20,60,120   # slow model, bursts
 
 What it measures is the platform around the model (routing, retrieval, tools, verifier,
 tracing, database writes), because the offline model answers instantly. With a real model
 the model latency dominates and the numbers below become a floor, not a forecast.
+
+``--model-latency S`` points the server at a fake model that takes S seconds per call
+(``fake_model``) and switches to bursts: each level sends ``concurrency`` requests at once,
+one per client, and reports how many were answered, how many were turned away (503) and how
+slow ``/api/health`` got meanwhile. That measures how many answers one process holds open (N-158).
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ from pathlib import Path
 
 import httpx
 
+from . import fake_model
 from .scratch import scratch_database_url
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -103,23 +110,51 @@ def _server_ms(response: httpx.Response) -> float | None:
     return None
 
 
-def _run_level(base: str, tokens: dict[str, str], concurrency: int, duration: float) -> dict:
+def _chat_stream(client: httpx.Client, question: str, token: str) -> httpx.Response:
+    """What the console does: a new conversation, then the SSE stream read to the end."""
+    auth = {"Authorization": f"Bearer {token}"}
+    created = client.post("/api/conversations", json={}, headers=auth)
+    if created.status_code != 200:
+        return created
+    with client.stream("POST", f"/api/conversations/{created.json()['id']}/stream",
+                       json={"content": question}, headers=auth) as response:
+        response.read()
+    return response
+
+
+def _run_level(base: str, tokens: dict[str, str], concurrency: int, duration: float, burst: bool = False,
+               stream: bool = False) -> dict:
     latencies: list[float] = []
     server: list[float] = []
     errors: dict[str, int] = {}
+    health: list[float] = []
+    turned_away: list[float] = []  # 503s: how fast a full process says so
     lock = threading.Lock()
     deadline = time.monotonic() + duration
+    finished = threading.Event()
+
+    def probe() -> None:  # liveness while the level runs: a probe that hangs gets the pod restarted
+        with httpx.Client(base_url=base, timeout=120) as client:
+            while not finished.wait(0.5):
+                started = time.perf_counter()
+                try:
+                    client.get("/api/health")
+                except httpx.HTTPError:
+                    pass
+                health.append((time.perf_counter() - started) * 1000)
 
     def worker(offset: int) -> None:
-        with httpx.Client(base_url=base, timeout=30) as client:
+        with httpx.Client(base_url=base, timeout=120 if burst else 30) as client:
             i = offset
-            while time.monotonic() < deadline:
+            while time.monotonic() < deadline or (burst and i == offset):
                 email, question = QUESTIONS[i % len(QUESTIONS)]
                 i += 1
                 started = time.perf_counter()
                 try:
-                    r = client.post("/api/chat", json={"content": question},
-                                    headers={"Authorization": f"Bearer {tokens[email]}"})
+                    # A burst's questions differ, so none is served from the answer cache.
+                    text = f"{question}（第{offset}次）" if burst else question
+                    r = _chat_stream(client, text, tokens[email]) if stream else client.post(
+                        "/api/chat", json={"content": text}, headers={"Authorization": f"Bearer {tokens[email]}"})
                     key = None if r.status_code == 200 else str(r.status_code)
                     in_app = _server_ms(r)
                 except httpx.HTTPError as exc:
@@ -132,12 +167,23 @@ def _run_level(base: str, tokens: dict[str, str], concurrency: int, duration: fl
                             server.append(in_app)
                     else:
                         errors[key] = errors.get(key, 0) + 1
+                        if key == "503":
+                            turned_away.append(elapsed)
+                if burst:
+                    return
 
+    started_at = time.perf_counter()
+    prober = threading.Thread(target=probe)
+    prober.start()
     threads = [threading.Thread(target=worker, args=(n,)) for n in range(concurrency)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+    finished.set()
+    prober.join()
+    if burst:
+        duration = time.perf_counter() - started_at
     ok = len(latencies)
     total = ok + sum(errors.values())
     return {
@@ -151,6 +197,9 @@ def _run_level(base: str, tokens: dict[str, str], concurrency: int, duration: fl
         # Inside the app; the gap to the client numbers is network, queueing and the HTTP server.
         "server_p50_ms": round(_percentile(server, 0.5), 1),
         "server_p99_ms": round(_percentile(server, 0.99), 1),
+        "wall_s": round(duration, 1),
+        "health_max_ms": round(max(health), 1) if health else 0.0,
+        "rejected_p95_ms": round(_percentile(turned_away, 0.95), 1),
     }
 
 
@@ -163,25 +212,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cache", choices=["off", "on"], default="off", help="answer cache for repeated FAQs")
     parser.add_argument("--warmup", type=float, default=5.0,
                         help="seconds of unmeasured traffic first, so every worker has loaded jieba and built its index")
+    parser.add_argument("--model-latency", type=float,
+                        help="seconds per call of a fake OpenAI-compatible model; sends bursts instead (N-158); the admission limit is per process, so with --workers N it is N times larger")
+    parser.add_argument("--endpoint", choices=["chat", "stream"], default="chat",
+                        help="stream: create a conversation and read the SSE stream, as the console does")
+    parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
+                        help="extra server environment, e.g. LOOPDESK_MAX_INFLIGHT_RUNS=64")
     parser.add_argument("--report")
     args = parser.parse_args(argv)
 
     database_url = args.database_url or scratch_database_url("load")
     _prepare_database(database_url)
-    proc, base = _start_server(database_url, args.workers, 24.0 if args.cache == "on" else 0.0)
+    extra = dict(item.split("=", 1) for item in args.env)
+    burst = args.model_latency is not None
+    if burst:
+        _, model_url = fake_model.start(args.model_latency)
+        extra = {"LOOPDESK_LLM_PROVIDER": "openai_compat", "LOOPDESK_LLM_BASE_URL": model_url,
+                 "LOOPDESK_LLM_API_KEY": "fake", "LOOPDESK_LLM_MODEL": "fake", **extra}
+    proc, base = _start_server(database_url, args.workers, 24.0 if args.cache == "on" else 0.0, extra)
     try:
         tokens = {}
         for email in {e for e, _ in QUESTIONS}:
             r = httpx.post(f"{base}/api/auth/login", json={"email": email, "password": "loopdesk-demo"}, timeout=10)
             tokens[email] = r.json()["token"]
-        if args.warmup > 0:  # steady state, not start-up: each worker process warms its own caches
+        if args.warmup > 0 and not burst:  # steady state, not start-up: each worker process warms its own caches
             _run_level(base, tokens, max(int(c) for c in args.concurrency.split(",")), args.warmup)
-        levels = [_run_level(base, tokens, int(c), args.duration) for c in args.concurrency.split(",")]
+        levels = [_run_level(base, tokens, int(c), args.duration, burst, args.endpoint == "stream")
+                  for c in args.concurrency.split(",")]
     finally:
         proc.terminate()
         proc.wait(timeout=10)
     report = {"database": database_url.split(":", 1)[0], "workers": args.workers, "cache": args.cache,
-              "duration_s": args.duration, "warmup_s": args.warmup, "levels": levels}
+              "duration_s": args.duration, "warmup_s": args.warmup, "model_latency_s": args.model_latency,
+              "endpoint": args.endpoint,
+              "env": extra if not burst else {k: v for k, v in extra.items() if "LLM" not in k}, "levels": levels}
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if args.report:
         Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2))

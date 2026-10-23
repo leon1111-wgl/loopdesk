@@ -1,0 +1,35 @@
+# The base, scaling on answers in flight as well as CPU (N-158). A pod waiting on the model is full at
+# low CPU; each pod admits LOOPDESK_MAX_INFLIGHT_RUNS (64) answers and turns the rest away with 503.
+# Needs Prometheus scraping the pods (the annotations below, or a PodMonitor) and Prometheus Adapter
+# (or KEDA) serving loopdesk_inflight_runs on the custom metrics API, e.g. an adapter rule:
+#   - seriesQuery: 'loopdesk_inflight_runs{namespace!="",pod!=""}'
+#     resources: {overrides: {namespace: {resource: namespace}, pod: {resource: pod}}}
+#     metricsQuery: 'avg_over_time(<<.Series>>{<<.LabelMatchers>>}[1m])'
+# Without the adapter, do not use this overlay: the HPA would scale up on CPU but never back down.
+# The target, 40 of 64, adds pods before requests are turned away; a new pod takes tens of seconds,
+# which the headroom and Retry-After cover.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target: {kind: HorizontalPodAutoscaler, name: loopdesk}
+    patch: |-
+      - op: add
+        path: /spec/metrics/0
+        value:
+          type: Pods
+          pods:
+            metric:
+              name: loopdesk_inflight_runs
+            target:
+              type: AverageValue
+              averageValue: "40"
+  - target: {kind: Deployment, name: loopdesk}
+    patch: |-
+      - op: add
+        path: /spec/template/metadata/annotations
+        value:
+          prometheus.io/scrape: "true"
+          prometheus.io/port: "8000"
+          prometheus.io/path: /metrics

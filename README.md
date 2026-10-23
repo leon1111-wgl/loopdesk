@@ -297,7 +297,7 @@ LOOPDESK_LLM_MODEL_FAST=<更便宜的模型>
 
 **规模测试**（GitHub Actions 4 vCPU，离线模型，PostgreSQL，4 个 worker，压测客户端和服务同机）：并发 16 时 113 RPS、p95 181ms、p99 265ms；并发 64 时 87 RPS、p95 1.05 秒、p99 1.28 秒，全程 0 错误；4 核在并发 16 左右饱和，之后只是排队。Kubernetes 上按副本扩容（`deploy/k8s` 的 HPA）。没有真实流量，这不是线上容量，见 [PERFORMANCE](docs/PERFORMANCE.md#规模测试并发-164w72026-10-22github-actions-实测)。
 
-**性能基线**（`python -m app.evals.load_bench`，离线模型）：本机（Apple M1 Max、单进程、SQLite WAL）并发 1 时约 160 RPS，其中分词缓存贡献了 11%–15%；GitHub Actions 上同一次运行内对比：PostgreSQL 改为批量写链路后，单 worker 吞吐提升 39%–47%；并发 16 时 4 workers 达到 129.7 RPS、p99 193ms。检索改为倒排表加向量矩阵后，2 万片段时单次检索从 391ms 降到 10ms（排序结果与逐个扫描一致）。每一步的数据、没有采用的方案和仍未解释的现象见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。测的是模型以外的平台开销，不代表接入真实模型后的线上表现。
+**性能基线**（`python -m app.evals.load_bench`，离线模型）：本机（Apple M1 Max、单进程、SQLite WAL）并发 1 时约 160 RPS，其中分词缓存贡献了 11%–15%；GitHub Actions 上同一次运行内对比：PostgreSQL 改为批量写链路后，单 worker 吞吐提升 39%–47%；并发 16 时 4 workers 达到 129.7 RPS、p99 193ms。检索改为倒排表加向量矩阵后，2 万片段时单次检索从 391ms 降到 10ms（排序结果与逐个扫描一致）。每一步的数据、没有采用的方案和仍未解释的现象见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。测的是模型以外的平台开销，不代表接入真实模型后的线上表现。接一个每次 6 秒的假模型做突发压测（`--model-latency 6`）：改动前 60 个同时到达就有 15 个等 30 秒后 500、健康检查卡 30 秒；现在每进程最多同时运行 64 个回答，60 个全部答完（p50 6.2 秒），120 个时多出的 56 个立即 503 + `Retry-After`，流式接口同样处理；可选的 overlay 让 HPA 按在途运行数扩容（N-158）。
 
 ## 目录结构
 

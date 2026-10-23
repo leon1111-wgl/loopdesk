@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..admission import get_admission
 from ..agent import handoff
 from ..agent.runtime import RunOptions, collect, customer_meta
 from ..config import get_settings
@@ -123,23 +124,37 @@ def stream_message(conversation_id: int, body: ChatIn, principal: Principal = De
     _load_conversation(db, principal, conversation_id)
     options = _options(principal, body)
     user_id, tenant_id = principal.user.id, principal.tenant.id
+    # FastAPI closes the request session only after the response, i.e. after the whole stream; the
+    # user and conversation lookups left a connection checked out, so every stream held two (N-158).
+    db.close()
+    admission = get_admission()
+    admission.enter()  # 503 before the stream starts; the run thread gives the slot back
 
     def run() -> Iterator[dict]:
-        session = new_session()  # the request-scoped session is closed once streaming starts
         try:
-            runtime = get_services().runtime(session)
-            yield from runtime.start(
-                tenant=session.get(Tenant, tenant_id), user=session.get(User, user_id),
-                text=body.content, conversation=session.get(Conversation, conversation_id), options=options,
-            )
-        except Exception as exc:  # report instead of silently cutting the stream
-            session.rollback()
-            yield {"type": "error", "message": str(exc)[:300]}
+            session = new_session()  # the run outlives the request: its own session
+            try:
+                runtime = get_services().runtime(session)
+                yield from runtime.start(
+                    tenant=session.get(Tenant, tenant_id), user=session.get(User, user_id),
+                    text=body.content, conversation=session.get(Conversation, conversation_id), options=options,
+                )
+            except Exception as exc:  # report instead of silently cutting the stream
+                session.rollback()
+                yield {"type": "error", "message": str(exc)[:300]}
+            finally:
+                session.close()
         finally:
-            session.close()
+            admission.leave()
+
+    try:
+        relay = detached(run)  # starts now, so the slot is given back even if the response never starts
+    except BaseException:  # no thread (can't start new thread under overload): nothing else will
+        admission.leave()
+        raise
 
     def events() -> Iterator[str]:
-        for event in detached(run):
+        for event in relay:
             yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream",
@@ -152,7 +167,10 @@ def detached(produce: Callable[[], Iterator[dict]]) -> Iterator[dict]:
     A customer who closes the tab mid-answer stops consuming the stream. Without this,
     the run would stop at its current step (the runtime records it as failed), with tool
     side effects (a refund) but no answer saved. Here the run always finishes: the answer is
-    in the conversation when the customer comes back, and the trace is complete."""
+    in the conversation when the customer comes back, and the trace is complete.
+
+    The thread starts on the call, not on the first read: the caller has taken an admission
+    slot that only the run gives back (N-158)."""
     items: queue.Queue = queue.Queue()
     done = object()
 
@@ -167,8 +185,12 @@ def detached(produce: Callable[[], Iterator[dict]]) -> Iterator[dict]:
     # over, or the run's logs and trace lose their link to the request.
     context = contextvars.copy_context()
     threading.Thread(target=context.run, args=(worker,), name="loopdesk-run", daemon=True).start()
-    while (item := items.get()) is not done:
-        yield item
+
+    def relay() -> Iterator[dict]:
+        while (item := items.get()) is not done:
+            yield item
+
+    return relay()
 
 
 @router.post("/chat")
@@ -177,14 +199,19 @@ def chat(body: QuickChatIn, principal: Principal = Depends(get_principal), db: S
     rate_limiter.check(f"chat:{principal.user.id}", get_settings().rate_limit_per_minute)
     if body.conversation_id:
         conversation = _load_conversation(db, principal, body.conversation_id)
-    else:
-        conversation = Conversation(tenant_id=principal.tenant.id, user_id=principal.user.id, channel="api")
-        db.add(conversation)
-        db.commit()
-    summary = collect(get_services().runtime(db).start(
-        tenant=principal.tenant, user=principal.user, text=body.content,
-        conversation=conversation, options=_options(principal, body),
-    ))
+    admission = get_admission()
+    admission.enter()  # before a new conversation is created: a turned-away request leaves nothing behind
+    try:
+        if not body.conversation_id:
+            conversation = Conversation(tenant_id=principal.tenant.id, user_id=principal.user.id, channel="api")
+            db.add(conversation)
+            db.commit()
+        summary = collect(get_services().runtime(db).start(
+            tenant=principal.tenant, user=principal.user, text=body.content,
+            conversation=conversation, options=_options(principal, body),
+        ))
+    finally:
+        admission.leave()
     final = summary["final"] or {}
     return {
         "conversation_id": conversation.id,
