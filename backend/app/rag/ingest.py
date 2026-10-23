@@ -247,6 +247,55 @@ def edit_document(db: Session, document: Document, *, title: str, content: str, 
     return document, previous
 
 
+def set_document_meta(db: Session, document: Document, *, title: str, visibility: str,
+                      base_version: int) -> Document:
+    """Change a document's title or visibility without touching its text, as its next version:
+    what a PDF needs (its chunks carry page numbers the editor cannot rebuild, N-165) and what an
+    administrator who only flips visibility means (N-115). Claimed like `edit_document`. The
+    chunks are scanned again under the new visibility, since public knowledge is held to stricter
+    rules (instructions to staff, `agent_directive`); a released chunk stays released unless the
+    new scan finds a reason the review did not see. The knowledge version is bumped, so answers
+    cached from a document that is now internal are not served to customers again."""
+    if visibility not in ("public", "internal"):
+        raise ValueError("visibility must be public or internal")
+    db.commit()
+    db.execute(select(Tenant.id).where(Tenant.id == document.tenant_id).with_for_update(key_share=True))
+    claimed = db.execute(
+        update(Document).where(Document.id == document.id, Document.version == base_version)
+        .values(version=base_version + 1, title=title, visibility=visibility)
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if claimed != 1:
+        db.rollback()
+        raise StaleDocument
+    channels = tenant_channels(db, document.tenant_id)
+    for chunk in db.execute(select(Chunk).where(Chunk.document_id == document.id)).scalars():
+        stored = list(chunk.flag_reasons or [])
+        held, reasons, forget = review_target(scan_chunk(chunk.heading, chunk.text, visibility, channels), stored,
+                                              chunk.reviewed_at is not None)
+        chunk.flagged_injection, chunk.flag_reasons = held, reasons
+        if forget:
+            chunk.reviewed_by, chunk.reviewed_at = None, None
+    db.flush()
+    recount_flagged(db, [document.id])
+    _bump_kb_version(db, document.tenant_id)
+    db.commit()
+    index_manager.invalidate(document.tenant_id)
+    db.refresh(document)
+    return document
+
+
+def review_target(reasons: list[str], stored: list[str], reviewed: bool) -> tuple[bool, list[str], bool]:
+    """(held back, reasons to store, forget the review) for a chunk the rules now give ``reasons``:
+    a chunk an administrator released stays released while nothing beyond what was reviewed is found,
+    also after a public -> internal -> public round trip (the internal scan finds nothing)."""
+    if not reasons:  # what was reviewed stays on a released chunk, so a later rescan still honours it
+        return False, (stored if reviewed else []), False
+    if reviewed and set(reasons) <= set(stored):
+        return False, stored, False
+    return True, reasons, True
+
+
 def delete_document(db: Session, document: Document) -> None:
     # The tenant row first, like every path that also touches conflicts (resolving one takes the
     # tenant row for its audit number): one lock order, no deadlock on PostgreSQL.

@@ -169,6 +169,9 @@ function AddDocModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
 }
 
 function EditDocModal({ doc, onClose, onDone }: { doc: DocDetail; onClose: () => void; onDone: () => void }) {
+  // A PDF's chunks carry page numbers, so its text is replaced by uploading a new file; its title
+  // and visibility change here (a document published by mistake is made internal at once).
+  const pdf = doc.chunks.some((c) => c.page);
   const [title, setTitle] = useState(doc.title);
   const [content, setContent] = useState(doc.content);
   const [visibility, setVisibility] = useState(doc.visibility);
@@ -180,7 +183,8 @@ function EditDocModal({ doc, onClose, onDone }: { doc: DocDetail; onClose: () =>
     try {
       // The version this edit was made on: if someone saved in between, the server refuses
       // instead of overwriting their change.
-      await api.put(`/api/kb/documents/${doc.id}`, { title, content, visibility, version: doc.version });
+      await api.put(`/api/kb/documents/${doc.id}`,
+        pdf ? { title, visibility, version: doc.version } : { title, content, visibility, version: doc.version });
       onDone();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -189,11 +193,12 @@ function EditDocModal({ doc, onClose, onDone }: { doc: DocDetail; onClose: () =>
   }
   return (
     <Modal title={`编辑《${doc.title}》`} onClose={onClose}
-      footer={<><button className="btn" onClick={onClose}>取消</button><button className="btn btn-primary" disabled={busy || !title.trim() || !content.trim()} onClick={submit}>保存为 {docVersion(doc.version + 1)}</button></>}>
+      footer={<><button className="btn" onClick={onClose}>取消</button><button className="btn btn-primary" disabled={busy || !title.trim() || (!pdf && !content.trim())} onClick={submit}>保存为 {docVersion(doc.version + 1)}</button></>}>
       <label className="field">标题<input className="input" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-      <label className="field">内容（保存后重新切分、索引，并重新检查知识冲突）
-        <textarea className="textarea" style={{ minHeight: 280 }} value={content} onChange={(e) => setContent(e.target.value)} />
-      </label>
+      {pdf ? <p className="faint small">PDF 正文带页码，不能在线修改；要改正文请删除后上传新版本文件。这里可以修改标题和可见范围，保存后立即生效。</p>
+        : <label className="field">内容（保存后重新切分、索引，并重新检查知识冲突）
+          <textarea className="textarea" style={{ minHeight: 280 }} value={content} onChange={(e) => setContent(e.target.value)} />
+        </label>}
       <label className="field">可见范围
         <select className="select" value={visibility} onChange={(e) => setVisibility(e.target.value as DocDetail["visibility"])}>
           <option value="public">公开：顾客和员工都能检索</option>
@@ -434,8 +439,8 @@ export default function KnowledgePage() {
           <div className="stack">
             {admin && (
               <div className="row">
-                {detail.chunks.some((c) => c.page) ? <span className="faint small">PDF 文档请上传新版本文件</span>
-                  : <button className="btn" onClick={() => setEditing(true)}><Pencil size={15} /> 编辑</button>}
+                <button className="btn" onClick={() => setEditing(true)}>
+                  <Pencil size={15} /> {detail.chunks.some((c) => c.page) ? "修改标题和可见范围" : "编辑"}</button>
                 <button className="btn" onClick={() => propose(detail.id)}
                   title="用模型为每个片段写 3-5 个顾客口语问法，审核发布后作为检索索引">
                   <MessageSquarePlus size={15} /> 生成口语问法</button>

@@ -154,6 +154,8 @@ def _validation_message(error: dict) -> str:
         return f"{label}不能小于 {ctx.get('ge', ctx.get('gt'))}"
     if kind in ("less_than_equal", "less_than"):
         return f"{label}不能大于 {ctx.get('le', ctx.get('lt'))}"
+    if kind == "nothing_changes":  # our own message (api/kb.py), no input in it
+        return error.get("msg", "")
     if kind == "json_invalid":
         return "请求内容不是合法的 JSON"
     return f"{label}格式不正确"

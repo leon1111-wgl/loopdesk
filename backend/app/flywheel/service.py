@@ -290,7 +290,9 @@ def apply_patch(db: Session, patch: KBPatch, reviewer: User, embedder: Embedder,
     content = f"{base.rstrip()}\n\n{patch.content.strip()}\n"
     document = ingest_document(
         db, tenant_id=patch.tenant_id, title="客服纠错知识补丁", content=content, embedder=embedder,
-        visibility="public", source=PATCH_DOC_SOURCE, created_by=reviewer.id, document=document,
+        # an administrator who made the patch document internal keeps it internal
+        visibility=document.visibility if document else "public", source=PATCH_DOC_SOURCE,
+        created_by=reviewer.id, document=document,
     )
     patch.document_id = document.id
     if conflicts:

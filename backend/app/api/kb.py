@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+from pydantic_core import PydanticCustomError
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -12,7 +13,7 @@ from ..models import Chunk, Document, KnowledgeConflict
 from ..rag.chunking import UnsupportedFile, parse_upload
 from ..rag.conflicts import detect_conflicts, open_conflict_counts
 from ..rag.ingest import (StaleDocument, delete_document, edit_document, ingest_document, release_chunk,
-                          tenant_channels)
+                          set_document_meta, tenant_channels)
 from ..rag.questions import propose_questions
 from ..rag.retrieval import gate_options, hybrid_search, index_manager, passes_gate
 from ..security import Principal, require_admin, require_staff
@@ -29,8 +30,20 @@ class TextDocIn(BaseModel):
     visibility: str = Field(default="public", pattern="^(public|internal)$")
 
 
-class DocumentEditIn(TextDocIn):
+class DocumentEditIn(BaseModel):
+    """Any of title, content and visibility; what is left out stays as it is. Without content
+    (or with the stored text unchanged) only the title and visibility change, which is also the
+    only edit a PDF allows (N-115, N-165)."""
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    content: str | None = Field(default=None, min_length=1, max_length=200_000)
+    visibility: str | None = Field(default=None, pattern="^(public|internal)$")
     version: int  # the version the edit was made on (optimistic locking)
+
+    @model_validator(mode="after")
+    def _something_changes(self) -> "DocumentEditIn":
+        if self.title is None and self.content is None and self.visibility is None:
+            raise PydanticCustomError("nothing_changes", "请至少修改标题、内容或可见范围中的一项")
+        return self
 
 
 class SearchIn(BaseModel):
@@ -174,13 +187,24 @@ async def upload_document(
 def update_document(document_id: int, body: DocumentEditIn, principal: Principal = Depends(require_admin),
                     db: Session = Depends(get_db)) -> dict:
     document = get_owned(db, Document, document_id, principal.tenant.id)
-    if db.execute(select(Chunk.id).where(Chunk.document_id == document.id, Chunk.page.is_not(None)).limit(1)).first():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "PDF 文档的片段带页码，请上传新版本文件，不支持在线编辑")
     before = {"title": document.title, "visibility": document.visibility}
+    title = body.title if body.title is not None else document.title
+    visibility = body.visibility if body.visibility is not None else document.visibility
+    text_changes = body.content is not None and body.content != document.content
+    if not text_changes and (title, visibility) == (before["title"], before["visibility"]):
+        # a save without changes would otherwise take a version and invalidate every cached answer
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "请至少修改标题、内容或可见范围中的一项")
     try:
-        document, previous = edit_document(db, document, title=body.title, content=body.content,
-                                           visibility=body.visibility, embedder=get_services().embedder,
-                                           base_version=body.version)
+        if text_changes:
+            if db.execute(select(Chunk.id).where(Chunk.document_id == document.id, Chunk.page.is_not(None))
+                          .limit(1)).first():
+                raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                    "PDF 文档的正文带页码，不能在线修改，请上传新版本文件；标题和可见范围可以直接修改")
+            document, previous = edit_document(db, document, title=title, content=body.content, visibility=visibility,
+                                               embedder=get_services().embedder, base_version=body.version)
+        else:
+            previous = document.content
+            document = set_document_meta(db, document, title=title, visibility=visibility, base_version=body.version)
     except StaleDocument:
         raise HTTPException(status.HTTP_409_CONFLICT, "文档已被其他人修改，请重新打开后再编辑") from None
     record(db, principal, "kb.document.update", f"document:{document.id}", title=document.title,

@@ -27,17 +27,8 @@ from sqlalchemy.orm import Session
 
 from ..db import new_session
 from ..models import Chunk, Document, Tenant
-from ..rag.ingest import _bump_kb_version, recount_flagged, scan_chunk, tenant_channels
+from ..rag.ingest import _bump_kb_version, recount_flagged, review_target as _target, scan_chunk, tenant_channels
 from ..rag.retrieval import index_manager
-
-
-def _target(reasons: list[str], stored: list[str], reviewed: bool) -> tuple[bool, list[str], bool]:
-    """(held back, reasons to store, forget the review) for a chunk the rules now give ``reasons``."""
-    if not reasons:
-        return False, [], False
-    if reviewed and set(reasons) <= set(stored):
-        return False, stored, False
-    return True, reasons, True
 
 
 def rescan(db: Session, tenant_id: int | None = None) -> dict[str, int]:
@@ -45,6 +36,9 @@ def rescan(db: Session, tenant_id: int | None = None) -> dict[str, int]:
     stats = {"chunks": 0, "held": 0, "released": 0}
     tenants = [tenant_id] if tenant_id is not None else db.execute(select(Tenant.id).order_by(Tenant.id)).scalars().all()
     for tenant_id in tenants:
+        # The tenant row before reading, like the writes: a visibility edit (set_document_meta) made
+        # between the read and the update would otherwise be released on the old visibility's scan.
+        db.execute(select(Tenant.id).where(Tenant.id == tenant_id).with_for_update(key_share=True))
         channels = tenant_channels(db, tenant_id)
         rows = db.execute(
             select(Chunk.id, Chunk.document_id, Chunk.heading, Chunk.text, Chunk.flagged_injection,
@@ -60,6 +54,7 @@ def rescan(db: Session, tenant_id: int | None = None) -> dict[str, int]:
             if held != row.flagged_injection or reasons != stored:
                 changes.append((row, held, reasons, forget))
         if not changes:
+            db.commit()  # releases the tenant row
             continue
         _bump_kb_version(db, tenant_id)
         touched = set()
