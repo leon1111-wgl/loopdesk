@@ -32,6 +32,20 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
     }
   }
 
+  async function withdraw() {
+    if (!window.confirm(`撤回审批单 #${approval.id}？撤回后不会执行，也不会通知顾客。`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post(`/api/approvals/${approval.id}/withdraw`, {});
+      onDecided(`审批单 #${approval.id} 已撤回，未执行`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const kb = approval.evidence.filter((e) => e.kind === "kb");
   const tools = approval.evidence.filter((e) => e.kind === "tool");
   return (
@@ -78,7 +92,12 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
       {approval.status === "pending" ? (
         <div className="card-pad stack" style={{ borderTop: "1px solid var(--border)" }}>
           <ErrorBanner error={error} />
-          {own && <div className="notice">这是你自己发起的申请，按四眼原则需要其他同事审批。</div>}
+          {own && (
+            <div className="notice row" style={{ justifyContent: "space-between" }}>
+              <span>这是你自己发起的申请，按四眼原则需要其他同事审批。填错了或没人能审批时可以撤回。</span>
+              <button className="btn" disabled={busy} onClick={withdraw}>撤回申请</button>
+            </div>
+          )}
           {needsAdmin && !own && <div className="notice">这笔金额需要管理员通过；你可以驳回（需写明原因），或留给管理员处理。</div>}
           <div className="row decision-row">
             <input className="input" placeholder="审批意见（会告知顾客），驳回时必填" value={comment} onChange={(e) => setComment(e.target.value)} />
@@ -91,7 +110,7 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
       ) : (
         <div className="card-pad faint" style={{ borderTop: "1px solid var(--border)" }}>
           {approval.status === "withdrawn"
-            ? `顾客于 ${time(approval.decided_at)} 撤回了这笔申请，未执行`
+            ? `${approval.withdrawn_by === "requester" ? `${approval.requested_by?.name ?? "提交人"}（提交人）` : "顾客"}于 ${time(approval.decided_at)} 撤回了这笔申请，未执行`
             : <>{approval.reviewer?.name} 于 {time(approval.decided_at)} 处理{approval.comment && `，意见：${approval.comment}`}</>} ·{" "}
           <Link to={`/traces/${approval.run_id}`}>查看链路</Link>
         </div>

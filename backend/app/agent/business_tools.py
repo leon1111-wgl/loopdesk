@@ -519,6 +519,21 @@ def _velocity_reason(ctx: ToolContext, customer_id: int, amount: float) -> str |
 STAFF_FILED_REASON = "员工代顾客发起，需另一位员工审批"
 
 
+def reviewer_role(tenant: Tenant, amount: float) -> str:
+    """Who may approve a refund of this amount: above the tenant's threshold, an administrator only."""
+    return "admin" if amount > tenant.approval_admin_threshold else "agent"
+
+
+def has_other_reviewer(db: Session, tenant: Tenant, requester_id: int, amount: float) -> bool:
+    """Whether someone other than the requester could approve it: an active member of staff with the role the
+    amount needs. The review queue refuses the requester (four eyes), so without one the application waits
+    for good (N-162)."""
+    roles = ("admin",) if reviewer_role(tenant, amount) == "admin" else ("admin", "agent")
+    return db.execute(select(func.count(User.id)).where(
+        User.tenant_id == tenant.id, User.role.in_(roles), User.disabled_at.is_(None), User.id != requester_id,
+    )).scalar_one() > 0
+
+
 def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | None:
     # args went through _refund_precheck, so "amount" is the amount that would be paid.
     amount = round(float(args["amount"]), 2)
@@ -554,6 +569,15 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
         velocity = _velocity_reason(ctx, _customer_id(ctx, order), amount)
         if velocity:
             reasons.append(velocity)
+    if reasons and ctx.is_staff and not has_other_reviewer(ctx.db, tenant, ctx.user.id, amount):
+        # Filed anyway it could only be rejected, and meanwhile it blocks the customer's own application.
+        if reviewer_role(tenant, amount) == "admin":
+            who, account = (f"没有其他管理员可以审批（金额 ¥{amount:.2f} 超过 ¥{tenant.approval_admin_threshold:.0f} "
+                            "的审批分级线，需要管理员通过，提交人不能审批自己的申请）"), "管理员"
+        else:
+            who, account = "没有其他员工可以审批（提交人不能审批自己的申请）", "员工"
+        raise ToolError(f"本租户除你之外{who}。请先为本租户开通另一位{account}账号，"
+                        "或请顾客本人在对话里发起退款申请")
     # Amount and velocity limits are risk controls: the reviewer sees them, the customer does not.
     return ApprovalNeed("；".join(reasons), customer_note) if reasons else None
 
@@ -635,25 +659,26 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 WITHDRAWN_COMMENT = "顾客已撤回申请"
 
 
-def _end_paused_run(ctx: ToolContext, approval: Approval, now: datetime) -> None:
+def end_paused_run(db: Session, approval: Approval, now: datetime, text: str,
+                   current_conversation_id: int | None = None) -> None:
     """The run that filed the application ends here: nothing will resume it, so its paused call goes. A
-    customer who withdraws from another conversation (N-127) sees the outcome in the one that said "under
-    review" too, which is also what stops that page from polling for a decision."""
-    run = ctx.db.get(Run, approval.run_id)
-    if run is None or run.status != "waiting_approval":
+    customer who withdraws from another conversation (N-127), or a member of staff from the review queue
+    (N-162), sees the outcome in the one that said "under review" too, which is also what stops that page
+    from polling for a decision. A run whose resume failed (the decision was reopened) is "failed" but
+    still holds its paused call: it ends here too, or its chat would keep waiting for a decision."""
+    run = db.get(Run, approval.run_id)
+    if run is None or run.status not in ("waiting_approval", "failed") or not (run.state or {}).get("pending"):
         return
-    amount = float((approval.arguments or {}).get("amount") or 0)
-    text = f"您已撤回订单 {(approval.arguments or {}).get('order_id')} 的退款申请（¥{amount:.2f}），这笔款项不会退回。"
     state = dict(run.state or {})
     tools = list(state.get("tools", []))
     state.pop("pending", None)
     state.pop("messages", None)
     run.state, run.status, run.finished_at, run.output_text = state, "completed", now, text
-    if run.conversation_id is not None and run.conversation_id != ctx.conversation_id:
-        ctx.db.add(Message(tenant_id=run.tenant_id, conversation_id=run.conversation_id, role="assistant", content=text,
+    if run.conversation_id is not None and run.conversation_id != current_conversation_id:
+        db.add(Message(tenant_id=run.tenant_id, conversation_id=run.conversation_id, role="assistant", content=text,
                            run_id=run.id, meta={"citations": [], "verification": None, "tools": tools,
                                                 "status": "completed", "withdrawn": True}))
-        conversation = ctx.db.get(Conversation, run.conversation_id)
+        conversation = db.get(Conversation, run.conversation_id)
         if conversation is not None:
             conversation.updated_at = now
 
@@ -744,7 +769,10 @@ def withdraw_refund_request(ctx: ToolContext, args: dict[str, Any]) -> dict[str,
                           .values(status="withdrawn", reviewer_id=None, comment=WITHDRAWN_COMMENT, decided_at=now),
                           execution_options={"synchronize_session": False}).rowcount != 1:
             continue
-        _end_paused_run(ctx, approval, now)
+        args_ = approval.arguments or {}
+        end_paused_run(ctx.db, approval, now, f"您已撤回订单 {args_.get('order_id')} 的退款申请"
+                                              f"（¥{float(args_.get('amount') or 0):.2f}），这笔款项不会退回。",
+                       ctx.conversation_id)
         done.append(approval)
     for approval in done:  # audit last: the tenant row's counter is the last lock, as everywhere else
         args_ = approval.arguments or {}

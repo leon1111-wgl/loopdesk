@@ -4,10 +4,14 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from datetime import datetime, timezone
+
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from ..agent.runtime import ResumeError, decided_text
+from .. import audit
+from ..agent.business_tools import WITHDRAWN_COMMENT, end_paused_run, reviewer_role
+from ..agent.runtime import REQUESTER_WITHDREW, ResumeError, decided_text
 from ..channels.feishu import FeishuClient
 from ..db import get_db
 from ..models import Approval, Conversation, Refund, Run, Tenant, User
@@ -28,8 +32,7 @@ def required_role(a: Approval, tenant: Tenant) -> str:
     """Who may approve: above the tenant's threshold, an administrator only. The four-eyes rule
     alone (no self-approval) left any single agent able to release any amount, because the
     requester is usually the customer."""
-    amount = float((a.arguments or {}).get("amount") or 0)
-    return "admin" if amount > tenant.approval_admin_threshold else "agent"
+    return reviewer_role(tenant, float((a.arguments or {}).get("amount") or 0))
 
 
 def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = None) -> dict:
@@ -43,6 +46,9 @@ def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = N
         "reviewer": {"id": reviewer.id, "name": reviewer.name} if reviewer else None,
         "question": run.input_text if run else "", "comment": a.comment,
         "required_role": required_role(a, db.get(Tenant, a.tenant_id)),
+        # who called it off: the customer in the chat (N-127) or the member of staff who filed it (N-162)
+        "withdrawn_by": ({WITHDRAWN_COMMENT: "customer", REQUESTER_WITHDREW: "requester"}.get(a.comment, "customer")
+                         if a.status == "withdrawn" else None),
         "created_at": iso(a.created_at), "decided_at": iso(a.decided_at),
         "refund": _refund_out(db, a, refunds),
     }
@@ -80,7 +86,7 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
            db: Session = Depends(get_db)) -> dict:
     approval = get_owned(db, Approval, approval_id, principal.tenant.id)
     if approval.status != "pending":
-        raise HTTPException(status.HTTP_409_CONFLICT, decided_text(approval.status))
+        raise HTTPException(status.HTTP_409_CONFLICT, decided_text(approval.status, approval.comment))
     if approval.requested_by == principal.user.id:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "不能审批自己发起的申请（四眼原则）")
     if body.decision == "reject" and not body.comment.strip():
@@ -111,6 +117,36 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
             logger.exception("feishu delivery of approval %s failed", approval.id)
             delivery = {"sent": False, "error": "飞书通知发送失败，结果已写入对话"}
     return {"approval": approval_out(db, approval), "final": final, "delivery": delivery}
+
+
+@router.post("/{approval_id}/withdraw")
+def withdraw(approval_id: int, principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
+    """The member of staff who filed an application takes it back (N-162): a wrong amount, or nobody else
+    who could approve it. Withdrawing decides nothing and moves no money, so the four-eyes rule does not
+    stand in the way; nothing is sent to the customer (a rejection's comment would be). Customers withdraw
+    their own in the chat, with a confirmation (N-145)."""
+    approval = get_owned(db, Approval, approval_id, principal.tenant.id)
+    if approval.requested_by != principal.user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "只有提交人可以撤回这笔申请")
+    if approval.status != "pending":
+        raise HTTPException(status.HTTP_409_CONFLICT, decided_text(approval.status, approval.comment))
+    now = datetime.now(timezone.utc)
+    # Conditional, like a reviewer's claim: one decided a moment ago stays decided.
+    if db.execute(update(Approval).where(Approval.id == approval.id, Approval.status == "pending")
+                  .values(status="withdrawn", reviewer_id=None, comment=REQUESTER_WITHDREW, decided_at=now),
+                  execution_options={"synchronize_session": False}).rowcount != 1:
+        db.rollback()
+        db.refresh(approval)
+        raise HTTPException(status.HTTP_409_CONFLICT, decided_text(approval.status, approval.comment))
+    args = approval.arguments or {}
+    amount = float(args.get("amount") or 0)
+    end_paused_run(db, approval, now, f"{principal.user.name} 已撤回订单 {args.get('order_id')} 的退款申请"
+                                      f"（¥{amount:.2f}），没有执行，也没有通知顾客。")
+    audit.record(db, principal, "approval.withdraw", f"approval:{approval.id}", tool=approval.tool_name,
+                 order_id=args.get("order_id"), amount=args.get("amount"), comment=REQUESTER_WITHDREW)
+    db.commit()
+    db.refresh(approval)
+    return {"approval": approval_out(db, approval)}
 
 
 @router.get("/{approval_id}")

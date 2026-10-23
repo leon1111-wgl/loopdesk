@@ -26,7 +26,7 @@ const RUN_STATUS: Record<string, [string, string]> = {
   pending: ["待审批", "badge-warning"],
   approved: ["已通过", "badge-success"],
   rejected: ["已驳回", "badge-danger"],
-  withdrawn: ["顾客已撤回", ""],
+  withdrawn: ["已撤回", ""],
   proposed: ["待审核", "badge-warning"],
   applied: ["已发布", "badge-success"],
   candidate: ["候选", "badge-warning"],

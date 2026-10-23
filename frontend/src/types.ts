@@ -125,6 +125,7 @@ export interface Approval {
   question: string;
   comment: string;
   required_role: "admin" | "agent";
+  withdrawn_by: "customer" | "requester" | null;
   created_at: string;
   decided_at: string | null;
 }
