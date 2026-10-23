@@ -35,7 +35,7 @@ from ..guardrails.injection import Channels, detect_injection, unsafe_answer
 from ..guardrails.judge import judge as judge_answer, worth_judging
 from ..guardrails.pii import PIIReport, mask_pii
 from ..integrations import Commerce, commerce_deadline, recording
-from ..llm.base import Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
+from ..llm.base import ChatResult, Embedder, LLMError, LLMMessage, LLMProvider, ToolCall
 from ..llm.breaker import CircuitBreaker
 from ..llm.router import ModelRouter
 from ..models import Approval, Conversation, Message, Run, Tenant, User
@@ -525,9 +525,18 @@ class AgentRuntime:
                 yield from self._degraded(run, tracer, ctx, state, started)
                 return
 
+            if result.finish_reason == "length":
+                # Cut at the output limit: half a sentence (or a tool call with half its arguments) is
+                # not an answer. Answered like a model outage, and counted as a failure (N-166).
+                run.error = "truncated: finish_reason=length, the model hit its output limit"
+                with tracer.span("guardrail", "output_truncated", {"step": state["steps"]}) as span:
+                    span.status = "error"
+                    span.set(chars=len(result.content), tool_calls=len(result.tool_calls))
+                yield from self._degraded(run, tracer, ctx, state, started)
+                return
             if gate and (shown := gate.flush()):
                 yield {"type": "token", "step": state["steps"], "text": shown}
-            if result.finish_reason == "refusal":
+            if result.finish_reason in ("refusal", "content_filter"):
                 text = REFUSAL_TEXT + self._fallback_handoff(tracer, ctx, "模型拒绝回答")
                 yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
                 return
@@ -556,6 +565,7 @@ class AgentRuntime:
                 last_error = LLMError(f"circuit open: {model} failed repeatedly, not called")
                 continue
             emitted = False
+            cut: ChatResult | None = None
             try:
                 with tracer.span("llm", f"chat:{model}", {"step": state["steps"], "messages": len(messages)}) as span:
                     span.model = model
@@ -573,9 +583,15 @@ class AgentRuntime:
                                 usage_estimated=r.usage.estimated,
                             )
                             tracer.run.model = model
+                            if r.finish_reason == "length" and not emitted:
+                                cut = r  # nothing shown yet: the next tier may fit (N-166)
+                                span.status = "error"
+                                continue
                         yield event
-                self.breaker.record(model, ok=True)
-                return
+                self.breaker.record(model, ok=True)  # it answered; the output limit is configuration
+                if cut is None:
+                    return
+                last_error = LLMError(f"truncated: finish_reason=length before any output from {model}")
             except LLMError as exc:
                 if getattr(exc, "blameless", False):  # the run, not the model, ran out of time (N-108)
                     self.breaker.release(model)

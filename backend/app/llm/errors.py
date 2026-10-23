@@ -12,6 +12,8 @@ HINTS = {
                 "400/422 多半是参数不被支持（例如 stream_options，可设 LOOPDESK_LLM_STREAM_USAGE=0）。重试没有用",
     "unavailable": "服务不可用：5xx、429（限流或额度用完）或连不上地址，等它恢复，或检查网络和地址",
     "timeout": "超时：模型响应太慢或网络不通，检查 LLM_BASE_URL 和网络",
+    "truncated": "输出被截断：回答写到模型的输出上限（max_tokens）就停了，半句话没有发给顾客。"
+                 "检查网关或模型的 max_tokens 设置，或提示词是否让回答过长",
     "breaker": "熔断中：这个模型最近连续失败，暂时不调用",
     "disconnected": "顾客在运行结束前断开了连接",
     "interrupted": "进程在运行途中退出（被杀掉、OOM、发布时没等请求结束），收尾任务把运行记为失败",
@@ -31,6 +33,8 @@ def error_kind(error: str | None) -> str:
         return "embedding"
     if text.startswith("rerank unavailable"):  # the search ran without the reranker (N-141)
         return "rerank"
+    if text.startswith("truncated"):  # finish_reason=length: the answer was cut, not finished (N-166)
+        return "truncated"
     if text.startswith("interrupted"):  # app.ops.stale_runs: the process running it is gone
         return "interrupted"
     status = _HTTP_STATUS.search(text)

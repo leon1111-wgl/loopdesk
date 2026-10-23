@@ -193,6 +193,7 @@ class OpenAICompatProvider(LLMProvider):
         calls: dict[int, dict[str, str]] = {}
         usage: Usage | None = None
         finish_reason = "stop"
+        ended = False  # a finish_reason or [DONE] arrived: the model, not the connection, ended it
         lines = _LineReader(response)
         progress_at = time.monotonic()  # when output last arrived; heartbeats and empty deltas do not move it
         try:
@@ -205,13 +206,19 @@ class OpenAICompatProvider(LLMProvider):
                 if line is _TIMED_OUT:
                     raise self._cut_off(progress_at, call_deadline, deadline, had_fair_chance)
                 if line is _END:
+                    if not ended:  # a clean close mid-answer is a broken stream, not an answer (N-166)
+                        raise LLMRetryableError("stream interrupted: the connection closed before "
+                                                "finish_reason or [DONE]")
                     break
                 if not line or not line.startswith("data:"):
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
+                    ended = True
                     break
                 chunk = json.loads(data)
+                if isinstance(chunk.get("error"), dict):  # some gateways report a failure in-stream, then close
+                    raise LLMRetryableError(f"stream interrupted: {chunk['error'].get('message') or chunk['error']}")
                 if chunk.get("usage"):
                     u = chunk["usage"]
                     usage = Usage(u.get("prompt_tokens", 0), u.get("completion_tokens", 0))
@@ -233,6 +240,7 @@ class OpenAICompatProvider(LLMProvider):
                         progress_at = arrived
                     if choice.get("finish_reason"):
                         finish_reason = choice["finish_reason"]
+                        ended = True
                         progress_at = arrived
         except httpx.ReadTimeout as exc:
             raise self._stalled(deadline, had_fair_chance) from exc
@@ -255,7 +263,8 @@ class OpenAICompatProvider(LLMProvider):
             tool_calls=tool_calls,
             usage=usage,
             model=model,
-            finish_reason="tool_calls" if tool_calls else finish_reason,
+            # Cut at max_tokens, a tool call's arguments are cut too: "length" wins (N-166).
+            finish_reason="tool_calls" if tool_calls and finish_reason != "length" else finish_reason,
         )
         yield StreamEvent(type="done", result=result)
 
