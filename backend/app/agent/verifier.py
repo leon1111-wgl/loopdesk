@@ -5,7 +5,8 @@ For every factual sentence it asks two questions:
    A wrong number is the costliest support failure, so one unverified number makes
    the whole answer ``blocked``.
 2. Is the wording grounded? Measured as token recall against the cited evidence
-   (or all evidence if nothing is cited). Optionally an LLM judge replaces this check
+   (or all evidence if nothing is cited), for the sentence and for each of its clauses: a true
+   clause must not carry an invented one past the check (N-183). Optionally an LLM judge replaces this check
    for paraphrasing models (LOOPDESK_VERIFIER=llm); the number rule always stays.
 3. Does it contradict a tool result? A sentence can be well grounded in the refund
    policy ("arrives in 1-3 working days") and still be wrong because the refund was
@@ -25,7 +26,7 @@ from dataclasses import asdict, dataclass, field
 
 from ..config import Settings
 from ..llm.base import LLMMessage, LLMProvider
-from ..textutil import ORDER_ID_RE, extract_numbers, overlap_recall, split_sentences, strip_citations
+from ..textutil import ORDER_ID_RE, extract_numbers, overlap_recall, split_sentences, strip_citations, token_set
 from .outcome import REFUSAL_RE
 from .prompts import JUDGE_PROMPT
 from .status_templates import case_state, contradiction
@@ -68,6 +69,32 @@ _CLAIMLESS_CLAUSE = re.compile(
     r"|^(这|这是|这很可能是|这可能是|这属于|疑似)(诈骗|骗局|钓鱼)(信息|短信|电话|链接|行为)?[。！!]?$"
 )
 _CLAUSE_SPLIT = re.compile(r"[，,；;：:—]+")
+_CLAUSE_KEEP = re.compile(r"([，,；;：:—]+)")
+# For the clause check only: models also join a promise with 并且 / 同时 / 、 / a bracket
+# ("到账并且所有商品终身保修", "原路退回（所有商品终身保修）").
+_CLAUSE_JOIN = re.compile(r"([，,；;：:—、（）()]+|并且|而且|同时|另外|以及|(?<=[\u4e00-\u9fff])且(?=[\u4e00-\u9fff]))")
+# A clause that says what is not possible or not done, said with the negation in front ("无需重复
+# 提交", "故未受理") or as the agent's own limit ("审核前无法承诺结果"). An invented limit costs the
+# customer an answer; an invented promise costs the business money, and "不会收取手续费",
+# "没有时间限制", "未拆封的随时可退" are promises, so the negation has to lead or name a limit.
+_LIMIT = re.compile(
+    r"^(也|还|但|且|故|均|都|暂时?|目前|因此|所以|系统)?"
+    r"(无法|不能|不支持|不予|不要(?!求)|没能|未(能|受理|发起|提交|找到|查到|查询|发货|签收)"
+    # a waiver ("无需原包装", "不必审核") loosens a condition, so only "no need to send it twice" counts
+    r"|(无需|不必|不用)(重复|再次|再))"
+    r"|(无法|不能)(承诺|保证|重复|再次|在线)|不符合|不满足|未找到|未查询到|不属于|已(被)?(拒绝|驳回)")
+# A clause that only says where the next one comes from ("根据订单信息"), offers a person, or hedges
+# the timing the clause before it gave ("具体到账时间以银行为准", "请耐心等待").
+_LEAD_IN = re.compile(r"^(根据|按照|依据|查询到?|经查)[^，,]{0,8}(信息|记录|结果|规定|政策|显示)$"
+                      r"|^(或|或者)?(也)?(可以|可)?(转|联系)人工(客服)?(核实|处理|确认|跟进)?[。！!]?$"
+                      r"|^(具体)?(的)?(到账|退款|处理|审核|发货|配送)?(时间|金额|时效|进度|结果)?以[^，,]{1,8}为准[。！!]?$"
+                      r"|^(请|还请)?(您)?耐心等待(即可)?[。！!]?$|^届时|^(请)?(您)?(注意)?留意")
+# Something that costs the business: checked even when it is phrased as an offer ("我们会为您承担
+# 运费") or is a single word ("免运费").
+_PERK = re.compile(r"运费|补偿|赠|免费|免单|积分|券|换新|红包|返现|包邮|加急|保修|保价|退差价|不限|终身|任何时候"
+                   r"|随时(都)?(可以?|能)?(退|换|取消|申请)")
+# ...unless the clause asks, sets a condition or closes ("如需加急可转人工", "建议您保留好赠品").
+_ASKS = re.compile(r"^(请|如需|如|若|建议|有问题|欢迎|麻烦|为便于|以便|您可以|可以联系)|^(我们)?(会)?随时为您")
 # A clause that asks rather than states (N-159). Only trailing clauses that plainly ask are dropped:
 # ending in a question particle or mark, opening like a question, or the first half of an either-or
 # ("您是想退货，还是换货？"). "吧" is left out ("2小时就到账了吧" asserts), and so are openers that
@@ -91,6 +118,7 @@ class SentenceCheck:
     best_ref: int | None = None
     unverified_numbers: list[float] = field(default_factory=list)
     unknown_ids: list[str] = field(default_factory=list)
+    weak_clause: str | None = None  # the clause with no basis in an otherwise grounded sentence (N-183)
     contradicts: str | None = None  # request_refund | under_action | ticket | handoff (status_templates)
     source: str = "model"  # model | template (rendered from tool fields: supported by construction)
 
@@ -123,16 +151,23 @@ def _statement_part(claim: str) -> str:
     """
     if not claim.endswith(("？", "?")):
         return claim
-    clauses = [c.strip() for c in _CLAUSE_SPLIT.split(claim) if c.strip()]
-    if not clauses or _ASSERTS.search(clauses[-1]) or not _QUESTION_END.search(clauses[-1]):
-        return "，".join(clauses)
+    parts = _CLAUSE_KEEP.split(claim)
+    # (clause, separator after it); separators are kept so a label before a colon stays a label
+    pairs = [(parts[i].strip(), parts[i + 1] if i + 1 < len(parts) else "") for i in range(0, len(parts), 2)]
+    pairs = [(c, sep) for c, sep in pairs if c]
+    if not pairs or _ASSERTS.search(pairs[-1][0]) or not _QUESTION_END.search(pairs[-1][0]):
+        return _joined(pairs)
     # the last clause carries the question mark; a clause before it is dropped only when it opens
     # like a question or is the head of a short either-or ("本店终身保修呢，请问…" keeps its claim)
-    either_or = bool(_EITHER_OR_TAIL.match(clauses.pop()))
-    while clauses and not _ASSERTS.search(clauses[-1]) and (
-            _QUESTION_OPENER.match(clauses[-1]) or (either_or and _EITHER_OR_HEAD.match(clauses[-1]))):
-        clauses.pop()
-    return "，".join(clauses)
+    either_or = bool(_EITHER_OR_TAIL.match(pairs.pop()[0]))
+    while pairs and not _ASSERTS.search(pairs[-1][0]) and (
+            _QUESTION_OPENER.match(pairs[-1][0]) or (either_or and _EITHER_OR_HEAD.match(pairs[-1][0]))):
+        pairs.pop()
+    return _joined(pairs)
+
+
+def _joined(pairs: list[tuple[str, str]]) -> str:
+    return "".join(c + (sep if i < len(pairs) - 1 else "") for i, (c, sep) in enumerate(pairs))
 
 
 def _claims_nothing(text: str) -> bool:
@@ -142,6 +177,31 @@ def _claims_nothing(text: str) -> bool:
         return True
     clauses = [c.strip() for c in _CLAUSE_SPLIT.split(text) if c.strip()]
     return bool(clauses) and all(_CLAIMLESS_CLAUSE.match(c) for c in clauses)
+
+
+def _clauses_to_check(claim: str) -> list[str]:
+    """The clauses of a several-clause claim that state something on their own.
+
+    "退款1-3个工作日到账，所有商品终身保修" scored 0.6 as one sentence and passed: the true clause
+    carried the invented one. Left to the sentence score: a clause that claims nothing, a label
+    in front of a colon ("唯一例外："), a limit ("无需重复提交", "审核前无法承诺结果": an invented
+    limit costs the customer an answer, an invented promise costs the business money), and a
+    clause with fewer than two words besides its numbers ("金额 45 元": the number rule checks it).
+    """
+    parts = _CLAUSE_JOIN.split(claim)
+    clauses = [(parts[i].strip(), parts[i + 1] if i + 1 < len(parts) else "") for i in range(0, len(parts), 2)]
+    clauses = [(c, sep) for c, sep in clauses if c]
+    if len(clauses) < 2:
+        return []
+    checked = []
+    for c, sep in clauses:
+        words = [t for t in token_set(c) if not re.fullmatch(r"[\d.]+", t)]
+        if _PERK.search(c) and not _LIMIT.search(c) and not _ASKS.match(c):
+            checked.append(c)
+        elif not (_CLAIMLESS_CLAUSE.match(c) or _ASKS.match(c) or _LEAD_IN.search(c) or re.search(r"[：:]", sep)
+                  or _LIMIT.search(c) or len(words) < 2):
+            checked.append(c)
+    return checked
 
 
 def _numbers_match(value: float, pool: list[float]) -> bool:
@@ -167,6 +227,7 @@ def verify_answer(
 
     checks: list[SentenceCheck] = []
     invalid: set[int] = set()
+    evidence_tokens: list[set[str]] | None = None
     for raw in split_sentences(answer):
         text, cited = strip_citations(raw)
         if not text:
@@ -197,6 +258,17 @@ def verify_answer(
             check.score, check.best_ref = round(best_score, 3), best_ref
             threshold = 0.3 if numbers else settings.sentence_support_threshold
             grounded = best_score >= threshold
+            # Each clause clears its own bar against any evidence (a sentence often cites one chunk
+            # and paraphrases two); the lower bar for numbers applies only to the clause that has
+            # them: a checked number vouches for its own clause, not for its neighbours.
+            for clause in _clauses_to_check(claim) if grounded else []:
+                bar = 0.3 if extract_numbers(clause) else settings.sentence_support_threshold
+                if evidence_tokens is None:  # tool payloads can be long: tokenize them once per answer
+                    evidence_tokens = [token_set(i.text + " " + str(i.meta.get("heading", ""))) for i in evidence]
+                words = token_set(clause)
+                if words and max((len(words & t) / len(words) for t in evidence_tokens), default=0.0) < bar:
+                    check.weak_clause, grounded = clause, False
+                    break
             check.supported = grounded and not check.unverified_numbers and not check.unknown_ids \
                 and not check.contradicts
         checks.append(check)
@@ -207,6 +279,7 @@ def verify_answer(
         if labels is not None:
             method = "llm"
             for check, label in zip(_judged(checks), labels):
+                check.weak_clause = None  # the judge read the whole sentence
                 check.supported = (bool(label) and not check.unverified_numbers and not check.unknown_ids
                                    and not check.contradicts)
 
