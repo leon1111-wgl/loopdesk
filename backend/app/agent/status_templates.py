@@ -102,6 +102,8 @@ class CaseState:
     handoff: bool = False
     refund_asked: bool = False  # the customer asked for a refund this turn
     quoted: list[str] = field(default_factory=list)  # tool wording the model may quote verbatim
+    # each order's status as the order tools worded it, by order id: "SO…（音箱，已退款）" quotes a listing (N-197)
+    order_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -149,6 +151,9 @@ def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
         for key in ("message", "error", "comment", "refund_note", "summary", "status_text"):
             if output.get(key):
                 state.quoted.append(str(output[key]))
+        for order in [output, *(output.get("orders") or [])] if item.title in ("get_order", "list_my_orders") else []:
+            if isinstance(order, dict) and order.get("order_id") and order.get("status_text"):
+                state.order_status[str(order["order_id"]).upper()] = str(order["status_text"])
         if item.title == "request_refund":
             state.refund, state.refund_fields = _refund_action(output)
             state.refund_source = "action"
@@ -256,8 +261,19 @@ def _negated(text: str, start: int) -> bool:
     return bool(re.search(_NEG + r"[^，。,；]{0,2}$", text[max(0, start - 4):start]))
 
 
-def claimed_states(sentence: str, quoted: list[str] | None = None) -> Claims:
-    text = _without(normalize_width(sentence), quoted or [])
+def _without_order_status(text: str, order_status: dict[str, str]) -> str:
+    """The sentence minus the status the order tools gave each order it names: "SO…（音箱，已退款，¥59）" restates
+    a listing, it does not claim a refund happened in this run. Another order's status stays (N-197)."""
+    for oid in {m.group(0).upper() for m in ORDER_ID_RE.finditer(text)}:
+        status = order_status.get(oid)
+        if status:
+            text = text.replace(status, "")
+    return text
+
+
+def claimed_states(sentence: str, quoted: list[str] | None = None,
+                   order_status: dict[str, str] | None = None) -> Claims:
+    text = _without(_without_order_status(normalize_width(sentence), order_status or {}), quoted or [])
     claims = Claims(personal=bool(_PERSONAL.search(text) or ORDER_ID_RE.search(text)))
     conditional = bool(_CONDITIONAL.search(text))
     for state, pattern in _REFUND_PATTERNS.items():
@@ -281,7 +297,7 @@ def contradiction(sentence: str, state: CaseState) -> str | None:
     """Why this sentence disagrees with the tools, or None: "request_refund" (says something about the refund
     the refund tools contradict), "under_action" (decides a refund the customer asked for without the tool),
     "ticket" / "handoff" (says one was made when no tool made it)."""
-    claims = claimed_states(sentence, state.quoted)
+    claims = claimed_states(sentence, state.quoted, state.order_status)
     if claims.ticket and state.ticket != "created":
         return "ticket"
     if claims.handoff and not state.handoff:
@@ -362,7 +378,7 @@ def compose(answer: str, state: CaseState, dry_run: bool = False) -> Composed:
         if not core:
             kept.append(piece)
             continue
-        claims = claimed_states(sentence, state.quoted)
+        claims = claimed_states(sentence, state.quoted, state.order_status)
         domains = status_domains(claims, state, cited=bool(CITE_RE.search(sentence))) & set(templates)
         if not domains and len(core) >= 4 and any(core in r for r in restated):
             domains = {"refund" if "refund" in templates and "工单" not in core else next(iter(templates))}
