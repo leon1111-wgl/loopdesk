@@ -8,6 +8,11 @@ Inbound: the event subscription posts to /api/channels/feishu/{tenant}/events.
   sees them. The stored event is also an inbox: a worker claims it before answering, and
   if that worker dies after the acknowledgement (Feishu will not resend), ``retry_stuck``
   (run every minute by ``python -m app.ops.channel_retry``) claims it again.
+- Admission (N-189): an event's run takes a slot like a chat message does (``app/admission.py``).
+  Feishu has already been acknowledged, so a full process cannot answer 503: the event waits as
+  ``queued`` and this process starts it when a slot frees (``_Waiting``). The queue is in memory;
+  its rows are kept fresh, and the sweeper takes over the ones a dead process left behind. An
+  event that waits longer than ``max_queue_wait`` is answered with the busy text instead.
 Outbound: tenant_access_token (cached until expiry) + reply / send-to-chat APIs.
 
 Each tenant has its own app (LOOPDESK_FEISHU_APPS): the event's verification token and app ID
@@ -24,6 +29,8 @@ import re
 import secrets
 import threading
 import time
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -33,6 +40,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..admission import get_admission
 from ..agent.runtime import MODEL_ERROR_TEXT, collect
 from ..config import Settings
 from ..db import new_session
@@ -162,6 +170,18 @@ def parse_text_event(body: dict) -> dict | None:
 
 MAX_ATTEMPTS = 3
 QUEUED_GRACE = timedelta(seconds=30)  # an accepted event's own background task normally starts sooner
+QUEUE_POLL = 0.5  # seconds between attempts to admit the queued events (sooner when a slot is freed)
+QUEUE_HEARTBEAT = 10.0  # seconds between refreshes of this process's queued rows
+# A queued row not refreshed for this long belongs to a dead process. Longer than the database pool's
+# 30 s wait, so one slow heartbeat does not hand a live queue to the sweeper.
+QUEUED_STALE = timedelta(seconds=90)
+HEARTBEAT_CHUNK = 500  # ids per UPDATE (SQLite limits bound parameters)
+
+
+def max_queue_wait(settings: Settings) -> float:
+    """Seconds an event may wait for a slot before the customer is told to try again: web chat
+    takes freed slots as fast as the queue does, so under steady overload it could wait forever."""
+    return max(300.0, 4 * settings.run_deadline_seconds)
 
 
 def stale_after(settings: Settings) -> timedelta:
@@ -181,7 +201,7 @@ def _claim(db: Session, event_id: str, now: datetime, stale_before: datetime):
         update(ChannelEvent).where(
             ChannelEvent.channel == "feishu", ChannelEvent.event_id == event_id,
             ChannelEvent.attempts < MAX_ATTEMPTS,
-            or_(ChannelEvent.status == "received",
+            or_(ChannelEvent.status.in_(("received", "queued")),
                 and_(ChannelEvent.status == "processing", ChannelEvent.claimed_at < stale_before)),
         ).values(status="processing", attempts=ChannelEvent.attempts + 1, claimed_at=now)
         .returning(ChannelEvent.payload).execution_options(synchronize_session=False)
@@ -204,21 +224,182 @@ def _settle(event_id: str, status: str, payload: dict) -> None:
         db.commit()
 
 
-def process_event(services, event_id: str, now: datetime | None = None) -> dict | None:
+def _claimable(stale_before: datetime):
+    return and_(ChannelEvent.channel == "feishu", ChannelEvent.attempts < MAX_ATTEMPTS,
+                or_(ChannelEvent.status.in_(("received", "queued")),
+                    and_(ChannelEvent.status == "processing", ChannelEvent.claimed_at < stale_before)))
+
+
+def _admission_key(db: Session, payload: dict) -> tuple:
+    """The (tenant, user) a run is counted under. The user key is the Feishu sender: the User row
+    may not exist yet, and these customers only ever write through Feishu."""
+    tenant_id = db.execute(select(Tenant.id).where(Tenant.slug == payload.get("tenant"))).scalar_one_or_none()
+    open_id = payload.get("open_id")  # empty for a sender Feishu did not name: no shared per-user cap
+    return tenant_id, f"feishu:{payload.get('tenant')}:{open_id}" if open_id else None
+
+
+def process_event(services, event_id: str, now: datetime | None = None, slot=None) -> dict | None:
     """Claim an accepted event and answer it; None when another worker has it. An event whose
     answer failed got the fallback reply (handle_message) and is settled as failed, not retried.
     ``now`` (a sweep's clock) only decides what counts as stale. The claim is stamped with the
     moment it is made: a sweep answering a backlog for minutes would otherwise back-date its
-    later claims, and the next sweep would take them over while they are being answered."""
+    later claims, and the next sweep would take them over while they are being answered.
+
+    The run takes an admission slot first (N-189); without one the event is queued and
+    ``{"queued": True}`` returned. ``slot`` is one the queue already took for it."""
     now = now or _utcnow()
+    stale_before = now - stale_after(services.settings)
+    if slot is None:
+        with new_session() as db:
+            payload = db.execute(select(ChannelEvent.payload).where(
+                ChannelEvent.event_id == event_id, _claimable(stale_before))).scalar_one_or_none()
+            if not payload:
+                return None
+            key = _admission_key(db, payload)
+        slot = get_admission().try_enter(*key)
+        if slot is None:
+            return {"queued": True} if _queue(services, event_id, key, stale_before) else None
+    try:
+        with new_session() as db:
+            claimed = _claim(db, event_id, _utcnow(), stale_before)
+        if claimed is None or not claimed.payload:
+            return None
+        payload = claimed.payload
+        result = handle_message(services, payload["tenant"], payload)
+        _settle(event_id, "failed" if result.get("fallback") else "done", payload)
+        return result
+    finally:
+        get_admission().leave(slot)
+
+
+def _queue(services, event_id: str, key: tuple, stale_before: datetime) -> bool:
+    """Mark the event queued (still unclaimed: any worker may take it) and wait for a slot."""
+    now = _utcnow()
     with new_session() as db:
-        claimed = _claim(db, event_id, _utcnow(), now - stale_after(services.settings))
+        queued = db.execute(update(ChannelEvent).where(ChannelEvent.event_id == event_id, _claimable(stale_before))
+                            .values(status="queued", claimed_at=now).execution_options(synchronize_session=False)).rowcount
+        db.commit()
+    if queued:
+        waiting.add(services, event_id, key)
+    return bool(queued)
+
+
+class _Waiting:
+    """Feishu events of this process waiting for an admission slot, oldest first. One thread
+    polls while any wait; an admitted event runs on a pool no larger than the admission limit,
+    so these runs never take the HTTP endpoints' threads."""
+
+    def __init__(self) -> None:
+        self._events: OrderedDict[str, tuple] = OrderedDict()  # event_id -> (admission key, queued at)
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._pool: ThreadPoolExecutor | None = None
+        self._services = None
+
+    @property
+    def pending(self) -> int:
+        return len(self._events)
+
+    def add(self, services, event_id: str, key: tuple) -> None:
+        with self._lock:
+            self._events[event_id] = (key, time.monotonic())
+            self._services = services
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(get_admission().limit, thread_name_prefix="feishu-run")
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._loop, name="feishu-queue", daemon=True)
+                self._thread.start()
+
+    def drain(self) -> int:
+        """Start every waiting event a slot can be found for; the others keep their place."""
+        started = 0
+        with self._lock:
+            admission = get_admission()
+            services = self._services
+            limit = max_queue_wait(services.settings) if services else None
+            for event_id, (key, queued_at) in list(self._events.items()):
+                slot = admission.try_enter(*key, record=False)  # counted once, when it was queued
+                if slot is None:
+                    if limit is not None and time.monotonic() - queued_at > limit:
+                        # On the pool, not here: a burst of expiries would stall the queue and its heartbeat.
+                        del self._events[event_id]
+                        try:
+                            self._pool.submit(_give_up_waiting, services, event_id)
+                        except BaseException:
+                            self._events[event_id] = (key, queued_at)
+                            raise
+                    continue
+                del self._events[event_id]
+                try:
+                    self._pool.submit(self._run, services, event_id, slot)
+                except BaseException:  # "can't start new thread", or shutting down: keep the slot count true
+                    admission.leave(slot)
+                    self._events[event_id] = (key, queued_at)
+                    self._events.move_to_end(event_id, last=False)
+                    raise
+                started += 1
+        return started
+
+    @staticmethod
+    def _run(services, event_id: str, slot) -> None:
+        try:
+            process_event(services, event_id, slot=slot)
+        except Exception:  # a pool would keep the exception in a future nobody reads
+            logger.exception("queued feishu event %s failed", event_id)
+
+    def _heartbeat(self) -> None:
+        with self._lock:
+            ids = list(self._events)
+        for i in range(0, len(ids), HEARTBEAT_CHUNK):
+            with new_session() as db:
+                db.execute(update(ChannelEvent).where(ChannelEvent.channel == "feishu", ChannelEvent.status == "queued",
+                                                      ChannelEvent.event_id.in_(ids[i:i + HEARTBEAT_CHUNK]))
+                           .values(claimed_at=_utcnow()).execution_options(synchronize_session=False))
+                db.commit()
+
+    def _loop(self) -> None:
+        beat = time.monotonic()
+        while True:
+            with self._lock:
+                if not self._events:
+                    self._thread = None
+                    return
+            try:
+                self.drain()
+                if time.monotonic() - beat >= QUEUE_HEARTBEAT:
+                    self._heartbeat()
+                    beat = time.monotonic()
+            except Exception:
+                logger.exception("feishu queue pass failed")
+            freed = get_admission().freed
+            freed.wait(QUEUE_POLL)  # a finished run wakes the queue at once, not up to 0.5 s later
+            # Cleared before the next drain: a slot freed in between is still seen by that drain, so a
+            # lost signal only costs one QUEUE_POLL. (Clearing after the drain would lose it.)
+            freed.clear()
+
+
+def _give_up_waiting(services, event_id: str) -> None:
+    """An event that never got a slot: tell the customer to try again instead of leaving them waiting."""
+    from ..admission import OVERLOADED
+
+    try:
+        with new_session() as db:
+            claimed = _claim(db, event_id, _utcnow(), _utcnow() - stale_after(services.settings))
+    except Exception:  # left queued without a heartbeat: the sweeper answers it after QUEUED_STALE
+        logger.exception("giving up queued feishu event %s failed", event_id)
+        return
     if claimed is None or not claimed.payload:
-        return None
-    payload = claimed.payload
-    result = handle_message(services, payload["tenant"], payload)
-    _settle(event_id, "failed" if result.get("fallback") else "done", payload)
-    return result
+        return  # another worker took it meanwhile
+    logger.warning("feishu event %s waited %.0f s for a slot; asked the customer to try again",
+                   event_id, max_queue_wait(services.settings))
+    try:
+        FeishuClient(services.settings, claimed.payload["tenant"]).reply(claimed.payload["message_id"], OVERLOADED)
+    except Exception:
+        logger.exception("feishu busy reply to %s failed", event_id)
+    _settle(event_id, "failed", claimed.payload)
+
+
+waiting = _Waiting()
 
 
 def retry_stuck(services, now: datetime | None = None) -> dict[str, int]:
@@ -230,6 +411,8 @@ def retry_stuck(services, now: datetime | None = None) -> dict[str, int]:
     now = now or datetime.now(timezone.utc)
     stale_before = now - stale_after(services.settings)
     stuck = or_(and_(ChannelEvent.status == "received", ChannelEvent.received_at < now - QUEUED_GRACE),
+                # queued rows are refreshed every QUEUE_HEARTBEAT by the process holding them
+                and_(ChannelEvent.status == "queued", ChannelEvent.claimed_at < now - QUEUED_STALE),
                 and_(ChannelEvent.status == "processing", ChannelEvent.claimed_at < stale_before))
     with new_session() as db:
         rows = db.execute(select(ChannelEvent.event_id, ChannelEvent.attempts)
@@ -237,7 +420,8 @@ def retry_stuck(services, now: datetime | None = None) -> dict[str, int]:
     counts = {"answered": 0, "gave_up": 0}
     for event_id, attempts in rows:
         if attempts < MAX_ATTEMPTS:
-            counts["answered"] += process_event(services, event_id, now) is not None
+            result = process_event(services, event_id, now)
+            counts["answered"] += result is not None and not result.get("queued")
             continue
         with new_session() as db:  # give up once, even with several sweepers
             payload = db.execute(

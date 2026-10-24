@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..admission import get_admission
+from ..channels import feishu
 from ..config import prompt_version_name
 from ..db import get_db
 from ..agent.outcome import is_refusal
@@ -253,4 +254,8 @@ def prometheus(db: Session = Depends(get_db)) -> str:
               "# TYPE loopdesk_runs_rejected_total counter"]
     lines += [f'loopdesk_runs_rejected_total{{reason="{r}",tenant="{t}"}} {n}'
               for (r, t), n in sorted(rejections.items())]
+    # Feishu events wait instead of being refused (N-189): this is the backlog the autoscaler cannot see in runs.
+    lines += ["# HELP loopdesk_channel_events_queued Channel events this process holds until an admission slot is free",
+              "# TYPE loopdesk_channel_events_queued gauge",
+              f'loopdesk_channel_events_queued{{channel="feishu"}} {feishu.waiting.pending}']
     return "\n".join(lines) + "\n"

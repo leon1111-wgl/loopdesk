@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from .. import audit
+from ..admission import get_admission
 from ..agent.business_tools import WITHDRAWN_COMMENT, end_paused_run, reviewer_role
 from ..agent.runtime import REQUESTER_WITHDREW, ResumeError, decided_text
 from ..channels.feishu import FeishuClient
@@ -96,12 +97,19 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
         threshold = principal.tenant.approval_admin_threshold
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"金额超过 ¥{threshold:.0f}，需要管理员审批（坐席可以驳回）")
     services = get_services()
+    # Resuming runs the agent (and may call the model): it takes a slot like a chat message (N-189).
+    # A process slot only: a decision unblocks a customer, so a tenant busy with its own customers
+    # (at its share) can still decide.
+    admission = get_admission()
+    slot = admission.enter(None, None)
     try:
         events = services.runtime(db).resume(approval, body.decision, principal.user, masked(body.comment))
     except ResumeError as exc:  # the approval is pending again and can be retried
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except ValueError as exc:  # another reviewer decided first
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    finally:
+        admission.leave(slot)
     final = next((e for e in events if e["type"] == "final"), {})
 
     # The decision has been executed and committed (a refund may have been paid). Telling the

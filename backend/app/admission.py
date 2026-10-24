@@ -17,6 +17,11 @@ other tenant; it gets 503 like a full process would. One user may hold ``per_use
 a person waits for an answer before asking the next question, so more than a few at once is a
 script, a stuck client or someone pressing send in a loop, and it gets 429 (their own doing,
 not the service being busy). A single-tenant deployment sets the share to 1.
+
+Every channel takes its slots here: web chat and the API (``api/chat.py``), voice turns
+(``voice/session.py``), Feishu events and approval decisions that resume a run (N-189). A Feishu
+event cannot be answered with 503, Feishu has already been acknowledged, so it waits as
+``queued`` (``channels/feishu.py``) until a slot is free.
 """
 
 from __future__ import annotations
@@ -45,6 +50,7 @@ class Admission:
         self.by_user: dict = {}
         self.rejections: dict[tuple[str, str], int] = {}  # (reason, tenant) -> count since the process started
         self._lock = threading.Lock()
+        self.freed = threading.Event()  # set on every leave(), so work waiting for a slot wakes at once (N-189)
 
     @property
     def rejected(self) -> int:
@@ -54,24 +60,50 @@ class Admission:
         """Take a slot, or raise 429 (this user) / 503 (process or tenant full). Every successful
         call needs exactly one ``leave()`` with the slot it returned."""
         with self._lock:
-            if user_id is not None and self.by_user.get(user_id, 0) >= self.user_limit:
+            reason = self._refusal(tenant_id, user_id)
+            if reason == "user":
                 self._reject("user", tenant_id, status.HTTP_429_TOO_MANY_REQUESTS, USER_BUSY)
-            if self.inflight >= self.limit:
-                self._reject("process", tenant_id)
-            if tenant_id is not None and self.by_tenant.get(tenant_id, 0) >= self.tenant_limit:
-                self._reject("tenant", tenant_id)
-            self.inflight += 1
-            if tenant_id is not None:
-                self.by_tenant[tenant_id] = self.by_tenant.get(tenant_id, 0) + 1
-            if user_id is not None:
-                self.by_user[user_id] = self.by_user.get(user_id, 0) + 1
-            return (tenant_id, user_id)
+            if reason:
+                self._reject(reason, tenant_id)
+            return self._take(tenant_id, user_id)
+
+    def try_enter(self, tenant_id=None, user_id=None, record: bool = True) -> Slot | None:
+        """``enter()`` for work that waits instead of being turned away (a Feishu event, N-189):
+        None when full. ``record=False`` for a retry of work already counted as refused once, so
+        a queued event polled every second does not count as a refusal every second."""
+        with self._lock:
+            reason = self._refusal(tenant_id, user_id)
+            if reason:
+                if record:
+                    self._count(reason, tenant_id)
+                return None
+            return self._take(tenant_id, user_id)
+
+    def _refusal(self, tenant_id, user_id) -> str | None:
+        if user_id is not None and self.by_user.get(user_id, 0) >= self.user_limit:
+            return "user"
+        if self.inflight >= self.limit:
+            return "process"
+        if tenant_id is not None and self.by_tenant.get(tenant_id, 0) >= self.tenant_limit:
+            return "tenant"
+        return None
+
+    def _take(self, tenant_id, user_id) -> Slot:
+        self.inflight += 1
+        if tenant_id is not None:
+            self.by_tenant[tenant_id] = self.by_tenant.get(tenant_id, 0) + 1
+        if user_id is not None:
+            self.by_user[user_id] = self.by_user.get(user_id, 0) + 1
+        return (tenant_id, user_id)
 
     def _reject(self, reason: str, tenant_id, code: int = status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail: str = OVERLOADED) -> None:
+        self._count(reason, tenant_id)
+        raise HTTPException(code, detail, headers={"Retry-After": str(self.retry_after)})
+
+    def _count(self, reason: str, tenant_id) -> None:
         key = (reason, "" if tenant_id is None else str(tenant_id))
         self.rejections[key] = self.rejections.get(key, 0) + 1
-        raise HTTPException(code, detail, headers={"Retry-After": str(self.retry_after)})
 
     def leave(self, slot: Slot) -> None:
         tenant_id, user_id = slot
@@ -89,6 +121,7 @@ class Admission:
                 counts[key] -= 1
                 if not counts[key]:
                     del counts[key]  # keep the maps as small as what is running now
+        self.freed.set()
 
     def snapshot(self) -> tuple[dict, dict]:
         """Copies of the per-tenant counts and the rejections, for /metrics."""

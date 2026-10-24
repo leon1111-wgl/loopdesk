@@ -20,6 +20,11 @@ so these bursts lift the per-tenant and per-user shares unless ``--env`` sets th
 ``--fairness`` (with ``--model-latency``) is the noisy-neighbour test (N-181): Leon优选's two
 customers send ``concurrency`` requests at once, a second later Iris云's Noah sends 3, and the
 report counts each tenant's answers, 503s and 429s under the default shares.
+
+``--feishu`` (with ``--model-latency``) posts ``concurrency`` Feishu events from three senders at
+once (N-189) and reports how many answers ran at the same time (from the runs' own start and
+duration), the peaks of ``loopdesk_inflight_runs`` and ``loopdesk_channel_events_queued``, and
+whether every event was answered. Replies are dry runs: the demo tenant has no Feishu app.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -238,6 +244,55 @@ def _fairness(base: str, tokens: dict[str, str], flood: int, endpoint_stream: bo
     return {"flood": flood, "leon": outcome["leon"], "iris": outcome["iris"]}
 
 
+def _gauge(text: str, name: str) -> float:
+    for line in text.splitlines():
+        if line.startswith(name + " ") or line.startswith(name + "{"):
+            return float(line.rsplit(" ", 1)[1])
+    return 0.0
+
+
+def _feishu(base: str, database_url: str, events: int, timeout: float = 300.0) -> dict:
+    """Feishu events take admission slots and queue for them (N-189)."""
+    from sqlalchemy import create_engine, text
+
+    started = time.monotonic()
+    with httpx.Client(base_url=base, timeout=30) as client:
+        for n in range(events):
+            message = {"message_id": f"om_bench_{n}", "chat_id": f"oc_bench_{n % 3}", "message_type": "text",
+                       "content": json.dumps({"text": f"退款多久能到账？（第{n}次）"}, ensure_ascii=False)}
+            client.post("/api/channels/feishu/leon/events", json={
+                "schema": "2.0", "header": {"event_id": f"bench-{n}", "event_type": "im.message.receive_v1"},
+                "event": {"sender": {"sender_id": {"open_id": f"ou_bench{n % 3}"}}, "message": message}})
+        accepted_s = time.monotonic() - started
+        engine = create_engine(database_url)
+        peak_inflight = peak_queued = 0.0
+        settled = 0
+        while time.monotonic() - started < timeout:
+            metrics = client.get("/metrics").text
+            peak_inflight = max(peak_inflight, _gauge(metrics, "loopdesk_inflight_runs"))
+            peak_queued = max(peak_queued, _gauge(metrics, "loopdesk_channel_events_queued"))
+            with engine.connect() as db:
+                settled = db.execute(text("SELECT count(*) FROM channel_events WHERE event_id LIKE 'bench-%' "
+                                          "AND status IN ('done', 'failed')")).scalar_one()
+            if settled == events:
+                break
+            time.sleep(0.2)
+        with engine.connect() as db:
+            spans = db.execute(text("SELECT r.created_at, r.latency_ms FROM runs r JOIN conversations c "
+                                    "ON c.id = r.conversation_id WHERE c.channel = 'feishu'")).all()
+    edges = []
+    for created, latency in spans:
+        start = created.timestamp() if hasattr(created, "timestamp") else datetime.fromisoformat(str(created)).timestamp()
+        edges += [(start, 1), (start + (latency or 0) / 1000, -1)]
+    overlap = peak_overlap = 0
+    for _, step in sorted(edges, key=lambda e: (e[0], e[1])):
+        overlap += step
+        peak_overlap = max(peak_overlap, overlap)
+    return {"events": events, "accepted_s": round(accepted_s, 2), "settled": settled, "runs": len(spans),
+            "peak_concurrent_runs": peak_overlap, "peak_inflight_metric": int(peak_inflight),
+            "peak_queued_metric": int(peak_queued), "all_done_s": round(time.monotonic() - started, 1)}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="LoopDesk chat API load test")
     parser.add_argument("--concurrency", default="1,4,16")
@@ -255,6 +310,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="extra server environment, e.g. LOOPDESK_MAX_INFLIGHT_RUNS=64")
     parser.add_argument("--fairness", action="store_true",
                         help="with --model-latency: Leon's customers flood, Iris's Noah asks a second later (N-181)")
+    parser.add_argument("--feishu", action="store_true",
+                        help="with --model-latency: post concurrency Feishu events from three senders at once (N-189)")
     parser.add_argument("--report")
     args = parser.parse_args(argv)
 
@@ -264,11 +321,13 @@ def main(argv: list[str] | None = None) -> int:
     burst = args.model_latency is not None
     if burst:
         _, model_url = fake_model.start(args.model_latency)
-        shares = {} if args.fairness else {"LOOPDESK_TENANT_INFLIGHT_SHARE": "1", "LOOPDESK_USER_INFLIGHT_RUNS": "1000000"}
+        shares = {} if args.fairness or args.feishu else {"LOOPDESK_TENANT_INFLIGHT_SHARE": "1", "LOOPDESK_USER_INFLIGHT_RUNS": "1000000"}
         extra = {"LOOPDESK_LLM_PROVIDER": "openai_compat", "LOOPDESK_LLM_BASE_URL": model_url,
                  "LOOPDESK_LLM_API_KEY": "fake", "LOOPDESK_LLM_MODEL": "fake", **shares, **extra}
-    elif args.fairness:
-        parser.error("--fairness needs --model-latency")
+        if args.feishu:  # demo mode: unsigned events are accepted and replies are dry runs
+            extra = {"LOOPDESK_SEED_DEMO": "1", **extra}
+    elif args.fairness or args.feishu:
+        parser.error("--fairness and --feishu need --model-latency")
     proc, base = _start_server(database_url, args.workers, 24.0 if args.cache == "on" else 0.0, extra)
     try:
         tokens = {}
@@ -277,7 +336,8 @@ def main(argv: list[str] | None = None) -> int:
             tokens[email] = r.json()["token"]
         if args.warmup > 0 and not burst:  # steady state, not start-up: each worker process warms its own caches
             _run_level(base, tokens, max(int(c) for c in args.concurrency.split(",")), args.warmup)
-        levels = [_fairness(base, tokens, int(c), args.endpoint == "stream") if args.fairness
+        levels = [_feishu(base, database_url, int(c)) if args.feishu
+                  else _fairness(base, tokens, int(c), args.endpoint == "stream") if args.fairness
                   else _run_level(base, tokens, int(c), args.duration, burst, args.endpoint == "stream")
                   for c in args.concurrency.split(",")]
     finally:
