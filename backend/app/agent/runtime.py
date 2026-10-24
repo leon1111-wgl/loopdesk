@@ -68,6 +68,7 @@ UNSAFE_TEXT = ("抱歉，这条回复涉及您的账户和资金安全，没有�
                "也不要添加私人联系方式或转账。")
 UNSAFE_REASON = "回答里有索要验证码、银行卡号、密码，或官方渠道以外的链接、联系方式、转账要求，已拦截并转人工"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
+REPEATED_CALL_NOTE = "与本步另一次调用的工具和参数完全相同，未重复执行，结果见那一次"
 REWRITE_BUDGET_SECONDS = 5.0
 JUDGE_BUDGET_SECONDS = 8.0  # the output judge waits this long at most; past it the rules' verdict stands
 TOOL_LABEL = {"request_refund": "退款"}
@@ -479,6 +480,12 @@ class AgentRuntime:
         while True:
             while queue:
                 call = queue.pop(0)
+                if first := state.get("repeats", {}).get(call.id):
+                    # Answered, not run: a second refund would fail on "退款中" and, as the last refund
+                    # call, become what the customer is told, after the first one paid (N-201).
+                    messages.append(LLMMessage(role="tool", tool_call_id=call.id, name=call.name, content=json.dumps(
+                        {"duplicate_of": first, "note": REPEATED_CALL_NOTE}, ensure_ascii=False)))
+                    continue
                 yield {"type": "tool_call", "id": call.id, "name": call.name, "arguments": call.arguments}
                 outcome = self._run_tool(tracer, ctx, call)
                 if outcome.kind == "approval":
@@ -553,9 +560,28 @@ class AgentRuntime:
                 if result.content and stream_tokens:
                     yield {"type": "step_done", "step": state["steps"]}
                 queue = list(result.tool_calls)
+                self._mark_repeats(tracer, state, queue)
                 continue
             yield from self._finish(run, tracer, ctx, state, result.content.strip(), started, verify=True)
             return
+
+    @staticmethod
+    def _mark_repeats(tracer: Tracer, state: dict[str, Any], calls: list[ToolCall]) -> None:
+        """Calls in one step with the same tool and arguments run once (parallel tool calls often
+        repeat). The rest get a pointer to the first, kept in the run state so a resume after an
+        approval still skips them."""
+        first: dict[str, str] = {}
+        repeats: dict[str, str] = {}
+        for c in calls:
+            key = c.name + json.dumps(c.arguments, ensure_ascii=False, sort_keys=True, default=str)
+            if key in first and first[key] != c.id:
+                repeats[c.id] = first[key]
+            else:
+                first[key] = c.id
+        state["repeats"] = repeats
+        if repeats:
+            with tracer.span("guardrail", "repeated_tool_calls", {"step": state["steps"]}) as span:
+                span.set(skipped=len(repeats), tools=sorted({c.name for c in calls if c.id in repeats}))
 
     def _call_llm(self, tracer: Tracer, messages, specs, state):
         options = {"inject_hallucination": state["options"].get("inject_hallucination", False),
