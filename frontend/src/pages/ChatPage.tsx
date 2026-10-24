@@ -48,7 +48,9 @@ const REASONS: [string, string][] = [
   ["other", "其他"],
 ];
 const MAX_MESSAGE = 2000; // same limit as the API
-const SENTENCE_SPLIT = /(?<=[。！？!?；;])|\n+/;
+// Split after a sentence end or a line break, keeping the break: the bubble is pre-wrap, so a
+// line without closing punctuation (a quoted rule, a list item) stays on its own line (N-120).
+const SENTENCE_SPLIT = /(?<=[。！？!?；;\n])/;
 const CITE = /\[(\d{1,2})\]/g;
 
 interface LiveRun {
@@ -64,7 +66,7 @@ function AnswerText({ text, citations, verification }: { text: string; citations
     () => new Set((verification?.sentences ?? []).filter((s) => s.factual && !s.supported).map((s) => s.text)),
     [verification],
   );
-  const parts = text.split(SENTENCE_SPLIT).filter(Boolean);
+  const parts = text.trimEnd().split(SENTENCE_SPLIT).filter(Boolean);
   return (
     <div className="bubble-text">
       {parts.map((part, i) => {

@@ -91,6 +91,33 @@ test("customer gets a cited answer; staff can open its trace", async ({ browser 
   await expect(leon.getByText("七天无理由退货有什么条件？").first()).toBeVisible();
 });
 
+test("an answer keeps its line breaks: quoted rules and list items are not glued together (N-120)", async ({ browser }) => {
+  const emma = await signIn(browser, "customer@leon.demo");
+  await ask(emma, "七天无理由退货有什么条件？");
+  await expect(emma.locator(".msg.assistant .cite").first()).toBeVisible();
+  // The answer the model-down fallback gives (runtime.DEGRADED_ANSWER) and a numbered list: lines
+  // that do not end in a full stop.
+  const lines = [
+    "智能客服暂时无法生成回答，以下是相关规定的原文：",
+    "「签收7天内可申请无理由退货」[1]",
+    "「商品需保持完好」[1]",
+    "1. 打开订单详情",
+    "2. 点击申请退货",
+    "如果没有解决您的问题，请回复“转人工”，人工客服会接手。",
+  ];
+  await emma.route("**/api/conversations/*/messages", async (r) => {
+    const body = await (await r.fetch()).json();
+    body.messages[body.messages.length - 1].content = lines.join("\n");
+    await r.fulfill({ json: body });
+  });
+  await emma.reload();
+  const text = emma.locator(".msg.assistant .bubble-text").last();
+  await expect(text).toContainText("点击申请退货");
+  const shown = (await text.innerText()).split("\n").map((l) => l.trim()).filter(Boolean);
+  expect(shown).toEqual(lines.map((l) => l.replace(/\[1\]/g, "1")));
+  await expect(text.locator(".cite")).toHaveCount(2);
+});
+
 test("a message that never reached the server goes back into the box; one that did is not offered again (N-086)", async ({ browser }) => {
   const emma = await signIn(browser, "customer@leon.demo");
   const box = emma.getByPlaceholder("输入问题，Enter 发送，Shift+Enter 换行");
