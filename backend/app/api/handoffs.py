@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select, update
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.orm import Session
 
 from ..agent import handoff
@@ -47,15 +47,16 @@ def handoff_out(db: Session, ticket: Ticket) -> dict:
     }
 
 
-def reply_times(db: Session, conversation_ids: set[int]) -> dict[int, list[datetime]]:
-    """When people (role=agent) wrote in these conversations."""
+def reply_times(db: Session, conversation_ids: Select) -> dict[int, list[datetime]]:
+    """When people (role=agent) wrote in these conversations. ``conversation_ids`` is a query, not
+    a list (N-133): a list becomes one bound parameter per id, and SQLite refuses a statement with
+    more than 32,766 of them; a busy month of handoffs passes that."""
     times: dict[int, list[datetime]] = {}
-    if conversation_ids:
-        for conversation_id, created in db.execute(
-            select(Message.conversation_id, Message.created_at)
-            .where(Message.conversation_id.in_(conversation_ids), Message.role == "agent")
-        ).all():
-            times.setdefault(conversation_id, []).append(as_utc(created))
+    for conversation_id, created in db.execute(
+        select(Message.conversation_id, Message.created_at)
+        .where(Message.conversation_id.in_(conversation_ids), Message.role == "agent")
+    ).all():
+        times.setdefault(conversation_id, []).append(as_utc(created))
     return times
 
 

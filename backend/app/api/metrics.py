@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from ..admission import get_admission
@@ -58,9 +58,9 @@ def _handoff_stats(db: Session, tenant_id: int, since: datetime) -> dict:
     live = db.execute(select(Ticket).where(Ticket.tenant_id == tenant_id, Ticket.kind == "handoff",
                                            Ticket.status.in_(("open", "in_progress")))).scalars().all()
     waiting = [t for t in live if t.status == "open"]
-    recent = db.execute(select(Ticket).where(Ticket.tenant_id == tenant_id, Ticket.kind == "handoff",
-                                             Ticket.created_at >= since)).scalars().all()
-    times = reply_times(db, {t.conversation_id for t in recent if t.conversation_id})
+    in_window = (Ticket.tenant_id == tenant_id, Ticket.kind == "handoff", Ticket.created_at >= since)
+    recent = db.execute(select(Ticket).where(*in_window)).scalars().all()
+    times = reply_times(db, select(Ticket.conversation_id).where(*in_window))
     first_response = [(reply - as_utc(t.created_at)).total_seconds()
                       for t in recent if (reply := first_reply(t, times)) is not None]
     return {
@@ -72,7 +72,7 @@ def _handoff_stats(db: Session, tenant_id: int, since: datetime) -> dict:
     }
 
 
-def _conflict_backlog(db: Session, tenant_id: int, run_ids: list[int]) -> dict:
+def _conflict_backlog(db: Session, tenant_id: int, run_ids: Select) -> dict:
     """Open knowledge conflicts send every question resting on both sides to a person (see
     rag/conflicts.disputed), so the backlog is an operational number: how many, how old, and
     how many questions it has handed over in the window."""
@@ -80,8 +80,7 @@ def _conflict_backlog(db: Session, tenant_id: int, run_ids: list[int]) -> dict:
         KnowledgeConflict.tenant_id == tenant_id, KnowledgeConflict.status == "open")).scalars().all()
     now = datetime.now(timezone.utc)
     handed_over = db.execute(select(func.count(func.distinct(Span.run_id))).where(
-        Span.run_id.in_(run_ids), Span.kind == "guardrail", Span.name == "knowledge_conflict")).scalar_one() \
-        if run_ids else 0
+        Span.run_id.in_(run_ids), Span.kind == "guardrail", Span.name == "knowledge_conflict")).scalar_one()
     return {
         "open": len(opened),
         "oldest_open_s": int(max(((now - as_utc(t)).total_seconds() for t in opened), default=0)),
@@ -89,13 +88,12 @@ def _conflict_backlog(db: Session, tenant_id: int, run_ids: list[int]) -> dict:
     }
 
 
-def _unsafe_answers(db: Session, run_ids: list) -> dict:
+def _unsafe_answers(db: Session, run_ids: Select) -> dict:
     """Answers the output check stopped (N-038), and the documents that say the same thing: what
     an administrator should read. One with no such document came from the model or from the
     customer's prompt, not from the knowledge base."""
     rows = db.execute(select(Span.output).where(
-        Span.run_id.in_(run_ids), Span.kind == "guardrail", Span.name == "unsafe_answer")).scalars().all() \
-        if run_ids else []
+        Span.run_id.in_(run_ids), Span.kind == "guardrail", Span.name == "unsafe_answer")).scalars().all()
     documents: dict[int, dict] = {}
     for output in rows:
         for source in {s["document_id"]: s for s in (output or {}).get("sources", [])}.values():
@@ -162,13 +160,15 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
     first = datetime.now(zone).date() - timedelta(days=window - 1)
     since = start_of_day(first, zone)
     tenant_id = principal.tenant.id
-    runs = db.execute(
-        select(Run).where(Run.tenant_id == tenant_id, Run.is_eval.is_(False), Run.created_at >= since)
-    ).scalars().all()
-    run_ids = [r.id for r in runs]
+    in_window = (Run.tenant_id == tenant_id, Run.is_eval.is_(False), Run.created_at >= since)
+    runs = db.execute(select(Run).where(*in_window)).scalars().all()
+    # The window as a subquery, not a list of ids (N-133): one bound parameter per run stopped the
+    # dashboard at 32,766 runs in SQLite (about 4,700 conversations a day over 7 days), and
+    # PostgreSQL's limit of 65,535 is only twice that. The database joins on its own index instead.
+    run_ids = select(Run.id).where(*in_window)
     tool_counts = Counter(
         db.execute(select(Span.name).where(Span.run_id.in_(run_ids), Span.kind == "tool")).scalars()
-    ) if run_ids else Counter()
+    )
     statuses = Counter(r.status for r in runs)
     verdicts = Counter(r.verdict for r in runs if r.verdict)
     latencies = [r.latency_ms for r in runs if r.status != "running"]

@@ -74,17 +74,17 @@ def _since(days: int) -> datetime:
 @router.get("/runs.csv")
 def export_runs(days: int = 30, principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> Response:
     rate_limiter.check(f"export:{principal.user.id}", 20)
+    in_window = (Run.tenant_id == principal.tenant.id, Run.is_eval.is_(False), Run.created_at >= _since(days))
     rows = db.execute(
-        select(Run, User).join(User, User.id == Run.user_id)
-        .where(Run.tenant_id == principal.tenant.id, Run.is_eval.is_(False), Run.created_at >= _since(days))
-        .order_by(Run.created_at)
+        select(Run, User).join(User, User.id == Run.user_id).where(*in_window).order_by(Run.created_at)
     ).all()
     tools: dict[str, list[str]] = {}
-    if rows:
-        for run_id, name in db.execute(
-            select(Span.run_id, Span.name).where(Span.run_id.in_([r.id for r, _ in rows]), Span.kind == "tool").order_by(Span.id)
-        ):
-            tools.setdefault(run_id, []).append(name)
+    # A subquery, not the ids as a list (N-133): past 32,766 runs SQLite refused the statement.
+    for run_id, name in db.execute(
+        select(Span.run_id, Span.name).where(Span.run_id.in_(select(Run.id).where(*in_window)), Span.kind == "tool")
+        .order_by(Span.id)
+    ):
+        tools.setdefault(run_id, []).append(name)
     zone = zone_of(principal.tenant)
     header = ["run_id", f"created_at ({zone.key})", "user", "role", "input", "output", "status", "route_tier", "model", "steps",
               "latency_ms", "prompt_tokens", "completion_tokens", "cost", "evidence_verdict", "evidence_coverage", "tools"]
@@ -194,14 +194,13 @@ def export_handoffs(days: int = 30, principal: Principal = Depends(require_staff
     (only replies while that handoff was open count), who served them and when it ended."""
     rate_limiter.check(f"export:{principal.user.id}", 20)
     zone, tenant_id = zone_of(principal.tenant), principal.tenant.id
-    tickets = db.execute(
-        select(Ticket).where(Ticket.tenant_id == tenant_id, Ticket.kind == "handoff", Ticket.created_at >= _since(days))
-        .order_by(Ticket.id)
-    ).scalars().all()
+    in_window = (Ticket.tenant_id == tenant_id, Ticket.kind == "handoff", Ticket.created_at >= _since(days))
+    tickets = db.execute(select(Ticket).where(*in_window).order_by(Ticket.id)).scalars().all()
     names = {u.id: u.name for u in db.execute(select(User).where(User.tenant_id == tenant_id)).scalars()}
+    conversation_ids = select(Ticket.conversation_id).where(*in_window)
     channels = dict(db.execute(select(Conversation.id, Conversation.channel)
-                               .where(Conversation.id.in_({t.conversation_id for t in tickets if t.conversation_id}))).all())
-    times = reply_times(db, {t.conversation_id for t in tickets if t.conversation_id})
+                               .where(Conversation.id.in_(conversation_ids))).all())
+    times = reply_times(db, conversation_ids)
 
     def row(t: Ticket) -> list:
         reply = first_reply(t, times)
