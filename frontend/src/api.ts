@@ -21,9 +21,21 @@ export function setToken(token: string | null) {
 
 export class ApiError extends Error {
   /** body: the parsed JSON error, for endpoints that return more than a message (e.g. a conflict list). */
-  constructor(public status: number, message: string, public body?: Record<string, unknown>) {
-    super(message);
+  constructor(public status: number, message: string, public body?: Record<string, unknown>, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
   }
+}
+
+/** status 0: the request never got an answer (offline, connection reset, a proxy that dropped it). */
+export const NETWORK_ERROR = "网络连接失败，请检查网络后重试。";
+
+/** fetch() rejects with a bare TypeError ("Failed to fetch") when there is no response at all;
+ * turn that into a Chinese message. A cancelled request (AbortError) is passed through as it is. */
+function request(input: string, init?: RequestInit): Promise<Response> {
+  return fetch(input, init).catch((e: unknown) => {
+    if (e instanceof DOMException && e.name === "AbortError") throw e;
+    throw new ApiError(0, NETWORK_ERROR, undefined, e);
+  });
 }
 
 function headers(extra?: HeadersInit): HeadersInit {
@@ -50,31 +62,31 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 export const api = {
-  get: <T,>(path: string) => fetch(path, { headers: headers() }).then((r) => parse<T>(r)),
+  get: <T,>(path: string) => request(path, { headers: headers() }).then((r) => parse<T>(r)),
   post: <T,>(path: string, body?: unknown) =>
-    fetch(path, {
+    request(path, {
       method: "POST",
       headers: headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body ?? {}),
     }).then((r) => parse<T>(r)),
   patch: <T,>(path: string, body: unknown) =>
-    fetch(path, {
+    request(path, {
       method: "PATCH",
       headers: headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     }).then((r) => parse<T>(r)),
   put: <T,>(path: string, body: unknown) =>
-    fetch(path, {
+    request(path, {
       method: "PUT",
       headers: headers({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     }).then((r) => parse<T>(r)),
-  del: <T,>(path: string) => fetch(path, { method: "DELETE", headers: headers() }).then((r) => parse<T>(r)),
+  del: <T,>(path: string) => request(path, { method: "DELETE", headers: headers() }).then((r) => parse<T>(r)),
   upload: <T,>(path: string, form: FormData) =>
-    fetch(path, { method: "POST", headers: headers(), body: form }).then((r) => parse<T>(r)),
+    request(path, { method: "POST", headers: headers(), body: form }).then((r) => parse<T>(r)),
   /** Authenticated file download (a plain link cannot send the Authorization header). */
   download: async (path: string, fallbackName: string) => {
-    const res = await fetch(path, { headers: headers() });
+    const res = await request(path, { headers: headers() });
     if (!res.ok) await parse(res);
     const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? fallbackName;
     const url = URL.createObjectURL(await res.blob());
@@ -94,8 +106,9 @@ export async function streamChat(
   options: { inject_hallucination?: boolean },
   onEvent: (event: AgentEvent) => void,
   signal?: AbortSignal,
+  onAccepted?: () => void,
 ): Promise<void> {
-  const res = await fetch(`/api/conversations/${conversationId}/stream`, {
+  const res = await request(`/api/conversations/${conversationId}/stream`, {
     method: "POST",
     headers: headers({ "Content-Type": "application/json" }),
     body: JSON.stringify({ content, options }),
@@ -105,11 +118,20 @@ export async function streamChat(
     await parse(res);
     return;
   }
+  // A 200 means the run was admitted and has started on the server: the message will be stored.
+  onAccepted?.();
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   for (;;) {
-    const { value, done } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") throw e;
+      throw new ApiError(0, NETWORK_ERROR, undefined, e); // the connection dropped part-way through the answer
+    }
+    const { value, done } = chunk;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let boundary = buffer.indexOf("\n\n");

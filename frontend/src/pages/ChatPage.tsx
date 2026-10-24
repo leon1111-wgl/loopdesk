@@ -268,19 +268,25 @@ export default function ChatPage() {
   const pressed = useRef(false);
   const voiceConversation = useRef<number | null>(null);
 
-  const loadConversations = useCallback(() => {
-    api.get<Conversation[]>("/api/conversations").then(setConversations).catch((e) => setError(e.message));
+  // quiet: a refresh after sending, whose failure must not replace the message about the send itself.
+  const loadConversations = useCallback((quiet?: boolean) => {
+    api.get<Conversation[]>("/api/conversations").then(setConversations)
+      .catch((e) => { if (quiet !== true) setError(e.message); });
   }, []);
+  // The conversation the shown messages belong to, and its newest message id (see send()).
+  const loaded = useRef<{ conversation: number; lastId: number } | null>(null);
   const loadMessages = useCallback(async (id: number) => {
     const r = await api.get<{ conversation: Conversation; handoff: HandoffState | null; messages: ChatMessage[] }>(
       `/api/conversations/${id}/messages`,
     );
+    loaded.current = { conversation: id, lastId: r.messages.length ? r.messages[r.messages.length - 1].id : 0 };
     setMessages(r.messages);
     setConvStatus(r.conversation.status);
     setHandoff(r.handoff);
+    return r.messages;
   }, []);
 
-  useEffect(loadConversations, [loadConversations]);
+  useEffect(() => loadConversations(), [loadConversations]);
   useEffect(() => {
     if (isDemo) return;
     api.get<VoiceConfig>("/api/voice/config").then(setVoiceConfig).catch(() => setVoiceConfig(null));
@@ -370,33 +376,62 @@ export default function ChatPage() {
     if (!content || busy) return;
     setError(null);
     setNotice(null);
+    // After a failure, the text goes back into the box only if the server never got it; sending it
+    // again otherwise would ask the question twice. It got it if the stream was accepted (200) or a
+    // customer message newer than the last one shown here has appeared (a message from another tab
+    // or device in the same seconds also counts: then the text is not put back, the safe side).
+    let lastId = 0;
+    let sent = false; // the stream request was made (nothing before it can have reached the server)
+    let accepted = false;
+    let unclear = false; // no answer from our own server: the request may or may not have arrived
     let id = conversationId;
-    if (!id) {
-      const c = await api.post<Conversation>("/api/conversations", {});
-      id = c.id;
-      navigate(`/chat/${id}`, { replace: true });
-    }
     setInput("");
     setPendingUser(content);
     const run: LiveRun = { steps: {}, events: [], done: false };
     setLive({ ...run });
+    let failure: string | null = null;
     try {
+      if (!id) {
+        const c = await api.post<Conversation>("/api/conversations", {});
+        id = c.id;
+        navigate(`/chat/${id}`, { replace: true });
+      } else if (loaded.current?.conversation === id) {
+        lastId = loaded.current.lastId;
+      } else {
+        // The list shown is not this conversation's yet (still loading, or its load failed).
+        const shown = await loadMessages(id);
+        lastId = shown.length ? shown[shown.length - 1].id : 0;
+      }
+      sent = true;
       await streamChat(id, content, { inject_hallucination: inject }, (event) => {
         if (event.type === "token") run.steps[event.step] = (run.steps[event.step] ?? "") + event.text;
         else run.events.push(event);
         if (event.type === "done" || event.type === "error") run.done = true;
         setLive({ steps: { ...run.steps }, events: [...run.events], done: run.done });
-      });
+      }, undefined, () => { accepted = true; });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      // Turned away before the run started (busy, or this user's answers still running): keep the text.
-      if (e instanceof ApiError && (e.status === 429 || e.status === 503)) setInput(content);
+      failure = e instanceof Error ? e.message : String(e);
+      if (!/[。！？.!?]$/.test(failure)) failure += "。";
+      unclear = !(e instanceof ApiError) || [0, 502, 504].includes(e.status);
     } finally {
       run.done = true;
       setLive({ steps: { ...run.steps }, events: [...run.events], done: true });
       setPendingUser(null);
-      await loadMessages(id).catch(() => undefined);
-      loadConversations();
+      const stored = id ? await loadMessages(id).catch(() => null) : null;
+      if (failure) {
+        const arrived = sent && (accepted || run.events.length > 0 || Object.keys(run.steps).length > 0 ||
+          Boolean(stored?.some((m) => m.role === "user" && m.id > lastId)));
+        if (arrived) {
+          setError(`${failure}这条消息已经送达，回答可能还在生成，稍后打开这个对话即可看到。`);
+        } else {
+          // Not accepted (offline, turned away with 429/503, a gateway error): give the text back.
+          setInput(content);
+          setError(sent && unclear && !stored
+            ? `${failure}无法确认这条消息是否已经送达，内容已放回输入框，请先刷新对话确认再重新发送。`
+            : `${failure}没有发出的内容已放回输入框。`);
+        }
+      }
+      loadConversations(true);
     }
   }
 
@@ -455,7 +490,7 @@ export default function ChatPage() {
         if (voiceRun.current) setLive({ ...voiceRun.current, done: true });
         voiceRun.current = null;
         setPendingUser(null);
-        if (id) void loadMessages(id).then(loadConversations).catch(() => undefined);
+        if (id) void loadMessages(id).then(() => loadConversations()).catch(() => undefined);
         break;
       case "error":
         setError(event.message);

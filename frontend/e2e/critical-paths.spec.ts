@@ -91,6 +91,63 @@ test("customer gets a cited answer; staff can open its trace", async ({ browser 
   await expect(leon.getByText("七天无理由退货有什么条件？").first()).toBeVisible();
 });
 
+test("a message that never reached the server goes back into the box; one that did is not offered again (N-086)", async ({ browser }) => {
+  const emma = await signIn(browser, "customer@leon.demo");
+  const box = emma.getByPlaceholder("输入问题，Enter 发送，Shift+Enter 换行");
+  const banner = emma.locator(".error-banner");
+
+  // A new conversation whose creation fails (N-123): no conversation, the text is kept.
+  await emma.route("**/api/conversations", (r) => (r.request().method() === "POST" ? r.abort() : r.continue()));
+  await ask(emma, "退款多久到账？");
+  await expect(banner).toHaveText("网络连接失败，请检查网络后重试。没有发出的内容已放回输入框。");
+  await expect(box).toHaveValue("退款多久到账？");
+  await emma.unroute("**/api/conversations");
+
+  // Offline when sending, then a gateway timeout: nothing reached the server either time.
+  await emma.route("**/stream", (r) => r.abort());
+  await emma.getByRole("button", { name: "发送" }).click();
+  await expect(banner).toContainText("网络连接失败");
+  await expect(box).toHaveValue("退款多久到账？");
+  await expect(emma.locator(".msg.user")).toHaveCount(0);
+  await emma.unroute("**/stream");
+  await emma.route("**/stream", (r) => r.fulfill({ status: 504, contentType: "text/html", body: "<html>504 Gateway Time-out</html>" }));
+  await emma.getByRole("button", { name: "发送" }).click();
+  await expect(banner).toHaveText("请求失败（504）。没有发出的内容已放回输入框。");
+  await expect(box).toHaveValue("退款多久到账？");
+  await emma.unroute("**/stream");
+
+  // Fully offline: the reload that would confirm delivery fails too, so the box says it cannot tell,
+  // and the refreshes after the send do not replace that with a bare network error.
+  await emma.route("**/api/**", (r) => r.abort());
+  await emma.getByRole("button", { name: "发送" }).click();
+  await expect(banner).toContainText("无法确认这条消息是否已经送达");
+  await emma.waitForTimeout(500);
+  await expect(banner).toContainText("无法确认这条消息是否已经送达");
+  await expect(box).toHaveValue("退款多久到账？");
+  await emma.unroute("**/api/**");
+
+  // Back online: the kept text is sent as it is.
+  await emma.getByRole("button", { name: "发送" }).click();
+  await expect(emma.locator(".msg.assistant .cite").first()).toBeVisible();
+  await expect(box).toHaveValue("");
+
+  // The connection drops after the server took the message: it stays in the conversation, not in the box.
+  await emma.route("**/stream", async (r) => {
+    await r.fetch();
+    await r.abort();
+  });
+  await ask(emma, "运费险怎么赔？");
+  await expect(banner).toContainText("这条消息已经送达");
+  await expect(box).toHaveValue("");
+  await expect(emma.locator(".msg.user").last()).toContainText("运费险怎么赔？");
+  await emma.unroute("**/stream");
+
+  // The failures above were injected: drop the browser's own reports of them.
+  const seen = problems.get(emma)!;
+  const injected = /Failed to load resource|^504 /;
+  seen.splice(0, seen.length, ...seen.filter((p) => !injected.test(p)));
+});
+
 test("refund over the auto limit waits for an admin, then the customer sees the result", async ({ browser }) => {
   const emma = await signIn(browser, "customer@leon.demo");
   await ask(emma, "SO20261008002 我要退款");
