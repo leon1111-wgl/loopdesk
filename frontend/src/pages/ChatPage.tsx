@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { demoQuestions, isDemo } from "../demo/replay";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { FlaskConical, History, Mic, MicOff, PencilLine, Plus, Send, ShieldAlert, Square, ThumbsDown, ThumbsUp, X } from "lucide-react";
-import { api, streamChat } from "../api";
+import { ApiError, api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
 import { CHANNEL_TEXT, CUSTOMER_GREETING, Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
 import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, HandoffState, Verification } from "../types";
@@ -389,6 +389,8 @@ export default function ChatPage() {
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      // Turned away before the run started (busy, or this user's answers still running): keep the text.
+      if (e instanceof ApiError && (e.status === 429 || e.status === 503)) setInput(content);
     } finally {
       run.done = true;
       setLive({ steps: { ...run.steps }, events: [...run.events], done: true });

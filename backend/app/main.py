@@ -100,7 +100,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     check_audit_key(settings)
     set_settings(settings)
     init_engine(settings.database_url)
-    admission.configure(settings.max_inflight_runs)
+    admission.configure(settings.max_inflight_runs, tenant_share=settings.tenant_inflight_share,
+                        per_user=settings.user_inflight_runs)
     prepare_database(settings.database_url, settings.auto_migrate, settings.external_migrations)
     services = Services(settings)
     set_services(services)

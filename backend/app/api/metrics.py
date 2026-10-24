@@ -240,10 +240,17 @@ def prometheus(db: Session = Depends(get_db)) -> str:
     # Per process, unlike the totals above (which come from the shared database): scrape every pod.
     # The autoscaler follows in-flight runs, since a pod waiting on the model is busy at low CPU (N-158).
     admission = get_admission()
+    by_tenant, rejections = admission.snapshot()
     lines += ["# HELP loopdesk_inflight_runs Agent runs this process is serving now",
               "# TYPE loopdesk_inflight_runs gauge", f"loopdesk_inflight_runs {admission.inflight}",
               "# HELP loopdesk_inflight_runs_limit Runs this process admits at once (LOOPDESK_MAX_INFLIGHT_RUNS)",
               "# TYPE loopdesk_inflight_runs_limit gauge", f"loopdesk_inflight_runs_limit {admission.limit}",
-              "# HELP loopdesk_runs_rejected_total Chat requests turned away with 503 because the process was full",
-              "# TYPE loopdesk_runs_rejected_total counter", f"loopdesk_runs_rejected_total {admission.rejected}"]
+              "# HELP loopdesk_inflight_runs_by_tenant Agent runs this process is serving now, per tenant id",
+              "# TYPE loopdesk_inflight_runs_by_tenant gauge"]
+    lines += [f'loopdesk_inflight_runs_by_tenant{{tenant="{t}"}} {n}' for t, n in sorted(by_tenant.items())]
+    # reason: process (every slot taken), tenant (its share taken, N-181), user (429: their own runs).
+    lines += ["# HELP loopdesk_runs_rejected_total Chat requests turned away because the process, the tenant's share or the user's own runs were full",
+              "# TYPE loopdesk_runs_rejected_total counter"]
+    lines += [f'loopdesk_runs_rejected_total{{reason="{r}",tenant="{t}"}} {n}'
+              for (r, t), n in sorted(rejections.items())]
     return "\n".join(lines) + "\n"

@@ -128,7 +128,9 @@ def stream_message(conversation_id: int, body: ChatIn, principal: Principal = De
     # user and conversation lookups left a connection checked out, so every stream held two (N-158).
     db.close()
     admission = get_admission()
-    admission.enter()  # 503 before the stream starts; the run thread gives the slot back
+    # 503 / 429 before the stream starts; the run thread gives it back. The per-user cap is for customers:
+    # an integration or a staff account answers for many people at once (the tenant share still holds).
+    slot = admission.enter(tenant_id, None if principal.is_staff else user_id)
 
     def run() -> Iterator[dict]:
         try:
@@ -145,12 +147,12 @@ def stream_message(conversation_id: int, body: ChatIn, principal: Principal = De
             finally:
                 session.close()
         finally:
-            admission.leave()
+            admission.leave(slot)
 
     try:
         relay = detached(run)  # starts now, so the slot is given back even if the response never starts
     except BaseException:  # no thread (can't start new thread under overload): nothing else will
-        admission.leave()
+        admission.leave(slot)
         raise
 
     def events() -> Iterator[str]:
@@ -200,7 +202,8 @@ def chat(body: QuickChatIn, principal: Principal = Depends(get_principal), db: S
     if body.conversation_id:
         conversation = _load_conversation(db, principal, body.conversation_id)
     admission = get_admission()
-    admission.enter()  # before a new conversation is created: a turned-away request leaves nothing behind
+    # Before a new conversation is created: a turned-away request leaves nothing behind.
+    slot = admission.enter(principal.tenant.id, None if principal.is_staff else principal.user.id)
     try:
         if not body.conversation_id:
             conversation = Conversation(tenant_id=principal.tenant.id, user_id=principal.user.id, channel="api")
@@ -211,7 +214,7 @@ def chat(body: QuickChatIn, principal: Principal = Depends(get_principal), db: S
             conversation=conversation, options=_options(principal, body),
         ))
     finally:
-        admission.leave()
+        admission.leave(slot)
     final = summary["final"] or {}
     return {
         "conversation_id": conversation.id,

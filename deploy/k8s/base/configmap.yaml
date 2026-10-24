@@ -16,6 +16,9 @@ data:
   # Answers one pod holds open at once; more get 503 + Retry-After at once (docs/PERFORMANCE.md).
   # overlays/inflight-autoscaling adds pods on this signal before that happens.
   LOOPDESK_MAX_INFLIGHT_RUNS: "64"
+  # One tenant holds at most this share of those (set 1 for a single tenant); one user at most 4 (N-181).
+  LOOPDESK_TENANT_INFLIGHT_SHARE: "0.75"
+  LOOPDESK_USER_INFLIGHT_RUNS: "4"
   # Proxies whose X-Forwarded-For uvicorn believes, so the login limit counts each customer's IP: your
   # cluster's pod network, which the ingress controller connects from (set your own CIDR). uvicorn takes
   # the rightmost address not in this list, the one the controller appended, so clients outside the

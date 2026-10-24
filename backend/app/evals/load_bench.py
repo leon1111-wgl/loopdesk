@@ -14,7 +14,12 @@ the model latency dominates and the numbers below become a floor, not a forecast
 ``--model-latency S`` points the server at a fake model that takes S seconds per call
 (``fake_model``) and switches to bursts: each level sends ``concurrency`` requests at once,
 one per client, and reports how many were answered, how many were turned away (503) and how
-slow ``/api/health`` got meanwhile. That measures how many answers one process holds open (N-158).
+slow ``/api/health`` got meanwhile. That measures how many answers one process holds open (N-158),
+so these bursts lift the per-tenant and per-user shares unless ``--env`` sets them.
+
+``--fairness`` (with ``--model-latency``) is the noisy-neighbour test (N-181): Leon优选's two
+customers send ``concurrency`` requests at once, a second later Iris云's Noah sends 3, and the
+report counts each tenant's answers, 503s and 429s under the default shares.
 """
 
 from __future__ import annotations
@@ -203,6 +208,36 @@ def _run_level(base: str, tokens: dict[str, str], concurrency: int, duration: fl
     }
 
 
+def _fairness(base: str, tokens: dict[str, str], flood: int, endpoint_stream: bool) -> dict:
+    """Leon's customers flood, Noah (another tenant) asks a second later; status codes per tenant."""
+    outcome: dict[str, dict[str, int]] = {"leon": {}, "iris": {}}
+    lock = threading.Lock()
+
+    def ask(tenant: str, email: str, n: int) -> None:
+        with httpx.Client(base_url=base, timeout=120) as client:
+            text = f"退款多久能到账？（第{n}次）"
+            try:
+                r = _chat_stream(client, text, tokens[email]) if endpoint_stream else client.post(
+                    "/api/chat", json={"content": text}, headers={"Authorization": f"Bearer {tokens[email]}"})
+                key = str(r.status_code)
+            except httpx.HTTPError as exc:
+                key = type(exc).__name__
+        with lock:
+            outcome[tenant][key] = outcome[tenant].get(key, 0) + 1
+
+    leon = ["customer@leon.demo", "customer2@leon.demo"]
+    threads = [threading.Thread(target=ask, args=("leon", leon[n % 2], n)) for n in range(flood)]
+    for t in threads:
+        t.start()
+    time.sleep(1)
+    late = [threading.Thread(target=ask, args=("iris", "customer@iris.demo", n)) for n in range(3)]
+    for t in late:
+        t.start()
+    for t in threads + late:
+        t.join()
+    return {"flood": flood, "leon": outcome["leon"], "iris": outcome["iris"]}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="LoopDesk chat API load test")
     parser.add_argument("--concurrency", default="1,4,16")
@@ -218,6 +253,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="stream: create a conversation and read the SSE stream, as the console does")
     parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE",
                         help="extra server environment, e.g. LOOPDESK_MAX_INFLIGHT_RUNS=64")
+    parser.add_argument("--fairness", action="store_true",
+                        help="with --model-latency: Leon's customers flood, Iris's Noah asks a second later (N-181)")
     parser.add_argument("--report")
     args = parser.parse_args(argv)
 
@@ -227,17 +264,21 @@ def main(argv: list[str] | None = None) -> int:
     burst = args.model_latency is not None
     if burst:
         _, model_url = fake_model.start(args.model_latency)
+        shares = {} if args.fairness else {"LOOPDESK_TENANT_INFLIGHT_SHARE": "1", "LOOPDESK_USER_INFLIGHT_RUNS": "1000000"}
         extra = {"LOOPDESK_LLM_PROVIDER": "openai_compat", "LOOPDESK_LLM_BASE_URL": model_url,
-                 "LOOPDESK_LLM_API_KEY": "fake", "LOOPDESK_LLM_MODEL": "fake", **extra}
+                 "LOOPDESK_LLM_API_KEY": "fake", "LOOPDESK_LLM_MODEL": "fake", **shares, **extra}
+    elif args.fairness:
+        parser.error("--fairness needs --model-latency")
     proc, base = _start_server(database_url, args.workers, 24.0 if args.cache == "on" else 0.0, extra)
     try:
         tokens = {}
-        for email in {e for e, _ in QUESTIONS}:
+        for email in {e for e, _ in QUESTIONS} | ({"customer@iris.demo"} if args.fairness else set()):
             r = httpx.post(f"{base}/api/auth/login", json={"email": email, "password": "loopdesk-demo"}, timeout=10)
             tokens[email] = r.json()["token"]
         if args.warmup > 0 and not burst:  # steady state, not start-up: each worker process warms its own caches
             _run_level(base, tokens, max(int(c) for c in args.concurrency.split(",")), args.warmup)
-        levels = [_run_level(base, tokens, int(c), args.duration, burst, args.endpoint == "stream")
+        levels = [_fairness(base, tokens, int(c), args.endpoint == "stream") if args.fairness
+                  else _run_level(base, tokens, int(c), args.duration, burst, args.endpoint == "stream")
                   for c in args.concurrency.split(",")]
     finally:
         proc.terminate()

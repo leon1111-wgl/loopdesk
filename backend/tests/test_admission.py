@@ -13,19 +13,19 @@ from sqlalchemy import func, select
 from app.admission import OVERLOADED, Admission, get_admission
 from app.api.chat import detached
 from app.db import new_session
-from app.models import Conversation
+from app.models import Conversation, User
 
 
 def test_a_full_admission_turns_away_with_retry_after_and_counts_it():
     admission = Admission(limit=2, retry_after=5)
-    admission.enter()
+    held = admission.enter()
     admission.enter()
     with pytest.raises(HTTPException) as caught:
         admission.enter()
     assert caught.value.status_code == 503
     assert caught.value.headers == {"Retry-After": "5"}
     assert (admission.inflight, admission.rejected) == (2, 1)
-    admission.leave()
+    admission.leave(held)
     admission.enter()  # a finished run frees its slot
     assert admission.inflight == 2
 
@@ -41,11 +41,16 @@ def _conversations() -> int:
         return db.execute(select(func.count(Conversation.id))).scalar_one()
 
 
+def _tenant_of(email: str) -> int:
+    with new_session() as db:
+        return db.execute(select(User.tenant_id).where(User.email == email)).scalar_one()
+
+
 def test_chat_and_stream_get_503_while_the_process_is_full(one_slot, client, login):
     emma = login("customer@leon.demo")
     conversation_id = client.post("/api/conversations", json={}, headers=emma).json()["id"]
     admission = get_admission()
-    admission.enter()  # another customer's answer is still waiting on the model
+    held = admission.enter()  # another customer's answer is still waiting on the model
     try:
         before = _conversations()
         r = client.post("/api/chat", json={"content": "退款多久能到账？"}, headers=emma)
@@ -58,9 +63,9 @@ def test_chat_and_stream_get_503_while_the_process_is_full(one_slot, client, log
         metrics = client.get("/metrics").text
         assert "loopdesk_inflight_runs 1\n" in metrics
         assert "loopdesk_inflight_runs_limit 1\n" in metrics
-        assert "loopdesk_runs_rejected_total 2\n" in metrics
+        assert 'loopdesk_runs_rejected_total{reason="process",tenant="%d"} 2\n' % _tenant_of("customer@leon.demo") in metrics
     finally:
-        admission.leave()
+        admission.leave(held)
 
     # Once the other answer is done, both paths answer again and give their slot back.
     r = client.post("/api/chat", json={"content": "退款多久能到账？"}, headers=emma)

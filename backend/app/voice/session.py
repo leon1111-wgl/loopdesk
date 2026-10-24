@@ -38,6 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import audit
+from ..admission import get_admission
 from ..agent.runtime import AgentRuntime
 from ..config import Settings
 from ..guardrails.pii import mask_pii
@@ -378,6 +379,21 @@ class VoiceSession:
             turn.run_done = True
             self._turn_sent(turn)
             return turn
+        # A voice turn is a run like a chat message: it takes a slot from the same shares (N-181).
+        admission = get_admission()
+        try:
+            slot = admission.enter(self.tenant_id, self.user_id)
+        except HTTPException as exc:
+            self._say(turn, exc.detail)
+            turn.run_done = True
+            self._turn_sent(turn)
+            return turn
+        try:
+            return self._run_admitted(turn, text, confirmation)
+        finally:
+            admission.leave(slot)
+
+    def _run_admitted(self, turn: Turn, text: str, confirmation: dict | None) -> Turn:
         db = self.db_factory()
         pending_before = self.confirmations.pending
         streamed, blocked, replaced, final = False, False, None, None

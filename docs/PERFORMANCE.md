@@ -193,7 +193,36 @@ python -m app.evals.load_bench --model-latency 6 --concurrency 40,60,120 --endpo
 - **流式接口还有一处**（另一个模型评审时指出，上表第二列复现）：FastAPI 0.118 起，`yield` 依赖（`get_db`）要等整个响应发完才关闭；流式接口的请求会话做过用户和会话的查询，事务一直开着，所以每个流式回答占两个连接（请求的一个、运行自己的一个），16 个以上同时进行就耗尽连接池。现在 `stream_message` 在取名额之前先 `db.close()`；`tests/test_admission.py` 断言流式输出期间最多借出 1 个连接（修复前是 2 个）。单独再测一次 120 突发（同机在跑测试套件），被拒的请求 p95 为 0.34 秒。
 - **为什么默认 64 而不是更大**：上限设成 200 时 200 个突发全部成功，但 p50 从 6.1 秒涨到 11.3 秒、p95 12.5 秒：每次回答在模型之外还有约 20ms 的 Python 计算（路由、检索、证据校验、链路写入），200 个挤在一个 GIL 和一个 SQLite 写锁上，排队把延迟翻倍。64 时延迟基本等于模型延迟。真实模型、PostgreSQL、Pod 的 CPU 配额不同，上限要按自己的环境用这个脚本重测。
 - **扩容信号**：`/metrics` 新增每个进程的 `loopdesk_inflight_runs`、`loopdesk_inflight_runs_limit` 和 `loopdesk_runs_rejected_total`。N-158 复现时 CPU 只有 0.1%–2.6%，按 CPU 70% 扩容的 HPA 不会动；新增 `deploy/k8s/overlays/inflight-autoscaling`：在 base 的 CPU 指标之外按“每个 Pod 平均在途运行数 40”（上限 64 的六成多）扩容，并给 Pod 加 Prometheus 抓取注解；需要 Prometheus Adapter 或 KEDA 把指标接到 custom metrics API（注释里有规则示例）。最初直接改在 base 里，评审指出：HPA 读不到某个指标时仍会扩容，但永远不会缩容，没有适配器的集群只会越扩越多，所以拆成单独的 overlay。
-- **没做的**：真正的 async 化（async httpx + 异步数据库），等模型期间不占线程和连接；飞书渠道和审批恢复执行不经过准入（它们在后台或审批人手里，量小）；没有按租户分配名额，一个租户刷量仍能占满一个 Pod（N-044 的建会话限流是另一层）；准入只按进程计数，PostgreSQL 上没重测。
+- **没做的**：真正的 async 化（async httpx + 异步数据库），等模型期间不占线程和连接；飞书渠道和审批恢复执行不经过准入（它们在后台或审批人手里，量小；语音已在下一节接入）；准入只按进程计数，PostgreSQL 上没重测。按租户分配名额见下一节。
+
+## 准入名额按租户和用户分配（N-181，2026-10-24，本机实测）
+
+上一节的 64 个名额整个进程共用：Leon优选 两个顾客账号同时发 80 条，就能让 Iris云 的顾客全部 503（N-181）。现在 `Admission.enter(tenant_id, user_id)` 按三条规则依次判断：
+
+| 规则 | 默认 | 超出时 | 计数标签 |
+|---|---|---|---|
+| 一个用户同时运行的回答 | `LOOPDESK_USER_INFLIGHT_RUNS=4` | 429“您还有回答正在生成，请等它完成后再发送。” | `reason="user"` |
+| 整个进程 | `LOOPDESK_MAX_INFLIGHT_RUNS=64` | 503 | `reason="process"` |
+| 一个租户占进程名额的比例 | `LOOPDESK_TENANT_INFLIGHT_SHARE=0.75`（48 个） | 503 | `reason="tenant"` |
+
+剩下的 16 个名额总是留给其他租户；单租户部署把比例设为 1。每用户上限只管顾客：员工和集成账号（`/api/chat` 常用一个账号替很多人问）只受租户份额约束。语音渠道每轮回答以前不经过准入，现在取同一份名额，满了播报拒绝原因。每用户上限给 429 而不是 503：一个人在等回答时不会再发第五条，超出的是脚本、卡住的客户端或连点发送，原因在他自己，不是服务忙。`/metrics` 的 `loopdesk_runs_rejected_total` 改为带 `reason`、`tenant`（租户 id）标签，新增 `loopdesk_inflight_runs_by_tenant`。
+
+```bash
+python -m app.evals.load_bench --model-latency 6 --fairness --concurrency 80 --env LOOPDESK_USER_INFLIGHT_RUNS=1000
+```
+
+`--fairness`：Leon优选 的 Emma、Jack 同时发 80 条（假模型每次 6 秒），1 秒后 Iris云 的 Noah 发 3 条。为了看租户份额本身，用 `LOOPDESK_USER_INFLIGHT_RUNS=1000` 模拟“很多个顾客”（实际上只有两个账号）。环境同上节，单次运行：
+
+| 配置 | Leon优选 80 条 | Iris云 3 条 |
+|---|---|---|
+| 改动前的行为（比例 1、不限每用户） | 62 成功 / 18 个 503 | **2 成功 / 1 个 503** |
+| 默认比例 0.75、不限每用户 | 48 成功 / 32 个 503 | **3 / 3 成功** |
+| 同上，流式接口（`--endpoint stream`） | 48 成功 / 32 个 503 | 3 / 3 成功 |
+| 全部默认（每用户 4） | 8 成功 / 72 个 429 | 3 / 3 成功 |
+
+第一行没有复现找茬时“3 条全部 503”：80 个请求不是同一瞬间到达，Noah 的请求赶上了名额被归还前的空档；同一个结论（一个租户能挤掉别的租户）在 `tests/test_admission_fairness.py` 里用固定占位复现。普通突发档（上一节的表）为了测进程本身的容量，`load_bench` 默认把比例设为 1、每用户上限放开，数字和上一节可比。
+
+- **没做的**：份额是硬上限，不是“空闲时可以借用”的加权公平队列：只有一个租户在用时它也最多 48 个；按进程计数，多副本时每个 Pod 各自 48 个，不是全局配额；不按租户套餐区分份额；租户 token / 费用预算（N-161）是另一层，没做。
 
 ## 下一步（按收益排序）
 

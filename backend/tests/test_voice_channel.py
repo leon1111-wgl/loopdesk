@@ -302,6 +302,9 @@ def test_latency_breakdown_is_reported(voice):
     assert set(latency) >= {"endpoint_wait_ms", "asr_final_ms", "llm_first_sentence_ms", "tts_first_packet_ms",
                             "first_audio_after_endpoint_ms"}
     assert 600 <= latency["endpoint_wait_ms"] < 700
+    from app.admission import get_admission
+
+    assert get_admission().inflight == 0  # an answered voice turn gives its slot back (N-181)
 
 
 # ---------------------------------------------------------------- review round 1 (second model)
@@ -875,3 +878,25 @@ def test_the_agent_receives_the_punctuated_transcript(voice):
         asked = db.execute(select(Message).where(Message.conversation_id == voice.conversation,
                                                  Message.role == "user")).scalars().all()
     assert [m.content for m in asked] == ["怎么取消自动续费，另外学生开会员有优惠吗"]
+
+
+# ---------------------------------------------------------------- admission (N-181)
+def test_a_voice_turn_takes_an_admission_slot_from_its_tenant(voice, settings):
+    from app.admission import OVERLOADED, get_admission
+
+    with new_session() as db:
+        echo = db.execute(select(Tenant.id).where(Tenant.slug == "echo")).scalar_one()
+    admission = get_admission()
+    held = [admission.enter(echo, -n) for n in range(1, admission.tenant_limit + 1)]  # Echo's share is taken
+    try:
+        voice.asr.transcripts += ["会员退款多久能到账"]
+        with voice.connect() as ws:
+            say(ws)
+            events = until(ws, "turn_saved")
+        assert OVERLOADED in json.dumps(events, ensure_ascii=False), [e["type"] for e in events]
+        with new_session() as db:
+            assert db.execute(select(Run.id)).first() is None  # turned away before any run
+    finally:
+        for slot in held:
+            admission.leave(slot)
+    assert admission.inflight == 0
