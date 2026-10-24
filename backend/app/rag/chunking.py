@@ -47,16 +47,45 @@ def parse_upload(filename: str, data: bytes) -> tuple[str, list[str] | None]:
     raise UnsupportedFile(f"暂不支持该文件类型，支持：{', '.join(SUPPORTED_SUFFIXES)}")
 
 
-def _units(lines: list[str]) -> list[str]:
+_CLAUSE_RE = re.compile(r"(?<=[，,、：:])")
+
+
+def _split_long(unit: str, max_chars: int) -> list[str]:
+    """A unit longer than ``max_chars`` (a comma-only paragraph, PDF text without full stops)
+    is cut at clause marks, and whatever is still too long is cut by length. Without this a
+    9,903-character paragraph became one chunk, and the answer quoting it was 9,906 characters."""
+    if len(unit) <= max_chars:
+        return [unit]
+    pieces: list[str] = []
+    current = ""
+    for clause in (c for c in _CLAUSE_RE.split(unit) if c):
+        while len(clause) > max_chars:
+            if current:
+                pieces.append(current)
+                current = ""
+            pieces.append(clause[:max_chars])
+            clause = clause[max_chars:]
+        if len(current) + len(clause) > max_chars:
+            pieces.append(current)
+            current = ""
+        current += clause
+    if current:
+        pieces.append(current)
+    return [p.strip() for p in pieces if p.strip()]
+
+
+def _units(lines: list[str], max_chars: int) -> list[str]:
     units: list[str] = []
     for line in lines:
         stripped = line.strip().lstrip(">").strip()
         if not stripped:
             continue
         if stripped.startswith(("-", "*", "•", "|")) or re.match(r"^\d+[.、]", stripped):
-            units.append(stripped)  # list items and table rows stay whole
+            parts = [stripped]  # list items and table rows stay whole unless over the cap
         else:
-            units.extend(split_sentences(stripped))
+            parts = split_sentences(stripped)
+        for part in parts:
+            units.extend(_split_long(part, max_chars))
     return units
 
 
@@ -65,10 +94,12 @@ def _pack(units: list[str], max_chars: int, overlap: int) -> list[str]:
     current: list[str] = []
     size = 0
     for unit in units:
-        if current and size + len(unit) > max_chars:
+        if current and size + len(current) + len(unit) > max_chars:  # len(current): the newlines
             chunks.append("\n".join(current))
             current = current[-overlap:] if overlap else []
             size = sum(len(u) for u in current)
+            if current and size + len(current) + len(unit) > max_chars:  # the overlap must not push a chunk past the cap
+                current, size = [], 0
         current.append(unit)
         size += len(unit)
     if current:
@@ -100,7 +131,7 @@ def chunk_markdown(text: str, max_chars: int = 300, overlap: int = 1) -> list[Ch
 
     drafts: list[ChunkDraft] = []
     for heading, body in sections:
-        for piece in _pack(_units(body), max_chars, overlap):
+        for piece in _pack(_units(body, max_chars), max_chars, overlap):
             drafts.append(ChunkDraft(heading=heading, text=piece))
     return drafts
 
@@ -108,6 +139,6 @@ def chunk_markdown(text: str, max_chars: int = 300, overlap: int = 1) -> list[Ch
 def chunk_pages(pages: list[str], max_chars: int = 300, overlap: int = 1) -> list[ChunkDraft]:
     drafts: list[ChunkDraft] = []
     for number, page_text in enumerate(pages, start=1):
-        for piece in _pack(_units(page_text.splitlines()), max_chars, overlap):
+        for piece in _pack(_units(page_text.splitlines(), max_chars), max_chars, overlap):
             drafts.append(ChunkDraft(heading=f"第 {number} 页", text=piece, page=number))
     return drafts
