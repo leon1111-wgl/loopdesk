@@ -1,0 +1,126 @@
+name: Voice eval, Cantonese and code-switching (measure only)
+
+# Cantonese (FLEURS yue_hant_hk test, CC BY 4.0) and Mandarin-English code-switching (ASCEND test,
+# "mixed" utterances, CC BY-SA 4.0, recorded in Hong Kong) through SenseVoice, Paraformer, Whisper and,
+# if it runs on a CPU runner, Fun-ASR-Nano. Nothing is tuned on these sets; audio is not published.
+# Common Voice zh-HK (CC0) is now distributed through the Mozilla Data Collective with an account and
+# key, so it is not fetched here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      fleurs:
+        description: "FLEURS yue test utterances (0 = all)"
+        default: "300"
+        required: false
+      ascend:
+        description: "ASCEND mixed test utterances (0 = all)"
+        default: "300"
+        required: false
+      nano_limit:
+        description: "Fun-ASR-Nano: utterances per set at most (it is slow on CPU; 0 = skip it)"
+        default: "100"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TORCH_CPU: https://download.pytorch.org/whl/cpu
+
+jobs:
+  prepare:
+    name: Prepare ${{ matrix.corpus }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        corpus: [fleurs-yue, ascend]
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt huggingface_hub pyarrow
+      - if: matrix.corpus == 'fleurs-yue'
+        run: |
+          python -c "from huggingface_hub import hf_hub_download as get; [get('google/fleurs', f, repo_type='dataset', local_dir='/tmp/fleurs') for f in ('data/yue_hant_hk/test.tsv', 'data/yue_hant_hk/audio/test.tar.gz')]"
+          python -m app.evals.voice.public_set --corpus fleurs-yue --src /tmp/fleurs/data/yue_hant_hk --n ${{ inputs.fleurs }} --out ../out/synth-fleurs-yue
+      - if: matrix.corpus == 'ascend'
+        run: |
+          python -c "from huggingface_hub import hf_hub_download as get; get('CAiRE/ASCEND', 'main/test-00000-of-00001.parquet', repo_type='dataset', local_dir='/tmp/ascend')"
+          python -m app.evals.voice.public_set --corpus ascend --languages mixed --src /tmp/ascend/main/test-00000-of-00001.parquet --n ${{ inputs.ascend }} --out ../out/synth-ascend
+      - uses: actions/upload-artifact@v4
+        with: {name: "synth-${{ matrix.corpus }}", path: "out/synth-${{ matrix.corpus }}", retention-days: 7}
+
+  asr:
+    name: ${{ matrix.engine }} ${{ matrix.shard }}/4
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [paraformer, sensevoice, whisper]
+        shard: [0, 1, 2, 3]
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install torch torchaudio --index-url $TORCH_CPU && pip install -r requirements-voice.txt
+      - uses: actions/download-artifact@v4
+        with: {pattern: "synth-*", path: out}
+      - uses: actions/cache@v4
+        with: {path: "~/.cache/modelscope\n~/.cache/huggingface", key: "asr-${{ matrix.engine }}-v1"}
+      - run: python -m app.evals.voice.yue_run --engine ${{ matrix.engine }} --synth ../out/synth-* --shard ${{ matrix.shard }}/4 --out ../out/yue/yue-${{ matrix.engine }}-${{ matrix.shard }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with: {name: "yue-${{ matrix.engine }}-${{ matrix.shard }}", path: out/yue}
+
+  nano:
+    name: Fun-ASR-Nano ${{ matrix.shard }}/4 (best effort)
+    needs: prepare
+    if: inputs.nano_limit != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: |
+          git clone --depth 1 https://github.com/FunAudioLLM/Fun-ASR /tmp/Fun-ASR
+          pip install torch torchaudio --index-url $TORCH_CPU && pip install -r requirements-voice.txt transformers
+          [ -f /tmp/Fun-ASR/requirements.txt ] && pip install -r /tmp/Fun-ASR/requirements.txt || true
+      - uses: actions/download-artifact@v4
+        with: {pattern: "synth-*", path: out}
+      - run: python -m app.evals.voice.yue_run --engine funasr-nano --nano-code /tmp/Fun-ASR/model.py --limit ${{ inputs.nano_limit }} --synth ../out/synth-* --shard ${{ matrix.shard }}/4 --out ../out/yue/yue-funasr-nano-${{ matrix.shard }}.jsonl
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: "yue-funasr-nano-${{ matrix.shard }}", path: out/yue, if-no-files-found: ignore}
+
+  report:
+    name: Report
+    needs: [asr, nano]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with: {pattern: "yue-*", path: out}
+      - run: |
+          python -m app.evals.voice.yue_report --rows '../out/yue-*/*.jsonl' --out ../out/report
+          mkdir -p ../out/report/data && cp ../out/yue-*/*.jsonl ../out/report/data/
+          cat ../out/report/report.md >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with: {name: voice-yue-report, path: out/report}

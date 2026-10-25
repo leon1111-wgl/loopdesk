@@ -10,6 +10,7 @@ python-multipart>=0.0.9
 pypdf>=4.2
 jieba>=0.42
 pypinyin>=0.50  # the voice channel's hotword correction matches misheard words by pinyin
+opencc-python-reimplemented>=0.1.7  # Simplified <-> Traditional (Hong Kong) for replies and Cantonese scoring
 numpy>=1.26
 tzdata>=2024.1  # zoneinfo data for images without the system database (python:3.12-slim)
 opentelemetry-sdk>=1.25

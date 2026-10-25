@@ -348,3 +348,25 @@ def test_token_probabilities_lower_an_entity_s_confidence():
     amount = next(e for e in low if e.kind == "amount")
     assert order.confidence <= 0.4 and "low_token_probability" in order.notes
     assert amount.confidence == 0.95 and amount.notes == []
+
+
+# ---------------------------------------------------------------- Cantonese amounts (W4)
+@pytest.mark.parametrize("raw,expected", [
+    ("一百蚊", "100蚊"),
+    ("三皮", "300蚊"),  # 皮 = a hundred dollars
+    ("退返我三皮", "退返我300蚊"),
+    ("兩百蚊", "200蚊"),
+    ("百二蚊", "120蚊"),  # 百二 = a hundred and twenty
+    ("五蚊半", "5.5蚊"),
+    ("九點九蚊", "9.9蚊"),
+    ("一千五百萬元", "15000000元"),
+    ("佢買咗對皮鞋", "佢買咗對皮鞋"),  # leather, not money
+    ("一皮包", "一皮包"),
+])
+def test_cantonese_amounts(raw, expected):
+    assert itn(raw).text == expected
+
+
+def test_cantonese_amounts_are_entities():
+    entities = extract_entities(itn("我想退返三皮，訂單SO20261019101").text)
+    assert {(e.kind, e.value) for e in entities} >= {("amount", "300"), ("order_id", "SO20261019101")}
