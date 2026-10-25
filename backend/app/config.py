@@ -210,7 +210,15 @@ class Settings:
     evidence_mode: str = "annotate"  # annotate | strict
     evidence_pass_coverage: float = 0.8
     sentence_support_threshold: float = 0.5
-    verifier: str = "lexical"  # lexical | llm
+    verifier: str = "lexical"  # lexical | llm | tiered (agent/verifier.py)
+    # tiered: a fast model judges only the claims the cheap tiers disagree on, within this many seconds;
+    # off: no judge, such claims count as unsupported (and go through FIX / REASK / handoff).
+    verifier_judge: bool = True
+    verifier_judge_seconds: float = 8.0
+    # Which sentences are claims (agent/claims.py): rules, or the fine-tuned encoder in claim_model_dir.
+    claim_classifier: str = "rules"
+    claim_model_dir: str | None = None
+    claim_model_threshold: float = 0.5
     # rules | llm: after the rules, a fast model judges model answers that carry a scam's cues
     # (guardrails/judge.py); answers are then not streamed, so nothing shows before the verdict.
     output_guard: str = "rules"
@@ -351,6 +359,15 @@ class Settings:
         s.evidence_pass_coverage = _env_float("EVIDENCE_PASS_COVERAGE", s.evidence_pass_coverage)
         s.sentence_support_threshold = _env_float("SENTENCE_SUPPORT_THRESHOLD", s.sentence_support_threshold)
         s.verifier = _env("VERIFIER", s.verifier)
+        if s.verifier not in ("lexical", "llm", "tiered"):
+            raise ValueError(f"LOOPDESK_VERIFIER must be lexical, llm or tiered, not {s.verifier!r}")
+        s.verifier_judge = _env_bool("VERIFIER_JUDGE", s.verifier_judge)
+        s.verifier_judge_seconds = _env_float("VERIFIER_JUDGE_SECONDS", s.verifier_judge_seconds)
+        s.claim_classifier = _env("CLAIM_CLASSIFIER", s.claim_classifier)
+        if s.claim_classifier not in ("rules", "model"):
+            raise ValueError(f"LOOPDESK_CLAIM_CLASSIFIER must be rules or model, not {s.claim_classifier!r}")
+        s.claim_model_dir = _env("CLAIM_MODEL_DIR", s.claim_model_dir)
+        s.claim_model_threshold = _env_float("CLAIM_MODEL_THRESHOLD", s.claim_model_threshold)
         s.output_guard = _env("OUTPUT_GUARD", s.output_guard)
         if s.output_guard not in ("rules", "llm"):
             raise ValueError(f"LOOPDESK_OUTPUT_GUARD must be rules or llm, not {s.output_guard!r}")

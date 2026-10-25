@@ -16,20 +16,34 @@ For every factual sentence it asks two questions:
 
 Output: per-sentence results, ``coverage`` (= supported factual sentences / factual
 sentences) and a verdict pass / warn / blocked.
+
+LOOPDESK_VERIFIER=tiered (``_tiered``) checks claims only, in tiers, cheapest first:
+- claim or not (claims.py: rules, or the fine-tuned encoder behind a flag); a number always is one;
+- rules: numbers, order ids and the tool state, always, and never overruled by a model;
+- grounding (grounding.py): the sentence, its weakest clause, and rule flags for wording that turns a
+  grounded sentence wrong (polarity, party, time unit, promise, relative day);
+- the LLM judge only for the claims where those tiers disagree (grounded but flagged, partly grounded),
+  with a deadline; without a judge such a claim counts as unsupported.
+``plan_repair`` then says what to do with a failed answer: FIX (drop the failed non-numeric claims when
+what is left still answers), else one REASK with the reasons, else hand over to a person.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import asdict, dataclass, field
 
 from ..config import Settings
 from ..llm.base import LLMMessage, LLMProvider
-from ..textutil import ORDER_ID_RE, extract_numbers, overlap_recall, split_sentences, strip_citations, token_set
+from . import claims as claim_rules
+from .grounding import best_sentence_score, gloss, ground
+from ..textutil import (CITE_RE, ORDER_ID_RE, extract_numbers, normalize_width, overlap_recall, split_sentences,
+                        strip_citations, token_set)
 from .outcome import REFUSAL_RE
 from .prompts import JUDGE_PROMPT
-from .status_templates import case_state, contradiction
+from .status_templates import case_state, contradiction, pieces
 from .tools import Evidence
 
 _NON_FACTUAL = re.compile(r"^(请|如需|如有|如果您|建议|还有什么|欢迎|感谢|为避免|麻烦|稍等)")
@@ -121,6 +135,12 @@ class SentenceCheck:
     weak_clause: str | None = None  # the clause with no basis in an otherwise grounded sentence (N-183)
     contradicts: str | None = None  # request_refund | under_action | ticket | handoff (status_templates)
     source: str = "model"  # model | template (rendered from tool fields: supported by construction)
+    # tiered mode: which tier decided, why a claim failed, the weakest clause and the rule flags
+    tier: str = ""  # rules | grounding | judge | template | classifier
+    reason: str = ""  # number | order_id | status | unsupported | flagged | unsure
+    clause_score: float | None = None
+    flags: list[str] = field(default_factory=list)
+    dropped: bool = False  # FIX took it out of the answer: the customer never saw it
 
 
 @dataclass
@@ -130,6 +150,12 @@ class Verification:
     sentences: list[SentenceCheck]
     invalid_citations: list[int]
     method: str = "lexical"
+    disputed: int = 0  # tiered: claims the cheap tiers disagreed on (what a judge is asked about)
+    judge_calls: int = 0  # tiered: model calls made for this answer (0 when the cheap tiers agreed)
+    judged: int = 0  # tiered: sentences the judge was asked about
+    judge_ms: int = 0
+    judge_failed: bool = False  # tiered: the judge gave no usable verdict in time (the claims stay unsupported)
+    classifier: str = ""  # tiered: rules | model
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -218,6 +244,8 @@ def verify_answer(
     trusted: list[str] | None = None,
 ) -> Verification:
     """``trusted``: the status sentences the runtime rendered from tool fields (status_templates)."""
+    if settings.verifier == "tiered":
+        return _tiered(answer, evidence, user_text, settings, judge, judge_model, trusted)
     by_ref = {e.ref: e for e in evidence}
     evidence_text = "\n".join(e.text for e in evidence)
     number_pool = extract_numbers(evidence_text) + extract_numbers(user_text)
@@ -318,3 +346,192 @@ def _judge(provider: LLMProvider, model: str, checks: list[SentenceCheck], evide
     if not isinstance(labels, list) or len(labels) != len(factual):
         return None
     return [bool(x) for x in labels]
+
+
+# ---------------------------------------------------------------- tiered (LOOPDESK_VERIFIER=tiered)
+TIERED_LOW = 0.2  # below this nothing in the evidence supports the claim (reported as "unsupported")
+CLAUSE_MIN = 0.5  # a claim clause with fewer of its words in the evidence is not grounded
+SPLICE_MIN = 0.5  # grounded overall but no single evidence sentence holds half the claim: facts spliced
+
+
+def _tiered(answer: str, evidence: list[Evidence], user_text: str, settings: Settings,
+            judge: LLMProvider | None, judge_model: str | None, trusted: list[str] | None) -> Verification:
+    by_ref = {e.ref: e for e in evidence}
+    evidence_text = "\n".join(e.text for e in evidence)
+    number_pool = extract_numbers(evidence_text) + extract_numbers(user_text)
+    known_ids = {m.upper() for m in ORDER_ID_RE.findall(evidence_text + " " + user_text)}
+    state = case_state(evidence, user_text)
+    rendered = {strip_citations(p)[0] for t in trusted or [] for p in split_sentences(t)}
+    worded = {e.ref: f"{e.text} {e.meta.get('heading', '')} {gloss(e.title, e.text) if e.kind == 'tool' else ''}"
+              for e in evidence}  # tool fields in words: "refundable": true is "可申请退款"
+    corpus = "\n".join(worded.values())
+    classify = claim_rules.classifier(settings)
+    raw = [(r, *strip_citations(r)) for r in split_sentences(answer)]
+    raw = [(r, t, c) for r, t, c in raw if t]
+    probs = classify.claim_probabilities([t for _, t, _ in raw])
+    threshold = classify.threshold
+
+    checks: list[SentenceCheck] = []
+    invalid: set[int] = set()
+    unsure: list[SentenceCheck] = []
+    earlier_ids: list[str] = []  # order numbers named so far: "- 状态：已签收" in a listing is about the last one
+    for (_, text, cited), prob in zip(raw, probs):
+        contradicts = contradiction(text, state, earlier_ids)
+        earlier_ids += ORDER_ID_RE.findall(normalize_width(text))
+        invalid.update(r for r in cited if r not in by_ref)
+        if text in rendered:
+            checks.append(SentenceCheck(text=text, factual=True, supported=True, score=1.0, source="template",
+                                        tier="template"))
+            continue
+        claim = claim_rules.claim_text(text)
+        numbers = extract_numbers(claim)
+        # numbers and order ids are always checked by rule, whatever the classifier says
+        factual = bool(numbers) or bool(ORDER_ID_RE.search(claim)) or bool(contradicts) or prob >= threshold
+        check = SentenceCheck(text=text, factual=factual, supported=True, score=1.0, cited=cited,
+                              contradicts=contradicts, tier="classifier")
+        checks.append(check)
+        if not factual:
+            continue
+        check.unverified_numbers = [n for n in numbers if not _numbers_match(n, number_pool)]
+        # an order number given as an example of the format ("例如 SO2026…") names no order
+        check.unknown_ids = [m.group(0).upper() for m in ORDER_ID_RE.finditer(claim)
+                             if m.group(0).upper() not in known_ids
+                             and not re.search(r"(例如|比如|格式如|形如|如)\s*$", claim[max(0, m.start() - 4):m.start()])]
+        if check.unverified_numbers or check.unknown_ids or contradicts:
+            check.supported, check.tier = False, "rules"
+            check.reason = "number" if check.unverified_numbers else "order_id" if check.unknown_ids else "status"
+            continue
+        if prob < threshold and not numbers:
+            check.tier = "rules"  # framing that names a known order ("回复“SO… 申请退款”即可"): only the id is a claim
+            continue
+        items = [by_ref[r] for r in cited if r in by_ref] or evidence
+        g = ground(claim, [(e.ref, worded[e.ref]) for e in items], user_text, corpus)
+        check.score, check.best_ref, check.clause_score, check.flags = g.sentence_score, g.best_ref, g.clause_score, g.flags
+        check.tier = "grounding"
+        grounded = g.sentence_score >= (0.3 if numbers else settings.sentence_support_threshold)
+        spliced = grounded and best_sentence_score(claim, corpus) < SPLICE_MIN
+        if spliced:
+            check.flags.append("spliced")
+        if grounded and g.clause_score >= CLAUSE_MIN and not check.flags:
+            continue  # the rules find nothing wrong and the evidence grounds it: supported
+        # The rules find nothing wrong but the grounding fails, or it is grounded but a flag fires: the tiers
+        # disagree, and only here may a judge decide. Without one the claim counts as unsupported.
+        check.supported = False
+        check.reason = "flagged" if check.flags else "unsupported" if g.sentence_score < TIERED_LOW else "unsure"
+        unsure.append(check)
+
+    verification = Verification("pass", 1.0, checks, sorted(invalid), "tiered", classifier=classify.name,
+                                disputed=len(unsure))
+    if unsure and judge is not None and evidence:
+        started = time.monotonic()
+        labels = _judge_some(judge, judge_model or "", unsure, evidence,
+                             deadline=started + getattr(settings, "verifier_judge_seconds", 8.0))
+        verification.judge_calls, verification.judged = 1, len(unsure)
+        verification.judge_ms = int((time.monotonic() - started) * 1000)
+        verification.judge_failed = labels is None
+        if labels is not None:
+            for check, label in zip(unsure, labels):
+                check.supported, check.tier = bool(label), "judge"
+                check.reason = "" if label else "unsupported"
+    _tiered_verdict(verification, settings)
+    return verification
+
+
+def _tiered_verdict(v: Verification, settings: Settings) -> None:
+    factual = [c for c in v.sentences if c.factual]
+    supported = sum(1 for c in factual if c.supported)
+    v.coverage = supported / len(factual) if factual else 1.0
+    if any(c.unverified_numbers or c.unknown_ids or c.contradicts for c in factual):
+        v.verdict = "blocked"
+    elif supported == len(factual) and not v.invalid_citations:
+        v.verdict = "pass"
+    else:
+        v.verdict = "warn" if v.coverage >= 0.5 else "blocked"
+
+
+def _judge_some(provider: LLMProvider, model: str, checks: list[SentenceCheck], evidence: list[Evidence],
+                deadline: float) -> list[bool] | None:
+    prompt = JUDGE_PROMPT.format(
+        evidence="\n".join(f"[{e.ref}] {e.text}" for e in evidence),
+        sentences="\n".join(f"{i + 1}. {c.text}" for i, c in enumerate(checks)),
+    )
+    try:
+        result = provider.chat([LLMMessage(role="user", content=prompt)], [], model,
+                               {"task": "judge", "temperature": 0, "deadline": deadline})
+        match = re.search(r"\{.*\}", result.content, re.S)
+        labels = json.loads(match.group(0))["supported"] if match else None
+    except Exception:  # a failed or slow judge leaves the claims unsupported: the answer is repaired, not shown
+        return None
+    if not isinstance(labels, list) or len(labels) != len(checks):
+        return None
+    return [bool(x) for x in labels]
+
+
+# ---------------------------------------------------------------- repair: FIX, then one REASK, then handoff
+@dataclass
+class Repair:
+    action: str  # pass | fix | reask | handoff
+    text: str
+    dropped: list[str] = field(default_factory=list)
+    problems: list[SentenceCheck] = field(default_factory=list)  # what a re-ask is told about
+
+
+def plan_repair(v: Verification, answer: str, reasked: bool = False) -> Repair:
+    """What to do with a checked answer. Only a non-numeric claim that failed may be dropped, and only when
+    what is left still answers: a supported claim remains and at most half the claims go. A wrong number, an
+    unknown order id or a status the tools contradict is never dropped silently: the model is asked once
+    to correct it, then a person takes over."""
+    factual = [c for c in v.sentences if c.factual and c.source != "template"]
+    failed = [c for c in factual if not c.supported]
+    if not failed and not v.invalid_citations:
+        return Repair("pass", answer)
+    hard = [c for c in failed if c.unverified_numbers or c.unknown_ids or c.contradicts]
+    supported = [c for c in v.sentences if c.factual and c.supported]
+    if failed and not hard and supported and len(failed) * 2 <= len(factual):
+        return Repair("fix", _drop(answer, {c.text for c in failed}), [c.text for c in failed], failed)
+    if not failed:  # only a citation to nothing: drop the marker
+        return Repair("fix", CITE_RE.sub(lambda m: "" if int(m.group(1)) in v.invalid_citations else m.group(0), answer))
+    return Repair("handoff" if reasked else "reask", answer, [], failed)
+
+
+def apply_fix(v: Verification, repair: Repair, settings: Settings) -> None:
+    """The verdict of what is shown after FIX: the dropped claims are marked, the rest decide."""
+    for check in v.sentences:
+        if check.text in repair.dropped:
+            check.dropped = True
+    kept = Verification(v.verdict, v.coverage, [c for c in v.sentences if not c.dropped], [], v.method)
+    _tiered_verdict(kept, settings)
+    v.verdict, v.coverage = kept.verdict, kept.coverage
+    v.invalid_citations = []
+
+
+def _drop(answer: str, texts: set[str]) -> str:
+    kept = []
+    for piece in pieces(answer):
+        text = strip_citations(piece.strip())[0]
+        if text and text in texts:
+            continue
+        kept.append(piece)
+    return "".join(kept).strip()
+
+
+def reask_message(repair: Repair) -> str:
+    """What the model is told when its answer could not be fixed by dropping sentences (sent once)."""
+    lines = []
+    for i, c in enumerate(repair.problems[:6], 1):
+        if c.unverified_numbers:
+            why = f"数字 {'、'.join(f'{n:g}' for n in c.unverified_numbers)} 在工具结果和知识库中都没有"
+        elif c.unknown_ids:
+            why = f"订单号 {'、'.join(c.unknown_ids)} 不在工具结果中"
+        elif c.contradicts == "under_action":
+            why = "顾客明确要求退款，能不能退、退多少由 request_refund 判断，请调用它，不要自己下结论"
+        elif c.contradicts:
+            why = "与工具返回的状态不符"
+        else:
+            why = "在工具结果和知识库中找不到依据"
+        lines.append(f"{i}. “{c.text}”：{why}")
+    return (REASK_MARKER + "上一版回答没有发给顾客，因为以下句子没有通过核对：\n" + "\n".join(lines)
+            + "\n请只依据工具结果和知识库，重新回答顾客刚才的问题：改正或删去这些内容，需要时调用工具。不要提到这次核对。")
+
+
+REASK_MARKER = "（系统核对，不是顾客的话）"

@@ -1,0 +1,4 @@
+# Optional: the fine-tuned claim classifier at run time (LOOPDESK_CLAIM_CLASSIFIER=model). The model itself is
+# trained on GitHub Actions (.github/workflows/claim-model.yml) and published as that run's artifact.
+onnxruntime==1.20.1
+tokenizers==0.20.3

@@ -52,7 +52,7 @@ from .tools import ApprovalNeed, ApprovalRequired, Evidence, ToolContext, ToolEr
 from ..tooling.output_scan import scan_output
 from ..tooling.toolset import toolset_for
 from .tracing import Tracer
-from .verifier import Verification, verify_answer
+from .verifier import Repair, Verification, apply_fix, plan_repair, reask_message, verify_answer
 
 STRICT_FALLBACK = "抱歉，我暂时无法给出有可靠依据的答复。为避免误导，建议您转人工客服确认。"
 MAX_STEPS_TEXT = "抱歉，这个问题需要的处理步骤较多。"
@@ -71,6 +71,8 @@ UNSAFE_TEXT = ("抱歉，这条回复涉及您的账户和资金安全，没有�
 UNSAFE_REASON = "回答里有索要验证码、银行卡号、密码，或官方渠道以外的链接、联系方式、转账要求，已拦截并转人工"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 REPEATED_CALL_NOTE = "与本步另一次调用的工具和参数完全相同，未重复执行，结果见那一次"
+# The answer still failed the check after one re-ask (LOOPDESK_VERIFIER=tiered): a person answers instead.
+UNVERIFIED_TEXT = "抱歉，这个问题我没能给出有可靠依据的答复。"
 REWRITE_BUDGET_SECONDS = 5.0
 JUDGE_BUDGET_SECONDS = 8.0  # the output judge waits this long at most; past it the rules' verdict stands
 TOOL_LABEL = {"request_refund": "退款"}
@@ -91,6 +93,17 @@ class RunOptions:
     dry_run: bool = False
     inject_hallucination: bool = False
     prompt_version: str | None = None  # force a version (offline A/B); otherwise default/canary
+
+
+@dataclass
+class Checked:
+    """A model answer after the status templates and the evidence check, and what to do with it."""
+
+    text: str
+    templates: list[str]
+    status_meta: dict[str, Any] | None
+    verification: Verification
+    repair: Repair | None = None  # tiered mode only
 
 
 @dataclass
@@ -543,7 +556,8 @@ class AgentRuntime:
                 # After a refund or a ticket, the status sentence is the tool's: the answer is held back
                 # whole so the model's wording of it never reaches the customer.
                 status_pending = any(e.kind == "tool" and e.title in STATUS_TOOLS for e in ctx.evidence)
-                gate = _StreamGate(ctx) if stream_tokens and not status_pending else None
+                # A re-asked answer is not streamed either: it replaces a draft and may still fail.
+                gate = _StreamGate(ctx) if stream_tokens and not status_pending and not state.get("reasked") else None
                 for event in self._call_llm(tracer, messages, specs, state):
                     if event.type == "delta":
                         if gate and (shown := gate.feed(event.text)):
@@ -569,6 +583,7 @@ class AgentRuntime:
                 return
             if gate and (shown := gate.flush()):
                 yield {"type": "token", "step": state["steps"], "text": shown}
+            state["streamed"] = gate is not None and not result.tool_calls
             if result.finish_reason in ("refusal", "content_filter"):
                 text = REFUSAL_TEXT + self._fallback_handoff(tracer, ctx, "模型拒绝回答")
                 yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
@@ -581,7 +596,20 @@ class AgentRuntime:
                 queue = list(result.tool_calls)
                 self._mark_repeats(tracer, state, queue)
                 continue
-            yield from self._finish(run, tracer, ctx, state, result.content.strip(), started, verify=True)
+            answer = result.content.strip()
+            checked = None
+            if self._tiered() and result.finish_reason != "refusal":
+                checked = self._check(tracer, ctx, state, answer)
+                if checked.repair.action == "reask" and not state.get("reasked"):
+                    # FIX could not save it: the model gets one more try, told what failed. Nothing of the
+                    # draft is kept; what streamed of it is replaced by what the second try says.
+                    state["reasked"] = True
+                    yield {"type": "reask", "step": state["steps"],
+                           **({"sentences": [c.text for c in checked.repair.problems]} if ctx.is_staff else {})}
+                    messages.append(LLMMessage(role="assistant", content=answer))
+                    messages.append(LLMMessage(role="user", content=reask_message(checked.repair)))
+                    continue
+            yield from self._finish(run, tracer, ctx, state, answer, started, verify=True, checked=checked)
             return
 
     @staticmethod
@@ -820,6 +848,34 @@ class AgentRuntime:
         meta = {"disputed": disputed} if ctx.is_staff else {"citations": []}
         yield from self._finish(run, tracer, ctx, state, text, started, status="handoff", extra_meta=meta)
 
+    def _tiered(self) -> bool:
+        return self.settings.verifier == "tiered"
+
+    def _verifier_judge(self) -> LLMProvider | None:
+        """The model that judges claims: every factual sentence (verifier=llm), or only the ones the cheap
+        tiers disagree on (verifier=tiered, unless LOOPDESK_VERIFIER_JUDGE=off). Never the offline model."""
+        if self.provider.name == "mock" or self.settings.verifier not in ("llm", "tiered"):
+            return None
+        if self.settings.verifier == "tiered" and not self.settings.verifier_judge:
+            return None
+        if self.breaker.state(self.settings.llm_model_fast) != "closed":
+            return None
+        return self.provider
+
+    def _check(self, tracer: Tracer, ctx: ToolContext, state: dict[str, Any], text: str) -> Checked:
+        """Status templates, then the evidence check, then (tiered) the repair plan; traced, not yet saved."""
+        text, templates, status_meta = self._status_sentences(tracer, ctx, state, text)
+        judge = self._verifier_judge()
+        model = self.settings.llm_model_fast if self._tiered() else state["models"][0]
+        with tracer.span("verify", "evidence_check", {"answer": text, "reasked": bool(state.get("reasked"))}) as span:
+            verification = verify_answer(text, ctx.evidence, state["user_text"], self.settings, judge, model,
+                                         trusted=templates)
+            repair = plan_repair(verification, text, reasked=bool(state.get("reasked"))) if self._tiered() else None
+            span.set(**verification.to_dict(), **({"repair": repair.action, "dropped": repair.dropped} if repair else {}))
+            if verification.judge_calls:
+                span.model = model
+        return Checked(text, templates, status_meta, verification, repair)
+
     def _judging(self) -> bool:
         return self.settings.output_guard == "llm" and self.provider.name != "mock"
 
@@ -918,13 +974,17 @@ class AgentRuntime:
 
     def _finish(self, run: Run, tracer: Tracer, ctx: ToolContext, state: dict[str, Any], text: str,
                 started: float, status: str | None = None, verify: bool = False,
-                extra_meta: dict[str, Any] | None = None) -> Iterator[dict[str, Any]]:
+                extra_meta: dict[str, Any] | None = None, checked: Checked | None = None) -> Iterator[dict[str, Any]]:
         final_text = text or MODEL_ERROR_TEXT
         templates: list[str] = []
-        if verify:  # a model answer: what it says about a refund or a ticket comes from the tool
+        if verify and checked is None:  # a model answer: what it says about a refund or a ticket comes from the tool
             final_text, templates, status_meta = self._status_sentences(tracer, ctx, state, final_text)
             if status_meta:
                 extra_meta = {**(extra_meta or {}), "status_sentences": status_meta}
+        elif checked is not None:
+            final_text, templates = checked.text or MODEL_ERROR_TEXT, checked.templates
+            if checked.status_meta:
+                extra_meta = {**(extra_meta or {}), "status_sentences": checked.status_meta}
         reasons = unsafe_answer(final_text, _reviewed(ctx), _channels(ctx))
         if not reasons and verify and self._judging():
             if detect_injection(final_text).suspicious:  # an answer that instructs a model: the judge's own reader
@@ -942,16 +1002,37 @@ class AgentRuntime:
             extra_meta = {**(extra_meta or {}), "citations": []}
             yield {"type": "answer_replaced", "text": final_text, "reason": UNSAFE_REASON}
         verification = None
-        if verify:
-            judge = self.provider if (self.settings.verifier == "llm" and self.provider.name != "mock") else None
+        if verify and checked is None:
+            judge = self._verifier_judge()
             with tracer.span("verify", "evidence_check", {"answer": final_text}) as span:
                 verification = verify_answer(final_text, ctx.evidence, state["user_text"], self.settings,
                                              judge, state["models"][0], trusted=templates)
                 span.set(**verification.to_dict())
+        elif verify:
+            verification = checked.verification
+        if verification is not None:
+            repair = checked.repair if checked is not None else None
+            if repair is not None and repair.action == "fix":
+                apply_fix(verification, repair, self.settings)  # the verdict of what is shown
             run.evidence_coverage = verification.coverage
             run.verdict = verification.verdict
             yield {"type": "verification", **verification.to_dict()}
-            if self.settings.evidence_mode == "strict" and verification.verdict == "blocked":
+            if repair is not None and repair.action == "fix":
+                # FIX: the failed claims are dropped and the rest still answers. What streamed is replaced.
+                final_text = repair.text
+                extra_meta = {**(extra_meta or {}), "repair": {"action": "fix", "dropped": repair.dropped}}
+                if state.get("streamed"):
+                    yield {"type": "answer_replaced", "text": final_text, "reason": "已删去没有依据的句子"}
+            elif repair is not None and repair.action in ("reask", "handoff"):
+                # Still failing after the one re-ask: a person answers rather than an unverified answer.
+                final_text = UNVERIFIED_TEXT + self._fallback_handoff(tracer, ctx, "回答没有通过证据核对")
+                status = "handoff"
+                extra_meta = {**(extra_meta or {}), "citations": [], "repair": {
+                    "action": "handoff", "failed": [c.text for c in repair.problems]}}
+                yield {"type": "answer_replaced", "text": final_text, "reason": "回答没有通过证据核对，已转人工"}
+            elif repair is not None and state.get("reasked"):
+                extra_meta = {**(extra_meta or {}), "repair": {"action": "reask"}}
+            if repair is None and self.settings.evidence_mode == "strict" and verification.verdict == "blocked":
                 final_text = STRICT_FALLBACK
                 yield {"type": "answer_replaced", "text": final_text, "reason": "证据校验未通过（严格模式）"}
         yield from self._save(run, tracer, ctx, state, final_text, started, status, verification, extra_meta)

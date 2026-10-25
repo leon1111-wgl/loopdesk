@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..textutil import CITE_RE, ORDER_ID_RE, normalize_width, refund_requested
+from .claims import claim_text
 from .tools import Evidence
 
 PRIORITY_TEXT = {"low": "低", "normal": "普通", "high": "高", "urgent": "紧急"}
@@ -81,7 +82,7 @@ ALLOWED: dict[str, set[str]] = {
     "awaiting_review": {"submitted", "awaiting_review"},
     "rejected": {"submitted", "rejected", "not_refundable"},
     "failed": {"failed", "not_refundable", "rejected"},
-    "refunded_order": {"paid", "not_refundable"},  # the order system shows the order as refunded
+    "refunded_order": {"submitted", "paid", "not_refundable"},  # the order system shows the order as refunded
     "refunding_order": {"submitted", "will_pay", "not_refundable"},
     "not_refundable": {"not_refundable"},
     "withdrawn": {"withdrawn", "not_refundable"},  # the customer took the application back (N-127)
@@ -100,6 +101,8 @@ class CaseState:
     ticket: str = "none"  # created | failed | none
     ticket_fields: dict[str, Any] = field(default_factory=dict)
     handoff: bool = False
+    # Each order's delivery as the order and tracking tools report it: unshipped | shipped | delivered.
+    shipments: dict[str, str] = field(default_factory=dict)
     refund_asked: bool = False  # the customer asked for a refund this turn
     quoted: list[str] = field(default_factory=list)  # tool wording the model may quote verbatim
     # each order's status as the order tools worded it, by order id: "SO…（音箱，已退款）" quotes a listing (N-197)
@@ -154,6 +157,9 @@ def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
         for order in [output, *(output.get("orders") or [])] if item.title in ("get_order", "list_my_orders") else []:
             if isinstance(order, dict) and order.get("order_id") and order.get("status_text"):
                 state.order_status[str(order["order_id"]).upper()] = str(order["status_text"])
+        if item.title in ("get_order", "track_shipment") and not output.get("error") and output.get("order_id"):
+            if shipped := _shipment(item.title, output):
+                state.shipments[str(output["order_id"]).upper()] = shipped
         if item.title == "request_refund":
             state.refund, state.refund_fields = _refund_action(output)
             state.refund_source = "action"
@@ -182,6 +188,20 @@ def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
         elif item.title == "handoff_to_human" and not output.get("error"):
             state.handoff = True
     return state
+
+
+_ORDER_SHIPMENT = {"paid": "unshipped", "shipped": "shipped", "delivered": "delivered"}
+
+
+def _shipment(tool: str, output: dict[str, Any]) -> str:
+    if tool == "get_order":
+        return _ORDER_SHIPMENT.get(str(output.get("status")), "")
+    if output.get("virtual"):
+        return ""
+    if output.get("shipped") is False:
+        return "unshipped"
+    latest = " ".join(str(e.get("desc", "")) for e in (output.get("events") or [])[-1:])
+    return "delivered" if re.search(r"已签收|签收成功|已妥投", latest) else "shipped" if output.get("shipped") else ""
 
 
 def render_status(state: CaseState, dry_run: bool = False) -> Rendered:
@@ -218,8 +238,8 @@ _REFUND_PATTERNS: dict[str, re.Pattern] = {
                        r"|已按原支付方式退回"),
     "will_pay": re.compile(r"已受理|(?:将|会|预计|即将|很快)[^。，；,]{0,12}(?:退回|到账|退还|返还|退到|原路返回)"
                            r"|\d+\s*[-~～至到]\s*\d+\s*个?工作日[^。，；]{0,4}到账|个?工作日内?(?:到账|退回)"),
-    "submitted": re.compile(r"已(?:经)?(?:为您|帮您|给您)?(?:提交|申请|发起|办理)(?:了)?(?:退款|退货|申请)?"
-                            r"|(?:退款|退货)?申请已(?:经)?(?:提交|发起|受理)|为您(?:提交|申请|发起)了"),
+    "submitted": re.compile(r"已(?:经)?(?:为您|帮您|给您)?(?:提交|申请|发起|办理)(?:了)?[^，。；]{0,4}?(?:退款|退货)"
+                            r"|(?:退款|退货)申请已(?:经)?(?:提交|发起|受理)|为您(?:提交|申请|发起)了(?:退款|退货)"),
     "awaiting_review": re.compile(r"人工审核|等待审核|审核中|待审核|提交审核|正在审核|进入审核"),
     "rejected": re.compile(r"未通过|没有通过|没通过|不通过|驳回|被拒|拒绝了"),
     "confirming": re.compile(r"暂未返回|暂时没有返回|核实中|正在核实|继续核实|以订单状态为准|尚未确认|还未确认"),
@@ -230,6 +250,11 @@ _REFUND_PATTERNS: dict[str, re.Pattern] = {
     "not_refundable": re.compile(rf"{_NEG}(?:为您)?(?:申请|办理|发起|支持)?(?:退款|退货)|不符合(?:退款|退货)条件|不在(?:退款|售后)范围"
                                  r"|不能重复申请"),
 }
+_SHIPMENT_PATTERNS: dict[str, re.Pattern] = {
+    "delivered": re.compile(r"已(?:经)?签收|签收了|已送达|已经送到|已妥投|已收货"),
+    "shipped": re.compile(r"已(?:经)?(?:发货|发出|揽收|寄出|出库)|(?:正在|已在)?(?:派送|派件|运输|配送)(?:中|途中)|已到达.{0,8}(?:转运|中心|网点)"),
+    "unshipped": re.compile(r"(?:还|尚|仍)?(?:未|没有?|没)(?:有)?(?:发货|发出|揽收)|待发货|还在备货"),
+}
 _TICKET_CLAIM = re.compile(r"已(?:经)?(?:为您|帮您)?(?:创建|提交|登记|生成)(?:了)?(?:售后|维修|技术)?工单|工单已(?:经)?(?:创建|提交|生成|登记)")
 _HANDOFF_CLAIM = re.compile(r"已(?:经)?(?:为您|帮您)?(?:转接|转给|转至|转到|转)(?:了)?人工|人工客服(?:已|正在)(?:接入|为您服务)")
 # A sentence about this customer's refund rather than refunds in general.
@@ -239,12 +264,13 @@ _PERSONAL = re.compile(r"您的|为您|帮您|给您|这笔|该订单|此订单|
 @dataclass
 class Claims:
     refund: set[str] = field(default_factory=set)
+    shipment: set[str] = field(default_factory=set)
     personal: bool = False
     ticket: bool = False
     handoff: bool = False
 
     def any(self) -> bool:
-        return bool(self.refund or self.ticket or self.handoff)
+        return bool(self.refund or self.shipment or self.ticket or self.handoff)
 
 
 def _without(text: str, quoted: list[str]) -> str:
@@ -254,11 +280,12 @@ def _without(text: str, quoted: list[str]) -> str:
             part = part.strip().rstrip("。")
             if len(part) >= 4:
                 text = text.replace(part, "")
-    return re.sub(r"“[^”]*”|\"[^\"]*\"", "", text)
+    return re.sub(r"“[^”]*”|「[^」]*」|\"[^\"]*\"", "", text)
 
 
 def _negated(text: str, start: int) -> bool:
-    return bool(re.search(_NEG + r"[^，。,；]{0,2}$", text[max(0, start - 4):start]))
+    """Negated or only asked about: "不会到账", "是否已发起退款", "有没有退款"."""
+    return bool(re.search(r"(?:" + _NEG + r"|是否|有没有|是不是|能否)[^，。,；]{0,2}$", text[max(0, start - 4):start]))
 
 
 def _without_order_status(text: str, order_status: dict[str, str]) -> str:
@@ -273,7 +300,7 @@ def _without_order_status(text: str, order_status: dict[str, str]) -> str:
 
 def claimed_states(sentence: str, quoted: list[str] | None = None,
                    order_status: dict[str, str] | None = None) -> Claims:
-    text = _without(_without_order_status(normalize_width(sentence), order_status or {}), quoted or [])
+    text = _without(_without_order_status(claim_text(sentence), order_status or {}), quoted or [])
     claims = Claims(personal=bool(_PERSONAL.search(text) or ORDER_ID_RE.search(text)))
     conditional = bool(_CONDITIONAL.search(text))
     for state, pattern in _REFUND_PATTERNS.items():
@@ -288,25 +315,41 @@ def claimed_states(sentence: str, quoted: list[str] | None = None,
             claims.refund.discard("not_refundable")
     if conditional:  # what would happen, not what did
         claims.refund -= {"paid", "will_pay", "submitted", "awaiting_review", "withdrawn"}
+    if not conditional:
+        unshipped = _SHIPMENT_PATTERNS["unshipped"].search(text)
+        claims.shipment = {"unshipped"} if unshipped else {k for k, p in _SHIPMENT_PATTERNS.items()
+                                                           if k != "unshipped" and p.search(text)}
     claims.ticket = bool(_TICKET_CLAIM.search(text))
     claims.handoff = bool(_HANDOFF_CLAIM.search(text))
     return claims
 
 
-def contradiction(sentence: str, state: CaseState) -> str | None:
-    """Why this sentence disagrees with the tools, or None: "request_refund" (says something about the refund
+def contradiction(sentence: str, state: CaseState, earlier_ids: list[str] | None = None) -> str | None:
+    """Why this sentence disagrees with the tools, or None (``earlier_ids``: the order numbers the answer named
+    before this sentence, newest last): "request_refund" (says something about the refund
     the refund tools contradict), "under_action" (decides a refund the customer asked for without the tool),
-    "ticket" / "handoff" (says one was made when no tool made it)."""
+    "ticket" / "handoff" (says one was made when no tool made it), "shipment" (says the parcel is unshipped,
+    on its way or delivered when the order and tracking tools say otherwise)."""
     claims = claimed_states(sentence, state.quoted, state.order_status)
     if claims.ticket and state.ticket != "created":
         return "ticket"
     if claims.handoff and not state.handoff:
         return "handoff"
+    if claims.shipment and state.shipments:
+        # The order the sentence names, else the one the answer last named ("- 状态：已签收" in a listing),
+        # else the only order the tools looked up.
+        named = [i.upper() for i in ORDER_ID_RE.findall(normalize_width(sentence))]
+        if not named and earlier_ids:
+            named = [earlier_ids[-1].upper()]
+        orders = [state.shipments[i] for i in named if i in state.shipments] or (
+            list(state.shipments.values()) if not named and len(state.shipments) == 1 else [])
+        if any(_shipment_wrong(claims.shipment, actual) for actual in orders):
+            return "shipment"
     if not claims.refund:
         return None
     allowed = ALLOWED.get(state.refund, set())
     if state.refund in ("refundable", "none"):
-        if "not_refundable" in claims.refund and state.refund_asked:
+        if "not_refundable" in claims.refund and state.refund_asked and state.refund == "refundable":
             return "under_action"  # the tool decides whether a requested refund is possible, not the model
         if claims.personal and claims.refund & {"paid", "will_pay", "submitted", "awaiting_review", "rejected", "withdrawn"}:
             return "request_refund"  # says something happened to a refund no tool touched
@@ -315,6 +358,15 @@ def contradiction(sentence: str, state: CaseState) -> str | None:
         if claims.refund - allowed - ({"not_refundable"} if state.refund in NO_PAYOUT else set()):
             return "request_refund"
     return None
+
+
+def _shipment_wrong(claimed: set[str], actual: str) -> bool:
+    """A delivered parcel was shipped too; "shipped" and "unshipped" exclude each other."""
+    if "unshipped" in claimed:
+        return actual != "unshipped"
+    if "delivered" in claimed:
+        return actual != "delivered"
+    return actual == "unshipped"
 
 
 def status_domains(claims: Claims, state: CaseState, cited: bool = False) -> set[str]:

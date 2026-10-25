@@ -187,3 +187,29 @@ def test_a_ticket_sla_comes_from_the_ticket(ask, login, monkeypatch):
     text = by_type(events, "final")[0]["text"]
     assert "24 小时内联系您" in text and "2 小时" not in text.replace("24 小时", "")
     assert text.startswith("已为您创建工单 #") and text.endswith("给您带来不便非常抱歉。")
+
+
+# ---------------------------------------------------------------- shipment status
+UNSHIPPED = tool(1, "get_order", {"order_id": "SO20261012003", "status": "paid", "status_text": "已付款，待发货",
+                                  "refundable": True})
+DELIVERING = tool(2, "track_shipment", {"order_id": "SO20261008002", "shipped": True, "carrier": "Atlas快运",
+                                        "events": [{"time": "2026-10-20 17:57", "desc": "派送中，快递员正在派件"}],
+                                        "message": "订单 SO20261008002 由Atlas快运承运，运单号 AT1。最新进度（2026-10-20 17:57）：派送中，快递员正在派件。"})
+
+
+@pytest.mark.parametrize("evidence, sentence, contradicts", [
+    ([UNSHIPPED], "您的订单已发货，请留意物流信息。", "shipment"),
+    ([UNSHIPPED], "您的订单目前还未发货，暂无物流信息。", None),
+    ([DELIVERING], "包裹已签收，请确认商品是否完好。", "shipment"),
+    ([DELIVERING], "包裹正在派送中，请保持电话畅通。", None),
+    ([DELIVERING], "订单还没有发货。", "shipment"),
+    ([POLICY], "现货商品付款后 48 小时内发货。", None),  # policy, no order looked up
+])
+def test_a_shipment_status_is_checked_against_the_order_and_tracking(evidence, sentence, contradicts):
+    assert contradiction(sentence, case_state(evidence, "我的快递到哪了")) == contradicts
+
+
+def test_no_refund_after_a_failed_order_lookup_is_not_under_action():
+    missing = tool(1, "get_order", {"error": "订单不存在或无权查看"})
+    state = case_state([missing], "SO20261003005 我要退款")
+    assert contradiction("抱歉，未查询到订单 SO20261003005，因此暂时无法发起退款。", state) is None

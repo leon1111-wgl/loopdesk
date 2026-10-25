@@ -26,6 +26,11 @@ on:
       price_output:
         description: CNY per 1M output tokens, for the cost estimate
         default: "8"
+      verifier:
+        description: "Answer check: lexical (default) or tiered (FIX / one REASK / handoff, judge on disagreements)"
+        type: choice
+        options: [lexical, tiered]
+        default: lexical
       stack:
         description: Also bring up docker compose with the real model and ask it one question
         type: boolean
@@ -100,6 +105,7 @@ jobs:
       LOOPDESK_LLM_MODEL: ${{ vars.LOOPDESK_LLM_MODEL }}
       PRICE_INPUT: ${{ inputs.price_input || '2' }}
       PRICE_OUTPUT: ${{ inputs.price_output || '8' }}
+      LOOPDESK_VERIFIER: ${{ inputs.verifier || 'lexical' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

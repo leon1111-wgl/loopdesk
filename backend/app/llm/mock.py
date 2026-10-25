@@ -20,7 +20,7 @@ from typing import Any
 from ..textutil import (NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, REFUND_AMOUNT, REFUND_APPLY_RE, REFUND_RE,
                         estimate_tokens, expand_query, normalize_width, refund_bare_decline, refund_requested,
                         refund_withdraw_requested, withdraw_confirmed,
-                        split_sentences, token_set)
+                        split_sentences, strip_citations, token_set)
 from .base import ChatResult, LLMMessage, LLMProvider, StreamEvent, ToolCall, ToolSpec, Usage
 
 _HANDOFF = re.compile(r"人工|真人|投诉|转接")
@@ -51,6 +51,7 @@ _HALF = re.compile(r"退一半(?!运费|邮费|的?运费)|一半的钱|退半�
 _REFUND_AMOUNT = re.compile(REFUND_AMOUNT)
 
 HALLUCINATION = "另外，所有订单均支持 90 天无理由退货，退款 2 小时内到账。"
+REASK_MARKER = "（系统核对，不是顾客的话）"  # verifier.REASK_MARKER (not imported: the agent package imports this one)
 REFUSAL = (
     "抱歉，知识库中没有找到与该问题直接相关的依据。"
     "为避免给出不准确的信息，建议您转人工客服确认。"
@@ -171,6 +172,11 @@ class MockLLM(LLMProvider):
 
         available = {t.name for t in tools}
         user_idx = max(i for i, m in enumerate(messages) if m.role == "user")
+        # A re-ask from the answer check (verifier.reask_message) is not the customer speaking: answer the
+        # customer's question again, without the sentences it named, the way a model corrects itself.
+        reask = messages[user_idx].content if messages[user_idx].content.startswith(REASK_MARKER) else None
+        if reask is not None:
+            user_idx = max(i for i, m in enumerate(messages[:user_idx]) if m.role == "user")
         user_text = messages[user_idx].content
         turn = messages[user_idx + 1 :]
         called = [c.name for m in turn if m.role == "assistant" for c in m.tool_calls]
@@ -188,7 +194,10 @@ class MockLLM(LLMProvider):
             return ChatResult("", [tool_call], Usage(prompt_tokens, completion, True), model, "tool_calls")
 
         content = self._compose(user_text, results, custom)
-        if options.get("inject_hallucination"):
+        if reask is not None:
+            named = {strip_citations(q)[0] for q in re.findall(r"“(.+?)”：", reask)}
+            content = "".join(s for s in split_sentences(content) if strip_citations(s)[0] not in named) or REFUSAL
+        elif options.get("inject_hallucination"):
             content += HALLUCINATION
         return ChatResult(content, [], Usage(prompt_tokens, estimate_tokens(content), True), model)
 

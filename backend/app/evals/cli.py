@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from sqlalchemy import select
@@ -97,15 +98,37 @@ def main(argv: list[str] | None = None) -> int:
         if m.get("diff"):
             print("diff vs previous run:", json.dumps(m["diff"], ensure_ascii=False))
         if args.report:
+            repairs = _repairs(db, [r.run_id for r in results if r.run_id])
+            m["repairs"] = dict(Counter(a.split(" ")[0] for actions in repairs.values() for a in actions))
             Path(args.report).write_text(json.dumps({
                 "metrics": m, "model": run.model, "total": run.total, "passed": run.passed,
                 "cases": [{"key": r.case_key, "passed": r.passed, "checks": r.checks, "answer": r.answer,
-                           "tools": r.tools_called, "latency_ms": r.latency_ms} for r in results],
+                           "tools": r.tools_called, "latency_ms": r.latency_ms,
+                           "repairs": repairs.get(r.run_id, [])} for r in results],
             }, ensure_ascii=False, indent=2), encoding="utf-8")
         if m["pass_rate"] < args.gate:
             print(f"\nGATE FAILED: pass rate {m['pass_rate']:.1%} < {args.gate:.0%}")
             return 1
     return 0
+
+
+def _repairs(db, run_ids: list[str]) -> dict[str, list[str]]:
+    """What the tiered answer check did on each run (LOOPDESK_VERIFIER=tiered), in order: a re-ask shows
+    as two checks ("reask", then what the second answer got)."""
+    from ..models import Span
+
+    out: dict[str, list[str]] = {}
+    if not run_ids:
+        return out
+    rows = db.execute(select(Span.run_id, Span.output).where(Span.run_id.in_(run_ids), Span.name == "evidence_check")
+                      .order_by(Span.id)).all()
+    for run_id, output in rows:
+        if (output or {}).get("repair"):
+            failed = [f"{c.get('reason') or c.get('contradicts')}: {c['text']}" for c in output.get("sentences") or []
+                      if c.get("factual") and not c.get("supported")]
+            out.setdefault(run_id, []).append(output["repair"] if output["repair"] == "pass"
+                                              else f"{output['repair']} ({' | '.join(failed)[:300]})")
+    return out
 
 
 def compare(db, services, tenant, suite: str, versions: list[str], gate: float) -> int:

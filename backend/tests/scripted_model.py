@@ -17,12 +17,20 @@ class ScriptedModel(LLMProvider):
 
     name = "scripted"
 
-    def __init__(self, *steps):
+    def __init__(self, *steps, judge: bool = True):
         self.steps = list(steps)
         self.calls = 0
         self.prompts: list[list[LLMMessage]] = []
+        self.judge, self.judged = judge, 0  # what it says when asked to judge claims (LOOPDESK_VERIFIER=tiered)
 
     def chat(self, messages, tools, model, options=None) -> ChatResult:
+        if (options or {}).get("task") == "judge":
+            import json
+            import re
+
+            self.judged += 1
+            n = len(re.findall(r"^\d+\. ", messages[-1].content.split("句子（按编号）：")[-1], re.M))
+            return ChatResult(json.dumps({"supported": [self.judge] * n}), [], Usage(), model)
         self.prompts.append(list(messages))
         step = self.steps[min(self.calls, len(self.steps) - 1)]
         self.calls += 1
