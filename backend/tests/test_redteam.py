@@ -124,6 +124,26 @@ def test_main_config_plugins_and_strategies(tmp_path):
     assert (tmp_path / targets[0]["id"].removeprefix("file://")).resolve() == build.TARGET_FILE
 
 
+def test_reasoning_model_gets_room_to_answer(tmp_path):
+    """The relay's model reasons before it answers: with 2048 tokens the grader spent them all on reasoning
+    and returned nothing ("No output"), which promptfoo scores as a failed test (smoke run 40161401694)."""
+    config = build.tenant_config(SPECS["leon"], out_dir=tmp_path, model="m", tests_per_plugin=1)
+    assert config["redteam"]["provider"]["config"]["max_tokens"] >= 8192
+    assert config["defaultTest"]["options"]["provider"]["config"]["max_tokens"] >= 8192
+
+
+def test_built_in_graders_are_told_where_authorization_lives(tmp_path):
+    """Authorization is enforced by the tools from the signed-in identity: looking up an order number the
+    customer typed is how a support agent works, and the tool refusing it is the control working."""
+    config = build.tenant_config(SPECS["leon"], out_dir=tmp_path, model="m", tests_per_plugin=1)
+    by_id = {p["id"]: p for p in config["redteam"]["plugins"]}
+    for plugin in ("rbac", "excessive-agency", "pii", "policy"):
+        assert "server-side" in by_id[plugin]["config"]["graderGuidance"], plugin
+    for p in config["redteam"]["plugins"]:
+        if p["id"].startswith("file://"):
+            assert "graderGuidance" not in p.get("config", {})  # their own rubric says it
+
+
 def test_kb_config_plants_documents_without_strategies(tmp_path):
     config = build.kb_config(SPECS["leon"], out_dir=tmp_path, model="m", tests_per_plugin=2)
     plugins = config["redteam"]["plugins"]
@@ -400,12 +420,27 @@ def test_report_keeps_the_trend_set_apart_from_fresh_attacks(tmp_path):
     assert "Trend set" in text and "| T07 | echo | hijacking | succeeded |" in text
 
 
+def test_report_counts_a_failed_grader_as_an_error_not_an_attack(tmp_path):
+    rows = [_result("policy", False), _result("pii:api-db", False, strategy="crescendo")]
+    rows[0]["gradingResult"] = {"pass": False, "reason": "No output"}
+    rows[1]["gradingResult"] = {"pass": False, "reason": "Could not extract JSON from llm-rubric response"}
+    _results_file(tmp_path, "leon", rows + [_result("rbac", False)])
+    summary = report.summarize_dir(tmp_path)
+    assert summary["totals"]["attacks"] == 1 and summary["totals"]["successes"] == 1
+    assert summary["totals"]["grader_errors"] == 2
+    assert [s["plugin"] for s in summary["successful"]] == ["rbac"]
+
+
 def test_report_adds_up_tokens(tmp_path):
     _results_file(tmp_path, "leon", [_result("policy", True, tokens=300), _result("policy", True, tokens=200)],
                   grader_tokens=70)
+    data = json.loads((tmp_path / "leon" / "results.json").read_text(encoding="utf-8"))
+    data["results"]["stats"]["tokenUsage"]["attacker"] = {"total": 40}
+    (tmp_path / "leon" / "results.json").write_text(json.dumps(data), encoding="utf-8")
+    (tmp_path / "leon" / "generate.log").write_text("Observed generation token usage: 1,234 total (1,000 input, "
+                                                    "234 output) across 11 request(s)\n", encoding="utf-8")
     summary = report.summarize_dir(tmp_path)
-    assert summary["tokens"]["target"] == 500
-    assert summary["tokens"]["promptfoo"] == 999  # attacker, strategies and grader, as promptfoo counts them
+    assert summary["tokens"] == {"target": 500, "generation": 1234, "attacker": 40, "grading": 70}
 
 
 def test_report_markdown_has_tables_and_transcripts(tmp_path):
