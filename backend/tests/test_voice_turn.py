@@ -209,7 +209,8 @@ class SlowTTS(ToneTTS):
 
 
 @pytest.fixture()
-def voice(client, login):
+def voice(client, login, settings):
+    settings.voice_disclosure = False  # the call's opening line has its own tests (test_voice_locale_keys.py)
     asr = ScriptedASR()
     headers = login("customer@echo.demo")
     token = headers["Authorization"].split(" ", 1)[1]

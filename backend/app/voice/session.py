@@ -36,6 +36,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -47,6 +48,7 @@ from .. import audit
 from ..admission import get_admission
 from ..agent.runtime import AgentRuntime, RunWithdrawn
 from ..config import Settings
+from ..governance import disclosure, script
 from ..guardrails.pii import mask_pii
 from ..models import Conversation, Message, Run, Tenant, User
 from ..security import Principal, rate_limiter
@@ -54,7 +56,7 @@ from .confirm import (VOICE_CONFIRM_ERROR, Confirmations, classify_reply, gate_r
                       readback_refund)
 from .endpoint import Endpointer, Event, endpoint_wait_ms
 from .engines import ASRResult, VoiceEngines, merge_results, merge_text
-from .itn import Entity, assess, extract_entities, itn
+from .itn import AMOUNT_RE, Entity, assess, extract_entities, itn, valid_order_id
 from .lexicon import Lexicon, lexicon_for
 from .speakable import speakable, split_sentences
 
@@ -64,6 +66,7 @@ CANCELLED_TEXT = "好的，已取消，没有提交。还有什么可以帮您�
 REPEAT_TEXT = "好的，请您再说一遍订单号和金额。"
 BUSY_TEXT = "您说得太快了，请稍后再试。"
 UNCLEAR_TEXT = "抱歉，没有听清。确认请说“确认”，不对请说“取消”。"
+KEYS_INVALID_TEXT = "按键输入无效：订单号是 SO 后面 11 位数字，金额最多两位小数。"
 READBACK_FAILED_TEXT = ("抱歉，语音播报出了问题，这笔退款没有提交。您可以在页面上发送“{order} 申请退款”，"
                         "或者说“转人工”。")
 MAX_READBACKS = 2
@@ -82,10 +85,11 @@ class Transcript:
 @dataclass
 class Request:
     """One utterance on its way to an answer, and whether it can still be taken back."""
-    result: ASRResult
-    event: Event
+    result: ASRResult | None
+    event: Event | None
     ended: float
     merged: bool = False
+    kind: str = "speech"  # speech | keys (typed on the keypad) | disclosure (the call's opening line)
     paused: bool = False  # the customer is talking again: speak nothing, change nothing, until they stop
     held: bool = False  # can no longer be taken back: spoken, a tool changed something, or a reply was handled
     withdrawn: bool = False
@@ -123,6 +127,7 @@ class Turn:
     latency: dict[str, float] = field(default_factory=dict)  # ms, reported
     sent: threading.Event = field(default_factory=threading.Event)  # every sentence synthesised
     request: Request | None = None  # an agent answer that may still be taken back
+    keep_text: bool = False  # the disclosure: the record keeps what was said; what was heard goes in meta
 
     def add(self, written: str) -> Sentence:
         sentence = Sentence(len(self.sentences), written, self.sample_rate)
@@ -187,6 +192,18 @@ def mask_partial(text: str) -> str:
     return _LONG_DIGITS.sub(lambda m: "*" * len(m.group(0)), masked)
 
 
+def _substitute(text: str, typed: list[Entity]) -> str:
+    """A request with the order number or amount the customer typed in place of the one heard."""
+    from ..textutil import ORDER_ID_RE
+
+    for e in typed:
+        if e.kind == "order_id":
+            text = ORDER_ID_RE.sub(e.value, text, count=1) if ORDER_ID_RE.search(text) else f"{text}，订单号{e.value}"
+        elif e.kind == "amount":
+            text = AMOUNT_RE.sub(f"{e.value}元", text, count=1) if AMOUNT_RE.search(text) else f"{text}，金额{e.value}元"
+    return text
+
+
 def audio_frame(turn: int, sentence: int, pcm: np.ndarray) -> bytes:
     """Binary audio to the client: turn and sentence ids (uint16 each, little-endian), then int16 PCM."""
     return struct.pack("<HH", turn % 65536, sentence % 65536) + pcm.astype("<i2").tobytes()
@@ -227,6 +244,9 @@ class VoiceSession:
         with self.db_factory() as db:
             tenant = db.get(Tenant, tenant_id)
             self.lexicon = lexicon_for(db, tenant) if settings.voice_hotwords else Lexicon([])
+            # What the channel needs of the tenant, read once: its name, script and disclosure wording.
+            self.reader = SimpleNamespace(name=tenant.name, locale=tenant.locale, governance=dict(tenant.governance or {}))
+        self.disclosed = False
         self.hotwords = self.lexicon.terms
         self.tts_queue: queue.Queue = queue.Queue()
         self.tts_thread = threading.Thread(target=self._tts_worker, name="loopdesk-tts", daemon=True)
@@ -253,6 +273,31 @@ class VoiceSession:
             self._played(msg)
         elif kind == "stop":
             self._barge_in("stop")
+        elif kind == "hello":  # the call has started: the disclosure goes first, once
+            if not self.disclosed and self.settings.voice_disclosure:
+                self.disclosed = True
+                self.utterances.put(Request(None, None, time.perf_counter(), kind="disclosure"))
+        elif kind == "keys":
+            self._keys(msg)
+
+    def _keys(self, msg: dict) -> None:
+        """The keypad: an order number or an amount typed instead of said. Exact, so never read back; when
+        a read-back is waiting on an order number or amount, the typed one replaces it in the request."""
+        digits = str(msg.get("digits") or "").strip().upper()
+        if msg.get("kind") == "order_id" and (m := re.fullmatch(r"(?:SO)?(20\d{9})", digits)) and \
+                valid_order_id(f"SO{m.group(1)}"):
+            text = f"订单号SO{m.group(1)}"
+        elif msg.get("kind") == "amount" and re.fullmatch(r"\d{1,7}(?:\.\d{1,2})?", digits):
+            text = f"金额{digits}元"
+        else:
+            self.emit({"type": "error", "message": KEYS_INVALID_TEXT})
+            return
+        at = self.endpointer.position
+        request = Request(ASRResult(text, {"final": text}), Event("end", reason="keys", speech_end=at, at=at),
+                          time.perf_counter(), kind="keys")
+        with self.take:
+            self.last_request = request
+        self.utterances.put(request)
 
     def _on_event(self, event: Event) -> None:
         if event.kind == "start":
@@ -279,15 +324,16 @@ class VoiceSession:
         if partial:
             self.partial_raw = partial
             carried = self.continuing.result.text if self.continuing is not None else ""
-            self.emit({"type": "partial", "text": mask_partial(merge_text(carried, partial) if carried else partial)})
+            shown = mask_partial(merge_text(carried, partial) if carried else partial)
+            self.emit({"type": "partial", "text": script.display(self.reader, shown)})
 
     # ================================================================ taking an answer back
     def _pause_last(self) -> Request | None:
         """Speech again before the last answer was spoken: hold it until this utterance ends."""
         with self.take:
             last = self.last_request
-            if last is None or last.held or last.withdrawn or last.event.reason == "released":
-                return None  # push-to-talk: releasing the button is a deliberate end
+            if last is None or last.held or last.withdrawn or last.kind != "speech" or last.event.reason == "released":
+                return None  # push-to-talk and the keypad: a deliberate end
             last.paused = True
             self.continuing = last
             return last
@@ -344,6 +390,10 @@ class VoiceSession:
 
     # ================================================================ understanding
     def understand(self, result: ASRResult) -> Transcript:
+        if script.traditional(self.reader):  # the agent, the knowledge base and the rules work in simplified
+            fold = lambda t: script.canonical(self.reader, t)  # noqa: E731
+            result = replace(result, text=fold(result.text), passes={k: fold(v) for k, v in result.passes.items()},
+                             unpunctuated=None if result.unpunctuated is None else fold(result.unpunctuated))
         return understand(result, self.lexicon)
 
     def _utterance(self, result: ASRResult, event: Event, ended: float) -> None:
@@ -361,13 +411,16 @@ class VoiceSession:
             result, event, ended = request.result, request.event, request.ended
             try:
                 self._settle_previous()  # the history the next run reads must hold what was heard
+                if request.kind == "disclosure":
+                    self._disclose()
+                    continue
                 if request.withdrawn:  # still queued when the customer went on: the merged request follows
                     continue
                 transcript = self.understand(result)
                 waited = event.reason in ("silence", "complete")
                 latency = {"endpoint_wait_ms": round(endpoint_wait_ms(event) if waited else 0.0, 1),
                            "asr_final_ms": round(result.final_ms, 1)}
-                self.emit({"type": "transcript", "text": transcript.text,
+                self.emit({"type": "transcript", "text": script.display(self.reader, transcript.text),
                            "entities": [e.to_dict() for e in transcript.entities], "pii": transcript.pii,
                            "hotword_fixes": [list(f) for f in transcript.fixes], "endpoint": event.reason,
                            "merged": request.merged, **({"turn_verdict": event.verdict} if event.verdict else {}),
@@ -413,6 +466,8 @@ class VoiceSession:
                 return self._prompt(CANCELLED_TEXT, transcript, "cancelled", latency, ended)
         elif self.readback is not None:
             readback, self.readback = self.readback, None
+            if request is not None and request.kind == "keys":  # the typed number replaces the doubtful one
+                return self.run_agent(_substitute(readback["text"], transcript.entities), latency, ended)
             if reply == "yes" and self._heard(readback["sentence"]):
                 # The order number or amount was right. A refund still gets its own spoken confirmation:
                 # this question never mentioned one (review, P1).
@@ -454,6 +509,26 @@ class VoiceSession:
             db.commit()
         return detail
 
+    def _disclose(self) -> None:
+        """The call's first words: an AI is answering, and how to reach a person (app/governance/disclosure.py).
+        Spoken like a read-back (no model, no run) and kept as a system line; talking over it is a barge-in, and
+        the line then keeps what was heard."""
+        said = script.canonical(self.reader, disclosure.text(self.reader, "voice"))
+        turn = self._new_turn({}, time.perf_counter())
+        turn.keep_text = True
+        with self.db_factory() as db:
+            message = Message(tenant_id=self.tenant_id, conversation_id=self.conversation_id, role="system",
+                              content=said, meta={"voice": {"kind": "disclosure"}, "disclosure": {"channel": "voice"}})
+            db.add(message)
+            db.commit()
+            turn.message_id = message.id
+        turn.generated = said
+        self.emit({"type": "prompt", "kind": "disclosure", "text": script.display(self.reader, said),
+                   "message_id": turn.message_id})
+        self._say_all(turn, said)
+        turn.run_done = True
+        self._turn_sent(turn)
+
     def _new_turn(self, latency: dict, ended: float) -> Turn:
         self.turn_seq += 1
         turn = Turn(self.turn_seq, self.engines.tts.sample_rate, latency=dict(latency))
@@ -473,7 +548,7 @@ class VoiceSession:
             db.commit()
             turn.message_id = message.id
         turn.generated = text
-        self.emit({"type": "prompt", "kind": kind, "text": text, "message_id": turn.message_id})
+        self.emit({"type": "prompt", "kind": kind, "text": script.display(self.reader, text), "message_id": turn.message_id})
         sentences = self._say_all(turn, text)
         if pending is not None and sentences:
             pending.readback = sentences[0]  # the sentence with the amount: the yes is checked against it
@@ -551,7 +626,7 @@ class VoiceSession:
                             pass
                         turn.cancelled = True
                         break
-                self.emit({"type": "agent", "event": event})
+                self.emit({"type": "agent", "event": script.event(self.reader, event)})
                 if kind == "token" and not blocked:  # whole sentences: the output gate releases no less
                     for sentence in split_sentences(event["text"]):
                         streamed = True
@@ -628,9 +703,10 @@ class VoiceSession:
         if not self._hold(turn.request, wait=True):  # TTS starts: past this point nothing is taken back
             turn.cancelled = True
             return
-        speech = speakable(sentence.written)
+        shown = script.display(self.reader, sentence.written)  # stored text stays simplified (sentence.written)
+        speech = speakable(shown)
         sentence.spoken, sentence.redacted = speech.text, speech.redacted
-        self.emit({"type": "say", "turn": turn.id, "id": sentence.id, "text": speech.text, "written": sentence.written,
+        self.emit({"type": "say", "turn": turn.id, "id": sentence.id, "text": speech.text, "written": shown,
                    "sample_rate": turn.sample_rate})
         started = time.perf_counter()
         for chunk in self.engines.tts.synthesize(speech.text):
@@ -728,14 +804,14 @@ class VoiceSession:
                 if message is not None:
                     meta = dict(message.meta or {})
                     previous = dict(meta.get("voice") or {})
-                    if delivery != "unknown" and heard != message.content:
+                    if delivery != "unknown" and heard != message.content and not turn.keep_text:
                         voice["generated"] = message.content
                         message.content = (heard + INTERRUPTED_NOTE) if (interrupted and heard) else (heard or NOTHING_HEARD)
                     meta["voice"] = {**previous, **voice}
                     message.meta = meta
                     db.commit()
-        self.emit({"type": "turn_saved", "turn": turn.id, "message_id": turn.message_id, "heard": heard,
-                   "interrupted": interrupted})
+        self.emit({"type": "turn_saved", "turn": turn.id, "message_id": turn.message_id,
+                   "heard": script.display(self.reader, heard), "interrupted": interrupted})
 
     def close(self) -> None:
         if self.closed:

@@ -103,6 +103,11 @@ export class VoiceClient {
     this.send({ type: "mode", mode });
   }
 
+  /** The keypad: an order number or an amount typed instead of said (never read back). */
+  keys(kind: "order_id" | "amount", digits: string) {
+    this.send({ type: "keys", kind, digits });
+  }
+
   /** The stop button: the same as talking over the agent, without saying anything. */
   stop() {
     this.send({ type: "stop" });

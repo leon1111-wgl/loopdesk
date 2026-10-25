@@ -340,6 +340,10 @@ fieldset.choices legend { padding: 0; margin-bottom: 6px; }
 .voice-state .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); }
 .voice-state.active .dot { background: var(--primary); }
 .voice-partial { margin: -2px 0 8px; font-variant-numeric: tabular-nums; }
+.keypad { display: grid; gap: 8px; max-width: 320px; margin-bottom: 8px; }
+.keypad-display { font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
+.keypad-keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.keypad-keys .btn { height: 40px; justify-content: center; font-variant-numeric: tabular-nums; }
 .welcome { width: 100%; max-width: 560px; margin: 48px auto 0; }
 .welcome h2 { font-size: 16px; }
 .suggestion-list { display: flex; flex-direction: column; margin-top: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); overflow: hidden; }

@@ -17,6 +17,7 @@ from ..agent import handoff
 from ..agent.runtime import RunOptions, collect, customer_meta
 from ..config import get_settings
 from ..db import get_db, new_session
+from ..governance import script
 from ..flywheel.service import FlywheelError, submit_feedback
 from ..models import Conversation, Feedback, Message, Tenant, User
 from ..security import Principal, get_principal, rate_limiter
@@ -55,9 +56,11 @@ def conversation_out(c: Conversation) -> dict:
             "user_id": c.user_id, "created_at": iso(c.created_at), "updated_at": iso(c.updated_at)}
 
 
-def message_out(m: Message, feedback: Feedback | None = None, staff: bool = True) -> dict:
+def message_out(m: Message, feedback: Feedback | None = None, staff: bool = True, tenant=None) -> dict:
     meta = m.meta or {}
-    return {"id": m.id, "role": m.role, "content": m.content, "run_id": m.run_id,
+    # What the assistant (and the channel itself) said, in the script the tenant's customers read.
+    content = script.display(tenant, m.content) if tenant is not None and m.role in ("assistant", "system") else m.content
+    return {"id": m.id, "role": m.role, "content": content, "run_id": m.run_id,
             "meta": meta if staff else customer_meta(meta),
             "created_at": iso(m.created_at),
             "feedback": {"rating": feedback.rating, "correction": feedback.correction} if feedback else None}
@@ -111,7 +114,7 @@ def list_messages(conversation_id: int, principal: Principal = Depends(get_princ
         ).scalars()
     }
     return {"conversation": conversation_out(conversation), "handoff": handoff.state(db, conversation),
-            "messages": [message_out(m, feedback.get(m.id), principal.is_staff) for m in messages]}
+            "messages": [message_out(m, feedback.get(m.id), principal.is_staff, principal.tenant) for m in messages]}
 
 
 @router.post("/conversations/{conversation_id}/stream")
@@ -124,6 +127,7 @@ def stream_message(conversation_id: int, body: ChatIn, principal: Principal = De
     _load_conversation(db, principal, conversation_id)
     options = _options(principal, body)
     user_id, tenant_id = principal.user.id, principal.tenant.id
+    reader = type("Reader", (), {"locale": principal.tenant.locale})()  # the script, without the session
     # FastAPI closes the request session only after the response, i.e. after the whole stream; the
     # user and conversation lookups left a connection checked out, so every stream held two (N-158).
     db.close()
@@ -139,7 +143,8 @@ def stream_message(conversation_id: int, body: ChatIn, principal: Principal = De
                 runtime = get_services().runtime(session)
                 yield from runtime.start(
                     tenant=session.get(Tenant, tenant_id), user=session.get(User, user_id),
-                    text=body.content, conversation=session.get(Conversation, conversation_id), options=options,
+                    text=script.canonical(reader, body.content), conversation=session.get(Conversation, conversation_id),
+                    options=options,
                 )
             except Exception as exc:  # report instead of silently cutting the stream
                 session.rollback()
@@ -157,7 +162,7 @@ def stream_message(conversation_id: int, body: ChatIn, principal: Principal = De
 
     def events() -> Iterator[str]:
         for event in relay:
-            yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+            yield f"data: {json.dumps(script.event(reader, event), ensure_ascii=False, default=str)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -210,7 +215,7 @@ def chat(body: QuickChatIn, principal: Principal = Depends(get_principal), db: S
             db.add(conversation)
             db.commit()
         summary = collect(get_services().runtime(db).start(
-            tenant=principal.tenant, user=principal.user, text=body.content,
+            tenant=principal.tenant, user=principal.user, text=script.canonical(principal.tenant, body.content),
             conversation=conversation, options=_options(principal, body),
         ))
     finally:
@@ -220,7 +225,7 @@ def chat(body: QuickChatIn, principal: Principal = Depends(get_principal), db: S
         "conversation_id": conversation.id,
         "run_id": final.get("run_id"),
         "message_id": final.get("message_id"),
-        "answer": final.get("text"),
+        "answer": script.display(principal.tenant, final.get("text") or "") or final.get("text"),
         "status": final.get("status"),
         "tools": summary["tool_calls"],
         "approval": summary["approval"],

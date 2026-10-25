@@ -7,7 +7,9 @@
     {"type":"ptt","down"}                    {"type":"say", turn, id, text, sample_rate}
     {"type":"mode","mode"}                   binary: uint16 turn, uint16 sentence, int16 PCM
     {"type":"played", turn, id, ms, done}    {"type":"say_end"|"barge_in"|"turn_end"|"turn_saved", ...}
-    {"type":"stop"}
+    {"type":"stop"}                          {"type":"withdrawn", turn}: the customer went on talking before
+    {"type":"keys", "kind":"order_id"|          the answer was spoken; the merged transcript follows
+     "amount", "digits"}: the keypad         {"type":"prompt", "kind":"disclosure", ...}: the call's first line
 
 The agent events inside {"type":"agent"} are the same ones the SSE chat stream sends.
 """
@@ -144,6 +146,7 @@ async def voice_ws(ws: WebSocket) -> None:
 
     sender = asyncio.create_task(send())
     emit({"type": "ready", "mode": mode, **engines.describe(), "input_sample_rate": 16000})
+    inbox.put_nowait(("control", {"type": "hello"}))  # the AI disclosure, before anything the customer says
     try:
         while True:
             message = await ws.receive()

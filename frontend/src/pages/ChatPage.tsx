@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { demoQuestions, isDemo } from "../demo/replay";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { FlaskConical, History, Mic, MicOff, PencilLine, Plus, Send, ShieldAlert, Square, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { FlaskConical, Grid3x3, History, Mic, MicOff, PencilLine, Plus, Send, ShieldAlert, Square, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { ApiError, api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
 import { CHANNEL_TEXT, CUSTOMER_GREETING, Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
@@ -265,6 +265,9 @@ export default function ChatPage() {
   const [hearing, setHearing] = useState(false);
   const [talking, setTalking] = useState(false);
   const [partial, setPartial] = useState("");
+  // The keypad fallback: order numbers and amounts typed when speech keeps getting them wrong.
+  const [keypad, setKeypad] = useState(false);
+  const [keyed, setKeyed] = useState("");
   const voiceRef = useRef<VoiceClient | null>(null);
   const voiceRun = useRef<LiveRun | null>(null);
   const pressed = useRef(false);
@@ -751,8 +754,28 @@ export default function ChatPage() {
                   : `连续对话（停顿 ${voiceConfig?.end_silence_ms ?? 600}ms 自动结束一句）`}
               </label>
               <span className="spacer" />
+              <button className="btn btn-sm" aria-expanded={keypad} onClick={() => setKeypad((v) => !v)}
+                title="订单号或金额总听错时，用按键输入"><Grid3x3 size={14} /> 按键输入</button>
               {talking && <button className="btn btn-sm" onClick={() => voiceRef.current?.stop()}><Square size={13} /> 停止播报</button>}
               <button className="btn btn-sm" onClick={stopVoice}><MicOff size={14} /> 退出语音</button>
+            </div>
+          )}
+          {voice !== "off" && keypad && (
+            <div className="keypad" role="group" aria-label="按键输入">
+              <input className="input keypad-display" aria-label="按键输入的数字" inputMode="decimal" value={keyed}
+                placeholder="订单号 11 位数字，或金额" onChange={(e) => setKeyed(e.target.value.replace(/[^\d.]/g, "").slice(0, 13))} />
+              <div className="keypad-keys">
+                {["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0"].map((k) => (
+                  <button key={k} className="btn" onClick={() => setKeyed((v) => (v + k).slice(0, 13))}>{k}</button>
+                ))}
+                <button className="btn" aria-label="删除一位" onClick={() => setKeyed((v) => v.slice(0, -1))}>⌫</button>
+              </div>
+              <div className="row">
+                <button className="btn btn-primary btn-sm" disabled={voice !== "on" || !/^20\d{9}$/.test(keyed)}
+                  onClick={() => { voiceRef.current?.keys("order_id", keyed); setKeyed(""); }}>发送订单号 SO{keyed}</button>
+                <button className="btn btn-sm" disabled={voice !== "on" || !/^\d{1,7}(\.\d{1,2})?$/.test(keyed)}
+                  onClick={() => { voiceRef.current?.keys("amount", keyed); setKeyed(""); }}>发送金额 {keyed || "…"} 元</button>
+              </div>
             </div>
           )}
           {voice !== "off" && partial && <div className="voice-partial small muted" aria-live="polite">{partial}</div>}

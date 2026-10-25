@@ -115,7 +115,8 @@ def test_money_tools_need_a_confirmation_each_time(monkeypatch):
 
 # ---------------------------------------------------------------- over the WebSocket
 @pytest.fixture()
-def voice(client, login):
+def voice(client, login, settings):
+    settings.voice_disclosure = False  # the call's opening line has its own tests (test_voice_locale_keys.py)
     asr = ScriptedASR()
     set_engines(VoiceEngines(asr, ToneTTS(ms_per_char=20)))
     headers = login("customer@echo.demo")

@@ -325,7 +325,7 @@ test("a refund the payment system never answered: the admin checks it and settle
   await expect(entry).toContainText("支付后台查到已原路退回");
 });
 
-test("Echo音乐 by voice: push to talk, the answer is spoken and kept in the conversation", async ({ browser }) => {
+test("Echo音乐 by voice: the disclosure, push to talk, the keypad; answers spoken and kept", async ({ browser }) => {
   // Test engines (see playwright.config.ts): the microphone is a tone, the ASR returns a fixed
   // transcript, the TTS plays a tone. What is exercised is the real channel: the WebSocket,
   // push-to-talk, the agent run, playback and the played-position reports.
@@ -343,6 +343,15 @@ test("Echo音乐 by voice: push to talk, the answer is spoken and kept in the co
   // buttons, the live bubble does not.
   const saved = lily.locator(".msg.assistant").filter({ hasText: "管理自动续费" }).getByRole("button", { name: "有帮助" });
   await expect(saved).toBeVisible({ timeout: 40_000 });
+  // The call opened with the AI disclosure, kept in the conversation (cut where the customer talked over it).
+  await expect(lily.locator(".msg-system").filter({ hasText: "您好，我是" })).toBeVisible();
+  // The keypad: an order number typed instead of said goes to the agent as is, without a read-back.
+  await lily.getByRole("button", { name: "按键输入" }).click();
+  for (const key of "20261019101") await lily.getByRole("group", { name: "按键输入" }).getByRole("button", { name: key, exact: true }).click();
+  await lily.getByRole("button", { name: "发送订单号 SO20261019101" }).click();
+  await expect(lily.locator(".msg.user .bubble-text").filter({ hasText: "订单号SO20261019101" })).toBeVisible();
+  await expect(lily.locator(".msg.assistant").filter({ hasText: "SO20261019101" }).getByRole("button", { name: "有帮助" }))
+    .toBeVisible({ timeout: 40_000 });
   await lily.getByRole("button", { name: "退出语音" }).click();
   await expect(lily.getByRole("button", { name: "语音", exact: true })).toBeVisible();
 });
