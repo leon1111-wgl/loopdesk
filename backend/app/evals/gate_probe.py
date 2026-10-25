@@ -98,6 +98,64 @@ def calibrate(inside: list[list[dict]], outside: list[list[dict]], min_relevance
     }
 
 
+def calibrate_constrained(inside: list[list[dict]], outside: list[list[dict]], min_relevance: float,
+                          floor: bool = True) -> dict:
+    """Round 2 of the calibration (W5), for a larger pool of questions already measured: search the
+    thresholds that let the most in-scope questions through while refusing at least as many
+    out-of-scope ones as the lexical gate does on the same pool. Ties go to the stricter setting.
+    With rerank scores: min_rerank and (``floor``) rerank_floor; without: min_cosine.
+
+    A question passes when its best chunk passes (passes_gate), so per question only the best
+    semantic score and the best rerank score among coverage-passing chunks matter."""
+    has_rerank = any(c.get("rerank") is not None for q in inside + outside for c in q)
+    key = "rerank" if has_rerank else "cosine"
+
+    def summary(q):
+        lexical = [c for c in q if c["coverage"] >= min_relevance]
+        best = max((c.get(key) or 0.0 for c in q), default=0.0)
+        if not lexical:
+            return best, None
+        if has_rerank and any(c.get("rerank") is None for c in lexical):  # outside the rerank window: no veto
+            return best, float("inf")
+        return best, max((c.get("rerank") or 0.0) for c in lexical) if has_rerank else float("inf")
+
+    ins, outs = [summary(q) for q in inside], [summary(q) for q in outside]
+
+    def passes(s, alone, veto):
+        best, lexical = s
+        return (alone is not None and best >= alone) or (lexical is not None and (veto is None or lexical >= veto))
+
+    base_in = sum(passes(s, None, None) for s in ins)
+    base_refused = sum(not passes(s, None, None) for s in outs)
+    values = sorted({round(s[0], 4) for s in ins + outs})
+    floors = [None] + (sorted({round(s[1], 4) for s in ins + outs if s[1] not in (None, float("inf"))})
+                       if has_rerank and floor else [])
+    best_key, chosen = None, (None, None)
+    for alone in [None] + values:
+        for veto in floors:
+            if veto is not None and alone is not None and veto > alone:
+                continue
+            refused = sum(not passes(s, alone, veto) for s in outs)
+            if refused < base_refused:
+                continue
+            admitted = sum(passes(s, alone, veto) for s in ins)
+            rank = (admitted, refused, 2.0 if alone is None else alone, -(veto or 0.0))
+            if best_key is None or rank > best_key:
+                best_key, chosen = rank, (alone, veto)
+    alone, veto = chosen
+    admitted = sum(passes(s, alone, veto) for s in ins)
+    refused = sum(not passes(s, alone, veto) for s in outs)
+    return {
+        "split": "pool", "rule": "constrained",
+        "min_cosine": None if has_rerank else alone, "min_rerank": alone if has_rerank else None,
+        "rerank_floor": veto,
+        "pool": {"in_scope": len(ins), "out_of_scope": len(outs),
+                 "in_scope_passing": f"{admitted}/{len(ins)}", "out_of_scope_refused": f"{refused}/{len(outs)}",
+                 "lexical": {"in_scope_passing": f"{base_in}/{len(ins)}",
+                             "out_of_scope_refused": f"{base_refused}/{len(outs)}"}},
+    }
+
+
 def candidates(db, tenant_id: int, question: str, embedder, reranker=None, rerank_candidates: int = 20,
                index_questions: bool = True) -> list[dict]:
     """Every candidate the search would weigh, with its scores and no gate applied."""

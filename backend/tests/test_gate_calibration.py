@@ -61,3 +61,35 @@ def test_no_reranker_means_no_rerank_thresholds():
     result = calibrate(inside, outside, min_relevance=0.3)
     assert result["min_rerank"] is None and result["rerank_floor"] is None
     assert result["min_cosine"] == pytest.approx(0.62)
+
+
+def test_the_constrained_search_lets_in_the_most_without_refusing_less_than_the_lexical_gate():
+    """Round 2: the margin rule on 10 dev out-of-scope questions set min_rerank at 0.0985, and blind
+    out-of-scope questions got through at 0.19-0.38. With more questions to calibrate on, the
+    thresholds are searched: as many in-scope passes as possible, as many refusals as the lexical
+    gate has on the same questions."""
+    from app.evals.gate_probe import calibrate_constrained
+
+    inside = [_q((0.9, 0.0, 0.95)), _q((0.1, 0.0, 0.80)), _q((0.1, 0.0, 0.30)), _q((0.5, 0.0, 0.02))]
+    outside = [_q((0.0, 0.0, 0.35)), _q((0.6, 0.0, 0.01)), _q((0.0, 0.0, 0.10))]
+    result = calibrate_constrained(inside, outside, min_relevance=0.3)
+    # Lexical: 2 of 4 in, 2 of 3 out refused. min_rerank 0.30 lets every in-scope question in; it
+    # also lets the 0.35 out-of-scope one in, which the floor pays back by vetoing the 0.6-coverage
+    # out-of-scope chunk the reranker scores 0.01 (the in-scope 0.02 one survives it).
+    assert (result["min_rerank"], result["rerank_floor"]) == (0.3, 0.02)
+    assert result["pool"]["in_scope_passing"] == "4/4" and result["pool"]["out_of_scope_refused"] == "2/3"
+    assert result["pool"]["lexical"] == {"in_scope_passing": "2/4", "out_of_scope_refused": "2/3"}
+    # Without a veto, the only way to keep two refusals is to keep both 0.35 and 0.10 out.
+    no_floor = calibrate_constrained(inside, outside, min_relevance=0.3, floor=False)
+    assert (no_floor["min_rerank"], no_floor["rerank_floor"]) == (0.8, None)
+    assert no_floor["pool"]["in_scope_passing"] == "3/4" and no_floor["pool"]["out_of_scope_refused"] == "2/3"
+
+
+def test_the_constrained_search_calibrates_the_cosine_without_a_reranker():
+    from app.evals.gate_probe import calibrate_constrained
+
+    inside = [_q((0.9, 0.7, None)), _q((0.0, 0.8, None)), _q((0.0, 0.6, None))]
+    outside = [_q((0.0, 0.65, None)), _q((0.0, 0.5, None))]
+    result = calibrate_constrained(inside, outside, min_relevance=0.3)
+    assert result["min_cosine"] == 0.8 and result["min_rerank"] is None
+    assert result["pool"]["in_scope_passing"] == "2/3" and result["pool"]["out_of_scope_refused"] == "2/2"

@@ -116,7 +116,7 @@ def latency_bench(db, questions: list[tuple[int, str]], embedder: Timed, reranke
             "rerank_passages_mean": round(statistics.fmean(passages), 1) if passages else None}
 
 
-def rerank_scaling(reranker: Timed, pairs: list[tuple[str, list[str]]], sizes=(5, 10, 20)) -> dict:
+def rerank_scaling(reranker: Timed, pairs: list[tuple[str, list[str]]], sizes=(1, 5, 10)) -> dict:
     """Cross-encoder time by the number of candidates it reads (the cost knob rerank_candidates)."""
     out = {}
     reranker.memo = False
@@ -203,16 +203,20 @@ def _publish_all(db, tenants, data: dict | None) -> dict[str, int]:
 
 def run_config(name: str, tenants: list[str] | None = None, suites: bool = True, probes: bool = True,
                questions_file: Path | None = None, embedder_factory=None, reranker_factory=None,
-               latency_questions: int = 30) -> dict:
+               latency_questions: int = 30, calibrate_on: str = "dev", blind_file: Path | None = None,
+               pool_blind_file: Path | None = None) -> dict:
+    """``calibrate_on``: "dev" (round 1, margins on the probe's dev split) or "pool" (round 2, the
+    constrained search on every question measured before: the whole probe set and ``pool_blind_file``);
+    the blind set measured is ``blind_file``, which must not be in the pool."""
     from ..config import Settings
     from ..db import create_all, init_engine, new_session
-    from ..models import Chunk, EvalCase, Tenant
+    from ..models import Chunk, EvalCase, EvalResult, Tenant
     from ..rag.embeddings import build_embedder
     from ..rag.rerank import build_reranker
     from ..rag.retrieval import gate_options, index_manager
     from ..seed import seed_demo
     from ..services import Services, set_services
-    from .gate_probe import calibrate, candidates, load_probe, probe
+    from .gate_probe import calibrate, calibrate_constrained, candidates, load_probe, probe
     from .paraphrase import measure_on
     from .runner import run_suite
 
@@ -249,6 +253,7 @@ def run_config(name: str, tenants: list[str] | None = None, suites: bool = True,
     if reranker is not None:
         reranker.inner.score("预热", ["预热"])
     result["model_load_seconds"] = round(time.perf_counter() - warm, 2)
+    result["environment"] = _environment()  # after loading: the thread count the models run with
 
     with new_session() as db:
         started = time.perf_counter()
@@ -278,11 +283,25 @@ def run_config(name: str, tenants: list[str] | None = None, suites: bool = True,
         result["calibration"] = None
         leon = next((t for t in all_tenants if t.slug == "leon"), None)
         if spec["semantic"] and leon is not None:
-            dev = load_probe("leon", "dev")
+            # (tenant id, question) per side: the probe's dev split, or the whole pool measured before.
+            pool = {"in_scope": [], "out_of_scope": []}
+            probe_set = load_probe("leon", "dev" if calibrate_on == "dev" else None)
+            for k in pool:
+                pool[k] += [(leon.id, q) for q in probe_set[k]]
+            if calibrate_on == "pool":
+                seen = json.loads(Path(pool_blind_file or BLIND_FILE).read_text(encoding="utf-8"))["tenants"]
+                for t in all_tenants:
+                    if t.slug in seen:
+                        pool["in_scope"] += [(t.id, q["q"]) for q in seen[t.slug]["in_scope"]]
+                        pool["out_of_scope"] += [(t.id, q) for q in seen[t.slug]["out_of_scope"]]
             before = len(log.get("rerank", []))
-            scores = {k: [candidates(db, leon.id, q, services.embedder, reranker, settings.rerank_candidates,
-                                     settings.index_questions) for q in dev[k]] for k in ("in_scope", "out_of_scope")}
-            calibration = calibrate(scores["in_scope"], scores["out_of_scope"], settings.min_relevance)
+            scores = {k: [candidates(db, tid, q, services.embedder, reranker, settings.rerank_candidates,
+                                     settings.index_questions) for tid, q in pool[k]] for k in pool}
+            if calibrate_on == "pool":
+                calibration = calibrate_constrained(scores["in_scope"], scores["out_of_scope"], settings.min_relevance,
+                                                    floor=spec["floor"])
+            else:
+                calibration = calibrate(scores["in_scope"], scores["out_of_scope"], settings.min_relevance)
             calibration["queries"] = len(log.get("rerank", [])) - before
             result["calibration"] = calibration
             if spec["rerank"]:  # two signals: coverage OR the cross-encoder; the cosine only recalls
@@ -296,7 +315,12 @@ def run_config(name: str, tenants: list[str] | None = None, suites: bool = True,
         log.pop("embed_query", None)
         log.pop("rerank", None)
 
-        blind = json.loads(BLIND_FILE.read_text(encoding="utf-8"))["tenants"] if BLIND_FILE.exists() else {}
+        blind_path = Path(blind_file or BLIND_FILE)
+        if calibrate_on == "pool" and blind_path.resolve() == Path(pool_blind_file or BLIND_FILE).resolve():
+            raise SystemExit("the blind set measured must not be the one the thresholds were calibrated on")
+        result["blind_file"] = blind_path.name
+        result["calibrate_on"] = calibrate_on
+        blind = json.loads(blind_path.read_text(encoding="utf-8"))["tenants"] if blind_path.exists() else {}
         if probes:
             if leon is not None and (not tenants or "leon" in tenants):
                 result["probe"] = {}
@@ -331,23 +355,28 @@ def run_config(name: str, tenants: list[str] | None = None, suites: bool = True,
                         continue
                     run = run_suite(db, services, tenant, suite, triggered_by=f"retrieval:{name}")
                     m = run.metrics
+                    failed = [r.case_key for r in db.execute(select(EvalResult).where(
+                        EvalResult.eval_run_id == run.id, EvalResult.passed.is_(False))).scalars()]
                     into[tenant.slug] = {"passed": run.passed, "total": run.total, "pass_rate": m["pass_rate"],
                                          "hit_at_1": m.get("retrieval_hit_at_1"), "mrr": m.get("retrieval_mrr"),
                                          "refusal": m["checks"].get("refusal"), "latency_p50_ms": m["latency_p50_ms"],
-                                         "latency_p95_ms": m["latency_p95_ms"]}
+                                         "latency_p95_ms": m["latency_p95_ms"], "failed": failed}
     index_manager.clear()
     return result
 
 
 def run(configs: list[str], tenants: list[str] | None = None, suites: bool = True, probes: bool = True,
-        questions_file: Path | None = None, embedder_factory=None, reranker_factory=None) -> dict:
+        questions_file: Path | None = None, embedder_factory=None, reranker_factory=None,
+        calibrate_on: str = "dev", blind_file: Path | None = None, pool_blind_file: Path | None = None) -> dict:
     unknown = [c for c in configs if c not in CONFIGS]
     if unknown:
         raise ValueError(f"unknown configuration(s) {unknown}; known: {list(CONFIGS)}")
     report = {"environment": _environment(), "configs": {}}
     for name in configs:
         report["configs"][name] = run_config(name, tenants, suites, probes, questions_file, embedder_factory,
-                                             reranker_factory)
+                                             reranker_factory, calibrate_on=calibrate_on, blind_file=blind_file,
+                                             pool_blind_file=pool_blind_file)
+        report["environment"] = report["configs"][name].get("environment") or report["environment"]
     return report
 
 
@@ -389,6 +418,8 @@ def summary(report: dict) -> str:
         lat = c.get("latency_ms") or {}
         s = c.get("settings") or {}
         thresholds = ", ".join(f"{k}={s[k]}" for k in ("min_cosine", "min_rerank", "rerank_floor") if s.get(k) is not None)
+        if c.get("calibration"):
+            thresholds += f" ({c.get('calibrate_on', 'dev')})"
         rows.append("| " + " | ".join([
             name,
             f"{dev.get('in_scope', '—')} / {dev.get('out_of_scope', '—')}",
@@ -397,7 +428,8 @@ def summary(report: dict) -> str:
             f"{_sum([b['in_scope']['answered'] for b in blind.values()])} / {_sum([b['out_of_scope_refused'] for b in blind.values()])}",
             f"{para.get('answered', '—')} ({para.get('recall_at_4', '—')})",
             ", ".join(f"{k} {v['passed']}/{v['total']}" for k, v in hard.items()) or "—",
-            ", ".join(f"{k} {v['passed']}/{v['total']}" for k, v in gates.items()) or "—",
+            ", ".join(f"{k} {v['passed']}/{v['total']}" + (f" (failed {', '.join(v['failed'])})" if v.get("failed") else "")
+                      for k, v in gates.items()) or "—",
             f"{lat.get('search', {}).get('p50', '—')} / {lat.get('search', {}).get('p95', '—')}",
             str(lat.get("rerank", {}).get("p50", "—")),
             thresholds or "—",
@@ -428,6 +460,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tenants", help="comma-separated slugs (default: every seeded tenant)")
     parser.add_argument("--questions", help=f"index questions file (default: {QUESTIONS_FILE.name})")
     parser.add_argument("--no-suites", action="store_true", help="skip the eval gates and the hard suite")
+    parser.add_argument("--calibrate-on", choices=("dev", "pool"), default="dev",
+                        help="dev: margins on the probe's dev split (round 1); pool: constrained search on the "
+                             "whole probe set and --pool-blind (round 2)")
+    parser.add_argument("--blind", help=f"blind probe set to measure (default {BLIND_FILE.name})")
+    parser.add_argument("--pool-blind", help="with --calibrate-on pool: the blind set measured before")
     parser.add_argument("--merge", nargs="+", help="combine reports of separate runs (one per configuration)")
     parser.add_argument("--report")
     parser.add_argument("--summary")
@@ -443,7 +480,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         report = run([c.strip() for c in args.configs.split(",") if c.strip()],
                      tenants=[t.strip() for t in args.tenants.split(",")] if args.tenants else None,
-                     suites=not args.no_suites, questions_file=Path(args.questions) if args.questions else None)
+                     suites=not args.no_suites, questions_file=Path(args.questions) if args.questions else None,
+                     calibrate_on=args.calibrate_on, blind_file=Path(args.blind) if args.blind else None,
+                     pool_blind_file=Path(args.pool_blind) if args.pool_blind else None)
     text = summary(report)
     print(text)
     if args.report:

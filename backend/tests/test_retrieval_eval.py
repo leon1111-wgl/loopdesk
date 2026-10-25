@@ -78,3 +78,24 @@ def test_the_summary_is_a_table_per_metric():
     report = retrieval_eval.run(["lexical"], tenants=["leon"], suites=False)
     summary = retrieval_eval.summary(report)
     assert "| lexical |" in summary and "33/33" in summary and "27/36" in summary
+
+
+def test_round_two_calibrates_on_everything_seen_and_measures_a_fresh_blind_set(tmp_path):
+    import pytest
+
+    fresh = {"tenants": {"leon": {"in_scope": [{"q": "退款啥时候到", "section": "退款到账时间"}],
+                                  "out_of_scope": ["你们周末发货吗"]}}}
+    path = tmp_path / "blind_v2.json"
+    path.write_text(json.dumps(fresh, ensure_ascii=False))
+    reranker = Recording()
+    report = retrieval_eval.run(["rerank+floor"], tenants=["leon"], suites=False, calibrate_on="pool",
+                                blind_file=path, reranker_factory=lambda settings: reranker)
+    config = report["configs"]["rerank+floor"]
+    assert config["calibration"]["rule"] == "constrained" and config["calibrate_on"] == "pool"
+    seen = set(reranker.queries[1:1 + config["calibration"]["queries"]])
+    assert "退款啥时候到" not in seen and "你们周末发货吗" not in seen, "the fresh set stays out of the pool"
+    assert set(load_probe("leon", "heldout")["in_scope"]) <= seen, "round 2 pools the whole probe set"
+    assert config["blind"]["leon"]["in_scope"]["total"] == 1 and config["blind_file"] == "blind_v2.json"
+    with pytest.raises(SystemExit):
+        retrieval_eval.run(["rerank+floor"], tenants=["leon"], suites=False, calibrate_on="pool",
+                           reranker_factory=lambda settings: Recording())

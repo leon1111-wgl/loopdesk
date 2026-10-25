@@ -22,6 +22,18 @@ on:
         description: "eval: configurations, comma-separated"
         default: "lexical,lexical+questions,embed,rerank,rerank+floor,full"
         required: false
+      calibrate_on:
+        description: "eval: dev (round 1: margins on the probe's dev split) or pool (round 2: search on the probe set + pool_blind)"
+        default: dev
+        required: false
+      blind:
+        description: "eval: the blind probe set to measure (backend/evals/...)"
+        default: gate_probe_blind.json
+        required: false
+      pool_blind:
+        description: "eval, calibrate_on=pool: the blind set already measured, now part of the pool"
+        default: gate_probe_blind.json
+        required: false
 
 permissions:
   contents: read
@@ -128,7 +140,8 @@ jobs:
       - name: Measure
         run: |
           lscpu | grep -E 'Model name|^CPU\(s\)' || true
-          python -m app.evals.retrieval_eval --configs "${{ matrix.config }}" \
+          python -m app.evals.retrieval_eval --configs "${{ matrix.config }}" --calibrate-on "${{ inputs.calibrate_on }}" \
+            --blind "evals/${{ inputs.blind }}" --pool-blind "evals/${{ inputs.pool_blind }}" \
             --report "../out/report-${{ matrix.config }}.json" --summary "../out/summary-${{ matrix.config }}.md"
       - uses: actions/upload-artifact@v4
         with: {name: "report-${{ matrix.config }}", path: out}

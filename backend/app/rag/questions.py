@@ -241,6 +241,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - CLI around
         tenants = db.execute(query).scalars().all()
         if args.export:
             out = {"tenants": [export_questions(db, t, stale_only=args.stale) for t in tenants]}
+            Path(args.export).parent.mkdir(parents=True, exist_ok=True)
             Path(args.export).write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
             print(f"wrote {sum(len(i['questions']) for t in out['tenants'] for d in t['documents'] for i in d['items'])} "
                   f"questions to {args.export}")
