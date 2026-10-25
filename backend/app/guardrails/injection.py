@@ -12,8 +12,9 @@ Three places use this:
 - answers (``unsafe_answer``): what the customer is about to read is checked again, and any link
   or contact outside the tenant's official channels stops the answer.
 
-Matching runs on normalised text (NFKC, lower case, no whitespace or invisible characters), so
-"忽 略 之 前", full-width letters and zero-width joiners match like plain text. Links are read
+Matching runs on normalised text (NFKC, lower case, no whitespace or invisible characters,
+traditional characters folded to simplified), so "忽 略 之 前", full-width letters, zero-width
+joiners and the same words in traditional script match like plain text (``hant.py``). Links are read
 from the text before whitespace is removed, so their boundaries survive.
 
 These are rules: a second-model review and a blind set written by a model that never saw them
@@ -28,17 +29,20 @@ import unicodedata
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from .hant import fold
+
 
 def normalize(text: str) -> str:
     """NFKC (full-width letters, digits and punctuation become ASCII), lower case, and no
-    whitespace or invisible format characters (zero-width spaces and joiners, BOM, bidi marks)."""
+    whitespace or invisible format characters (zero-width spaces and joiners, BOM, bidi marks), and
+    traditional characters folded onto the simplified ones the rules are written in."""
     folded = unicodedata.normalize("NFKC", text).lower()
-    return "".join(ch for ch in folded if not ch.isspace() and unicodedata.category(ch) != "Cf")
+    return fold("".join(ch for ch in folded if not ch.isspace() and unicodedata.category(ch) != "Cf"))
 
 
 def _folded(text: str) -> str:
     """Like ``normalize`` but keeping whitespace, which ends a link."""
-    folded = unicodedata.normalize("NFKC", text).lower()
+    folded = fold(unicodedata.normalize("NFKC", text).lower())
     return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
 
 
@@ -245,9 +249,9 @@ _CITATION = re.compile(r"\[\d+(?:[,，]\d+)*\]")
 
 # Instructions addressed to the support agent. In an internal handbook they are its purpose; in a
 # customer-facing policy they are out of place ("客服应告知顾客：请添加微信……"), so public only.
-# "联系客服请说明订单号" addresses the customer: 客服 is the object there, and 说明 is "explain".
+# "联系客服请说明订单号" (or "联络客服…") addresses the customer: 客服 is the object there, and 说明 is "explain".
 _AGENT_DIRECTIVE = re.compile(
-    r"(?<![联系咨询致电拨打找问向给])(?:客服|坐席|售后专员|售后客服|专员|机器人|智能客服|助手)(?:人员)?"
+    r"(?<![联系络咨询致电拨打找问向给])(?:客服|坐席|售后专员|售后客服|专员|机器人|智能客服|助手)(?:人员)?"
     r"(?:应|应该|应当|须|需|需要|必须|务必|要|请|一律|统一|只能|只需|直接){1,2}(?:告知|告诉|回答|回复|答复|引导|转告|说(?!明))"
     r"|(?:一律|统一|始终|总是)(?:回答|回复|答复|告知|告诉|说(?!明))")
 
