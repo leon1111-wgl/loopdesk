@@ -187,6 +187,12 @@ class _StreamGate:
         return ready
 
 
+class RunWithdrawn(Exception):
+    """Thrown into a run's event stream by a caller that no longer wants the answer, before the run has
+    changed anything (the voice channel: the customer went on talking before the answer was spoken).
+    The run ends as "withdrawn", not "failed"."""
+
+
 class AgentRuntime:
     def __init__(self, db: Session, settings: Settings, provider: LLMProvider, embedder: Embedder,
                  registry: ToolRegistry, breaker: CircuitBreaker | None = None, commerce: Commerce | None = None,
@@ -437,8 +443,17 @@ class AgentRuntime:
 
     def _mark_failed(self, run: Run, exc: BaseException, tracer: Tracer | None = None) -> None:
         """Record an unexpected crash on the run so it never stays "running". GeneratorExit
-        is not a crash: whoever read the events stopped before the run ended."""
+        is not a crash: whoever read the events stopped before the run ended. Neither is
+        RunWithdrawn: the caller took the request back (voice: the customer went on talking)."""
         self.db.rollback()  # also reloads the run as it was last saved
+        if isinstance(exc, RunWithdrawn):
+            if tracer is not None:
+                tracer.flush()
+            run.status, run.error = "withdrawn", None
+            run.finished_at = datetime.now(timezone.utc)
+            self.db.commit()
+            telemetry.export_run(self.db, run, self.settings)
+            return
         if isinstance(exc, GeneratorExit):
             if run.status != "running":  # saved as ended or paused already; only "final"/"done" went unread
                 return

@@ -253,6 +253,13 @@ class Settings:
     # Punctuation on the final transcript for engines that write none (Paraformer): FunASR ct-punc.
     voice_punc: bool = False
     voice_end_silence_ms: int = 600  # trailing silence that ends an utterance (continuous mode)
+    # Semantic endpointing (voice/turn.py): silence only, the text rule, or Smart Turn v3 plus the rule.
+    # At voice_turn_probe_ms of silence the detector is asked; "not finished" waits up to max_wait_ms.
+    voice_endpointing: str = "silence"  # silence | rules | smart_turn
+    voice_turn_probe_ms: int = 250
+    voice_turn_max_wait_ms: int = 2000
+    voice_turn_threshold: float = 0.5  # Smart Turn's P(complete) at or above which the turn ends
+    voice_smart_turn_path: str | None = None  # a local ONNX file; unset: the pinned file from Hugging Face
     voice_barge_in_ms: int = 240  # speech this long while the agent talks stops it
     voice_readback_threshold: float = 0.6  # an order number or amount below this is read back first
     voice_max_utterance_seconds: float = 20.0
@@ -381,6 +388,11 @@ class Settings:
         s.voice_hotwords = _env_bool("VOICE_HOTWORDS", s.voice_hotwords)
         s.voice_punc = _env_bool("VOICE_PUNC", s.voice_punc)
         s.voice_end_silence_ms = _env_int("VOICE_END_SILENCE_MS", s.voice_end_silence_ms)
+        s.voice_endpointing = _env("VOICE_ENDPOINTING", s.voice_endpointing)
+        s.voice_turn_probe_ms = _env_int("VOICE_TURN_PROBE_MS", s.voice_turn_probe_ms)
+        s.voice_turn_max_wait_ms = _env_int("VOICE_TURN_MAX_WAIT_MS", s.voice_turn_max_wait_ms)
+        s.voice_turn_threshold = _env_float("VOICE_TURN_THRESHOLD", s.voice_turn_threshold)
+        s.voice_smart_turn_path = _env("VOICE_SMART_TURN_PATH") or None
         s.voice_barge_in_ms = _env_int("VOICE_BARGE_IN_MS", s.voice_barge_in_ms)
         s.voice_readback_threshold = _env_float("VOICE_READBACK_THRESHOLD", s.voice_readback_threshold)
         s.voice_max_utterance_seconds = _env_float("VOICE_MAX_UTTERANCE_SECONDS", s.voice_max_utterance_seconds)

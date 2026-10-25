@@ -484,8 +484,11 @@ def test_a_slow_answer_does_not_cut_the_customer_off(voice, monkeypatch):
         for _ in range(40):  # the browser keeps streaming: 40 frames in 0.4 s, ten times real time
             ws.send_bytes(silence(0.1).tobytes())
             time.sleep(0.01)
-        until_open(ws, "turn_saved")
-        until_open(ws, "turn_saved")
+        # Nothing of the first answer was spoken yet: it is taken back and both go to the agent as one
+        # request (test_voice_turn.py); the slow run never stops the worker reading audio.
+        events = until_open(ws, "turn_saved")
+    assert any(e["type"] == "withdrawn" for e in events)
+    assert next(e for e in events if e["type"] == "transcript" and e["merged"])["text"] == "怎么取消自动续费会员退款多久能到账"
 
 
 def test_saying_yes_right_after_the_amount_confirms(voice):
@@ -595,10 +598,26 @@ def test_a_newer_utterance_interrupts_the_answer_before_it(voice, monkeypatch):
     monkeypatch.setattr(get_services().provider, "stream_delay", 0.1)
     voice.asr.transcripts += ["怎么取消自动续费", "会员退款多久能到账", "学生开会员有优惠吗"]
     with voice.connect() as ws:
-        say(ws)
-        say(ws)
-        say(ws)
+        # Each question once the answer before it has started playing (before that, it would be merged
+        # into the earlier question instead: test_voice_turn.py).
         events = []
+
+        def started(turn):  # read up to the answer's first sentence, acknowledging all but the second answer
+            while True:
+                read = until(ws, "say", play=False, stop_at="say_end")
+                events.extend(read)
+                event = read[-1]
+                if event["type"] == "say_end" and event["turn"] != 2:
+                    ws.send_json({"type": "played", "turn": event["turn"], "id": event["id"], "done": True,
+                                  "ms": event["samples"] / 16})
+                if event["type"] == "say" and event["turn"] == turn:
+                    return
+
+        say(ws)
+        started(1)
+        say(ws)
+        started(2)
+        say(ws)
         while sum(e["type"] == "turn_saved" for e in events) < 3:
             # The client never reports the second answer as played: it is still playing when the third
             # question is taken up (acknowledging it could let it finish first, then nothing supersedes it).

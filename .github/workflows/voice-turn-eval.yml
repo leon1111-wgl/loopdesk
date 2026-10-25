@@ -1,0 +1,129 @@
+name: Voice eval, turn-taking (semantic endpointing)
+
+# When is the customer done talking? Silence thresholds, the text rule (digits, connectives) and Smart
+# Turn v3 (pipecat-ai/smart-turn, BSD-2-Clause, int8 ONNX) replayed through the production Endpointer
+# on real pauses: AISHELL-1 dev speakers (the tuning set), AISHELL-1 test speakers and FLEURS cmn (held
+# out), and the synthetic set of an earlier voice-eval run, clean and with babble. Models run here only.
+# The report artifact has the tables, the truncation-vs-wait curves and every row (turn_report.py
+# re-scores them anywhere, without models).
+
+on:
+  workflow_dispatch:
+    inputs:
+      aishell_dev:
+        description: "AISHELL-1 dev utterances (tuning)"
+        default: "600"
+        required: false
+      aishell_test:
+        description: "AISHELL-1 test utterances (held out; the same fixed sample as voice-public-eval)"
+        default: "600"
+        required: false
+      fleurs:
+        description: "FLEURS cmn test utterances (held out)"
+        default: "300"
+        required: false
+      synth_run:
+        description: "voice-eval run whose synthetic audio (synth-kokoro, synth-say) is reused; empty: none"
+        default: "39475750196"
+        required: false
+
+permissions:
+  contents: read
+  actions: read  # the synthetic audio is an artifact of an earlier run
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  TORCH_CPU: https://download.pytorch.org/whl/cpu
+
+jobs:
+  prepare:
+    name: Prepare ${{ matrix.corpus }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus: [aishell1-dev, aishell1, fleurs]
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt huggingface_hub
+      - if: matrix.corpus != 'fleurs'
+        run: |
+          n=${{ matrix.corpus == 'aishell1-dev' && inputs.aishell_dev || inputs.aishell_test }}
+          python -m app.evals.voice.public_set --corpus ${{ matrix.corpus }} --download --src /tmp/aishell --n $n --out ../out/synth-${{ matrix.corpus }}
+      - if: matrix.corpus == 'fleurs'
+        run: |
+          python -c "from huggingface_hub import hf_hub_download as get; [get('google/fleurs', f, repo_type='dataset', local_dir='/tmp/fleurs') for f in ('data/cmn_hans_cn/test.tsv', 'data/cmn_hans_cn/audio/test.tar.gz')]"
+          python -m app.evals.voice.public_set --corpus fleurs --src /tmp/fleurs/data/cmn_hans_cn --n ${{ inputs.fleurs }} --out ../out/synth-fleurs
+      - uses: actions/upload-artifact@v4
+        with: {name: "synth-${{ matrix.corpus }}", path: "out/synth-${{ matrix.corpus }}", retention-days: 7}
+
+  parity:
+    name: Smart Turn features vs the reference extractor
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt onnxruntime huggingface_hub transformers  # no torch: the extractor's numpy path
+      - uses: actions/download-artifact@v4
+        with: {pattern: "synth-*", path: out}
+      - run: python -m app.evals.voice.turn_parity --synth ../out/synth-* --n 60 --out ../out/parity/parity.json
+      - uses: actions/upload-artifact@v4
+        with: {name: turn-parity, path: out/parity}
+
+  sweep:
+    name: Sweep ${{ matrix.shard }}/8
+    needs: prepare
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install torch torchaudio --index-url $TORCH_CPU && pip install -r requirements.txt "funasr==1.4.16" "modelscope>=1.20" "silero-vad>=6.0" "onnxruntime>=1.18" huggingface_hub
+      - uses: actions/download-artifact@v4
+        with: {pattern: "synth-*", path: out}
+      - if: inputs.synth_run != ''
+        uses: actions/download-artifact@v4
+        with: {pattern: "synth-*", path: out, run-id: "${{ inputs.synth_run }}", github-token: "${{ github.token }}"}
+      - uses: actions/cache@v4
+        with: {path: "~/.cache/modelscope\n~/.cache/huggingface", key: "turn-paraformer-smartturn-v1"}
+      - run: python -m app.evals.voice.turn_run --synth ../out/synth-* --shard ${{ matrix.shard }}/8 --out ../out/turn/turn-${{ matrix.shard }}.jsonl
+      - uses: actions/upload-artifact@v4
+        with: {name: "turn-${{ matrix.shard }}", path: out/turn}
+
+  report:
+    name: Report
+    needs: [sweep, parity]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt matplotlib
+      - uses: actions/download-artifact@v4
+        with: {pattern: "turn-*", path: out}
+      - run: |
+          python -m app.evals.voice.turn_report --rows '../out/turn-[0-9]*/*.jsonl' --out ../out/report
+          cp ../out/turn-parity/parity.json ../out/report/ 2>/dev/null || true
+          mkdir -p ../out/report/data && cp ../out/turn-[0-9]*/*.jsonl ../out/report/data/
+          gzip -9 ../out/report/data/*.jsonl
+          cat ../out/report/report.md >> $GITHUB_STEP_SUMMARY
+          [ -f ../out/report/parity.json ] && { echo '```json'; cat ../out/report/parity.json; echo '```'; } >> $GITHUB_STEP_SUMMARY || true
+      - uses: actions/upload-artifact@v4
+        with: {name: voice-turn-report, path: out/report}

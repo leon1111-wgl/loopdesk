@@ -110,3 +110,48 @@ def test_the_download_sample_is_test_speakers_only_and_fixed():
     first = public_set.aishell_sample(refs, 10)
     assert len(first) == 10 and first == public_set.aishell_sample(refs, 10)
     assert all(utt[6:11] in public_set.AISHELL_TEST for utt in first)
+
+
+# ---------------------------------------------------------------- W4: tuning split, Cantonese, code-switching
+def test_aishell_dev_speakers_are_a_separate_split(tmp_path):
+    # Endpointing is tuned on the dev speakers; the test speakers stay a held-out check.
+    refs = {f"BAC009S{spk}W{i:04d}": "句子" for spk in ("0764", "0724", "0763", "0002") for i in range(100, 130)}
+    dev = public_set.aishell_sample(refs, 0, split="dev")
+    assert dev and all(utt[6:11] in public_set.AISHELL_DEV for utt in dev)
+    assert not set(dev) & set(public_set.aishell_sample(refs, 0))
+    assert not set(public_set.AISHELL_DEV) & set(public_set.AISHELL_TEST)
+    (tmp_path / "data_aishell" / "transcript").mkdir(parents=True)
+    (tmp_path / "data_aishell" / "transcript" / "aishell_transcript_v0.8.txt").write_text(
+        "BAC009S0724W0121 甚至 出现 交易\nBAC009S0764W0121 几乎 停滞\n", encoding="utf-8")
+    for split, spk, utt in (("dev", "S0724", "BAC009S0724W0121"), ("test", "S0764", "BAC009S0764W0121")):
+        (tmp_path / "data_aishell" / "wav" / split / spk).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "data_aishell" / "wav" / split / spk / f"{utt}.wav").write_bytes(wav_bytes())
+    rows = public_set.aishell(tmp_path, 0, tmp_path / "out", split="dev")
+    assert [r["key"] for r in rows] == ["BAC009S0724W0121"] and rows[0]["variant"] == "aishell1-dev"
+
+
+def test_fleurs_cantonese_is_its_own_variant(tmp_path):
+    (tmp_path / "test.tsv").write_text("7\ta.wav\t佢哋喺1990年搬咗去香港。\t佢哋喺1990年搬咗去香港\t佢\t96000\tMALE\n",
+                                       encoding="utf-8")
+    with tarfile.open(tmp_path / "test.tar.gz", "w:gz") as tar:
+        add(tar, "test/a.wav", wav_bytes())
+    rows = public_set.fleurs(tmp_path, 0, tmp_path / "out", lang="yue_hant_hk")
+    assert rows[0]["variant"] == "fleurs-yue-test" and rows[0]["question"] == "佢哋喺1990年搬咗去香港。"
+
+
+def test_ascend_rows_keep_the_language_label(tmp_path):
+    # ASCEND (CC BY-SA 4.0): Mandarin-English conversation recorded in Hong Kong; "mixed" is code-switching.
+    rows = public_set.ascend_rows([
+        {"id": "ses1_0001", "audio": {"bytes": wav_bytes(), "path": "x.wav"}, "transcription": "我用 iPhone 下单的",
+         "language": "mixed", "original_speaker_id": 7},
+        {"id": "ses1_0002", "audio": {"bytes": wav_bytes(), "path": "y.wav"}, "transcription": "好的",
+         "language": "zh", "original_speaker_id": 8},
+    ], 0, tmp_path / "out")
+    by_key = {r["key"]: r for r in rows}
+    assert by_key["ses1_0001"]["lang"] == "mixed" and by_key["ses1_0001"]["variant"] == "ascend-test"
+    assert by_key["ses1_0001"]["question"] == "我用 iPhone 下单的" and by_key["ses1_0002"]["voice"] == "8"
+    only_mixed = public_set.ascend_rows([
+        {"id": "a", "audio": {"bytes": wav_bytes()}, "transcription": "x y", "language": "mixed", "original_speaker_id": 1},
+        {"id": "b", "audio": {"bytes": wav_bytes()}, "transcription": "好", "language": "zh", "original_speaker_id": 1},
+    ], 0, tmp_path / "mixed", languages={"mixed"})
+    assert [r["key"] for r in only_mixed] == ["a"]

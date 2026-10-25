@@ -11,19 +11,29 @@ endpoint wait a property of the audio that can be measured offline.
 
 Push-to-talk skips the detector: the button press starts an utterance and the release ends it,
 with no silence to wait for.
+
+Semantic endpointing (``turn``, voice/turn.py): at a short pause (``probe_ms``) the endpointer asks
+whether the customer is done, once per pause, with the turn's audio so far (at most 8 s). "complete"
+ends the utterance there; "incomplete" keeps listening up to ``max_wait_ms`` of silence; "unsure" (or a
+detector that fails) falls back to ``end_silence_ms``. Speech before the end resets the pause.
 """
 
 from __future__ import annotations
 
+import logging
 import math
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 SAMPLE_RATE = 16_000
 FRAME = 512  # 32 ms: Silero VAD's frame at 16 kHz; the energy detector uses the same
+TURN_WINDOW = 8 * SAMPLE_RATE  # the turn detector reads at most the last 8 s
 
 
 class VAD(Protocol):
@@ -67,16 +77,24 @@ class SileroVAD:
 class Event:
     kind: str  # start | audio | end
     audio: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int16))
-    reason: str = ""  # end: silence | max_length | released
+    reason: str = ""  # end: silence | complete (the turn detector) | max_length | released
     speech_end: int = 0  # end: sample index (stream time) just after the last speech frame
     at: int = 0  # sample index (stream time) where the event happened
+    verdict: dict | None = None  # end: the turn detector's last answer in this utterance, if it was asked
 
 
 class Endpointer:
     def __init__(self, vad: VAD, *, end_silence_ms: int = 600, start_ms: int = 96, preroll_ms: int = 320,
-                 max_utterance_ms: int = 20_000, threshold: float = 0.5):
+                 max_utterance_ms: int = 20_000, threshold: float = 0.5,
+                 turn: Callable[[np.ndarray], object] | None = None, probe_ms: int = 250, max_wait_ms: int = 2000):
         self.vad, self.threshold = vad, threshold
         self.end_frames = max(1, round(end_silence_ms / 1000 * SAMPLE_RATE / FRAME))
+        self.turn = turn  # audio -> Verdict (voice/turn.py); None: silence only
+        self.probe_frames = max(1, round(probe_ms / 1000 * SAMPLE_RATE / FRAME))
+        self.cap_frames = max(self.probe_frames, math.ceil(max_wait_ms / 1000 * SAMPLE_RATE / FRAME))
+        self.wait_frames = self.end_frames  # this pause's silence budget, as the detector last decided
+        self.verdict: dict | None = None
+        self.recent: deque[np.ndarray] = deque(maxlen=TURN_WINDOW // FRAME + 1)  # the turn's audio, for the detector
         self.start_frames = max(1, round(start_ms / 1000 * SAMPLE_RATE / FRAME))
         self.max_samples = int(max_utterance_ms / 1000 * SAMPLE_RATE)
         self.preroll: deque[np.ndarray] = deque(maxlen=max(1, round(preroll_ms / 1000 * SAMPLE_RATE / FRAME)))
@@ -95,6 +113,7 @@ class Endpointer:
         events = self._end("released") if self.in_speech else []
         self.manual, self.in_speech = True, True
         self.utterance_samples, self.silent_run = 0, 0
+        self.verdict = None
         self.last_speech_end = self.position
         head = np.concatenate(list(self.preroll)) if self.preroll else np.zeros(0, dtype=np.int16)
         self.preroll.clear()
@@ -140,28 +159,53 @@ class Endpointer:
             if self.voiced_run >= self.start_frames:
                 self.in_speech, self.silent_run, self.voiced_run = True, 0, 0
                 head = np.concatenate(list(self.preroll))
+                self.recent.clear()
+                self.recent.extend(self.preroll)
                 self.preroll.clear()
+                self.wait_frames, self.verdict = self.end_frames, None
                 self.utterance_samples = len(head)
                 self.last_speech_end = self.position
                 return [Event("start", head, at=self.position - len(head))]
             return []
         self.utterance_samples += FRAME
+        self.recent.append(frame)
         events = [Event("audio", frame, at=start)]
         if voiced:
             self.silent_run = 0
             self.last_speech_end = self.position
+            self.wait_frames = self.end_frames  # a new pause will be asked about afresh
         else:
             self.silent_run += 1
-        if self.silent_run >= self.end_frames:
+            if self.turn is not None and self.silent_run == self.probe_frames:
+                decision = self._ask()
+                if decision == "complete":
+                    return events + self._end("complete")
+                self.wait_frames = self.cap_frames if decision == "incomplete" else max(self.end_frames, self.probe_frames)
+        if self.silent_run >= self.wait_frames:
             events += self._end("silence")
         elif self.utterance_samples >= self.max_samples:
             events += self._end("max_length")
         return events
 
+    def _ask(self) -> str:
+        """The turn detector's decision on the audio so far; "unsure" when it fails (the silence threshold
+        still ends the utterance: a broken model must not leave the customer waiting forever)."""
+        audio = np.concatenate(list(self.recent))[-TURN_WINDOW:]
+        try:
+            verdict = self.turn(audio)
+        except Exception:
+            logger.exception("turn detector failed; falling back to the silence threshold")
+            self.verdict = {"decision": "unsure", "reason": "error"}
+            return "unsure"
+        self.verdict = verdict.to_dict() if hasattr(verdict, "to_dict") else dict(verdict)
+        return self.verdict["decision"]
+
     def _end(self, reason: str) -> list[Event]:
         self.in_speech, self.manual = False, False
         self.silent_run = self.voiced_run = 0
-        return [Event("end", reason=reason, speech_end=self.last_speech_end, at=self.position)]
+        verdict, self.verdict = self.verdict, None
+        self.wait_frames = self.end_frames
+        return [Event("end", reason=reason, speech_end=self.last_speech_end, at=self.position, verdict=verdict)]
 
 
 def endpoint_wait_ms(event: Event) -> float:

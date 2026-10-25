@@ -15,13 +15,15 @@ export interface VoiceConfig {
   asr?: string;
   tts?: string;
   end_silence_ms?: number;
+  endpointing?: string; // silence | rules | smart_turn (backend/app/voice/turn.py)
 }
 
 export type VoiceEvent =
   | { type: "ready"; asr: string; tts: string }
   | { type: "vad"; speech: boolean }
   | { type: "partial"; text: string }
-  | { type: "transcript"; text: string; pii: string[]; entities: { kind: string; value: string; confidence: number }[] }
+  | { type: "transcript"; text: string; pii: string[]; entities: { kind: string; value: string; confidence: number }[]; merged?: boolean }
+  | { type: "withdrawn"; turn: number | null } // the customer went on before the answer was spoken: it is dropped
   | { type: "prompt"; kind: string; text: string }
   | { type: "agent"; event: AgentEvent }
   | { type: "say"; turn: number; id: number; text: string; written: string; sample_rate: number }

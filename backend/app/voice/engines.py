@@ -28,6 +28,7 @@ import numpy as np
 
 from ..config import Settings
 from .endpoint import SAMPLE_RATE, VAD, EnergyVAD, SileroVAD
+from .turn import build_turn_detector
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,32 @@ class ASRResult:
     chunk_ms: list[float] = field(default_factory=list)  # compute time of each streaming chunk
     punc_ms: float | None = None  # the punctuation step's share of final_ms (None: no punctuation step)
     unpunctuated: str | None = None  # the text before punctuation was added (None: none was added)
+
+
+_SENTENCE_END = "。.！!？?"
+
+
+def merge_text(first: str, second: str) -> str:
+    """Two transcripts of one request split by a pause: a sentence end between them becomes a comma
+    (engines that punctuate), otherwise a space (ITN drops it next to Chinese)."""
+    head = first.rstrip()
+    if not head or not second.strip():
+        return head or second
+    stripped = head.rstrip(_SENTENCE_END)
+    return f"{stripped}，{second.lstrip()}" if stripped != head else f"{head} {second.lstrip()}"
+
+
+def merge_results(first: ASRResult, second: ASRResult) -> ASRResult:
+    """One ASRResult for an utterance the endpointer split in two (voice/session.py takes the answer back)."""
+    passes = {k: merge_text(first.passes.get(k, ""), second.passes.get(k, ""))
+              for k in dict.fromkeys([*first.passes, *second.passes])}
+    probs = (first.char_probs or []) + (second.char_probs or []) if (first.char_probs or second.char_probs) else None
+    unpunctuated = None
+    if first.unpunctuated is not None or second.unpunctuated is not None:
+        unpunctuated = merge_text(first.unpunctuated if first.unpunctuated is not None else first.text,
+                                  second.unpunctuated if second.unpunctuated is not None else second.text)
+    return ASRResult(merge_text(first.text, second.text), passes, probs, second.final_ms,
+                     first.chunk_ms + second.chunk_ms, second.punc_ms, unpunctuated)
 
 
 class ASRStream(Protocol):
@@ -502,14 +529,18 @@ class VoiceEngines:
     asr: ASREngine
     tts: TTSEngine
     vad: Callable[[], VAD] = EnergyVAD  # a fresh detector per session: model VADs keep state
+    # The turn detector for semantic endpointing (voice/turn.py), called as detector(audio, partial):
+    # a factory, like the VAD; None is silence only.
+    turn: Callable[[], Callable] | None = None
 
     def describe(self) -> dict:
         if isinstance(self.asr, PunctuatedASR):  # which punctuation model is live, if any
             punctuation = getattr(self.asr.punc, "model_id", "custom")
         else:
             punctuation = "engine" if getattr(self.asr, "punctuates", False) else None
+        detector = self.turn() if self.turn else None
         return {"asr": self.asr.name, "tts": self.tts.name, "tts_sample_rate": self.tts.sample_rate,
-                "punctuation": punctuation}
+                "punctuation": punctuation, "endpointing": getattr(detector, "name", "custom") if detector else "silence"}
 
 
 def build_engines(settings: Settings, asr: ASREngine | None = None
@@ -547,13 +578,18 @@ def build_engines(settings: Settings, asr: ASREngine | None = None
             tts = SayTTS(settings.voice_tts_voice)
         else:
             raise ValueError(f"unknown LOOPDESK_VOICE_TTS {settings.voice_tts!r}")
-        vad: Callable[[], VAD] = SileroVAD if settings.voice_vad == "silero" else EnergyVAD
-        if settings.voice_vad == "silero":
-            SileroVAD()  # fail now, not in the first session
-        return VoiceEngines(asr, tts, vad), None, asr
     except Exception as exc:  # a sidecar that is down, missing packages
         logger.warning("voice channel unavailable: %s: %s", type(exc).__name__, exc)
         return None, f"语音合成引擎加载失败：{type(exc).__name__}", asr
+    try:
+        vad: Callable[[], VAD] = SileroVAD if settings.voice_vad == "silero" else EnergyVAD
+        if settings.voice_vad == "silero":
+            SileroVAD()  # fail now, not in the first session
+        detector = build_turn_detector(settings)  # one ONNX session, shared: onnxruntime runs it thread-safely
+    except Exception as exc:  # the Silero or Smart Turn package or file is missing
+        logger.warning("voice channel unavailable: %s: %s", type(exc).__name__, exc)
+        return None, f"端点检测加载失败：{type(exc).__name__}", asr
+    return VoiceEngines(asr, tts, vad, (lambda: detector) if detector else None), None, asr
 
 
 _engines: VoiceEngines | None = None

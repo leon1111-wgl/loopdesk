@@ -481,6 +481,10 @@ export default function ChatPage() {
       case "barge_in":
         setTalking(false);
         break;
+      case "withdrawn": // the answer being prepared is dropped; the merged question replaces the pending one
+        voiceRun.current = null;
+        setLive(null);
+        break;
       case "no_speech": // nothing recognised: no turn, nothing pending
         voiceRun.current = null;
         setPartial("");
@@ -742,7 +746,9 @@ export default function ChatPage() {
               )}
               <label className="row small muted" style={{ cursor: "pointer" }}>
                 <input type="checkbox" checked={voiceMode === "continuous"} onChange={(e) => changeMode(e.target.checked ? "continuous" : "ptt")} />
-                连续对话（停顿 {voiceConfig?.end_silence_ms ?? 600}ms 自动结束一句）
+                {voiceConfig?.endpointing && voiceConfig.endpointing !== "silence"
+                  ? "连续对话（停顿时判断是否说完）"
+                  : `连续对话（停顿 ${voiceConfig?.end_silence_ms ?? 600}ms 自动结束一句）`}
               </label>
               <span className="spacer" />
               {talking && <button className="btn btn-sm" onClick={() => voiceRef.current?.stop()}><Square size={13} /> 停止播报</button>}

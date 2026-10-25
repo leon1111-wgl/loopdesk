@@ -15,6 +15,12 @@ sentence was never played, the assistant message is cut to the part that was pla
 full generated text moves to meta.voice. The next turn's history then holds what was said, not
 what the model wrote.
 
+An utterance that turns out not to be over is taken back: when the customer goes on talking before
+the answer's first sentence goes to TTS, the answer is held (the run goes on, but nothing is spoken
+and no tool that changes anything runs). If what they add has words, the run is withdrawn (its
+messages deleted, the run kept as "withdrawn") and the two transcripts go to the agent as one
+request, as if the endpointer had waited; if it was only a cough, the held answer is spoken.
+
 Threads: the transport feeds audio and control messages in order on one worker thread (VAD and
 ASR); each turn runs the agent on its own thread; one TTS thread synthesises sentences in order.
 ``emit`` must be thread-safe (the WebSocket endpoint passes a queue's put).
@@ -34,20 +40,20 @@ from typing import Any
 
 import numpy as np
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import audit
 from ..admission import get_admission
-from ..agent.runtime import AgentRuntime
+from ..agent.runtime import AgentRuntime, RunWithdrawn
 from ..config import Settings
 from ..guardrails.pii import mask_pii
-from ..models import Conversation, Message, Tenant, User
+from ..models import Conversation, Message, Run, Tenant, User
 from ..security import Principal, rate_limiter
 from .confirm import (VOICE_CONFIRM_ERROR, Confirmations, classify_reply, gate_registry, readback_entities,
                       readback_refund)
 from .endpoint import Endpointer, Event, endpoint_wait_ms
-from .engines import ASRResult, VoiceEngines
+from .engines import ASRResult, VoiceEngines, merge_results, merge_text
 from .itn import Entity, assess, extract_entities, itn
 from .lexicon import Lexicon, lexicon_for
 from .speakable import speakable, split_sentences
@@ -71,6 +77,22 @@ class Transcript:
     entities: list[Entity] = field(default_factory=list)
     pii: list[str] = field(default_factory=list)
     fixes: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class Request:
+    """One utterance on its way to an answer, and whether it can still be taken back."""
+    result: ASRResult
+    event: Event
+    ended: float
+    merged: bool = False
+    paused: bool = False  # the customer is talking again: speak nothing, change nothing, until they stop
+    held: bool = False  # can no longer be taken back: spoken, a tool changed something, or a reply was handled
+    withdrawn: bool = False
+    turn: "Turn | None" = None
+    run_id: int | None = None
+    text: str = ""  # what the run was given
+    before: int = 0  # the conversation's last message id before the run: what to delete if withdrawn
 
 
 @dataclass
@@ -100,6 +122,7 @@ class Turn:
     marks: dict[str, float] = field(default_factory=dict)  # perf_counter seconds
     latency: dict[str, float] = field(default_factory=dict)  # ms, reported
     sent: threading.Event = field(default_factory=threading.Event)  # every sentence synthesised
+    request: Request | None = None  # an agent answer that may still be taken back
 
     def add(self, written: str) -> Sentence:
         sentence = Sentence(len(self.sentences), written, self.sample_rate)
@@ -177,8 +200,12 @@ class VoiceSession:
         self.tenant_id, self.user_id, self.conversation_id = tenant_id, user_id, conversation_id
         self.emit, self.db_factory = emit, db_factory
         self.assume_played = assume_played  # evaluation: no client plays the audio back
+        detector = engines.turn() if engines.turn else None
+        self.partial_raw = ""  # the streaming transcript of the utterance in progress, for the turn detector
         self.endpointer = Endpointer(engines.vad(), end_silence_ms=settings.voice_end_silence_ms,
-                                     max_utterance_ms=int(settings.voice_max_utterance_seconds * 1000))
+                                     max_utterance_ms=int(settings.voice_max_utterance_seconds * 1000),
+                                     turn=(lambda audio: detector(audio, self.partial_raw)) if detector else None,
+                                     probe_ms=settings.voice_turn_probe_ms, max_wait_ms=settings.voice_turn_max_wait_ms)
         self.endpointer.auto = mode == "continuous"
         self.mode = mode
         # While the agent talks, speech has to last longer to count: a cough or the agent's own voice
@@ -186,6 +213,10 @@ class VoiceSession:
         self.start_frames = self.endpointer.start_frames
         self.barge_frames = max(self.start_frames, round(settings.voice_barge_in_ms / 32))
         self.final_lock = threading.Lock()
+        # Taking an answer back: the worker pauses and withdraws, the turn and TTS threads hold.
+        self.take = threading.Condition()
+        self.last_request: Request | None = None
+        self.continuing: Request | None = None  # paused while the customer goes on
         self.confirmations = Confirmations()
         self.readback: dict | None = None  # a low-confidence order number or amount awaiting yes / no
         self.stream = None
@@ -225,9 +256,11 @@ class VoiceSession:
 
     def _on_event(self, event: Event) -> None:
         if event.kind == "start":
-            if self._speaking():
+            paused = self._pause_last() if self.mode == "continuous" else None
+            if self._speaking() and not (paused is not None and paused.turn is self.turn):
                 self._barge_in("speech")
             self.emit({"type": "vad", "speech": True})
+            self.partial_raw = ""
             self.stream = self.engines.asr.stream(self.hotwords)
             self._feed(event.audio)
         elif event.kind == "audio":
@@ -244,7 +277,70 @@ class VoiceSession:
             return
         partial = self.stream.accept(pcm)
         if partial:
-            self.emit({"type": "partial", "text": mask_partial(partial)})
+            self.partial_raw = partial
+            carried = self.continuing.result.text if self.continuing is not None else ""
+            self.emit({"type": "partial", "text": mask_partial(merge_text(carried, partial) if carried else partial)})
+
+    # ================================================================ taking an answer back
+    def _pause_last(self) -> Request | None:
+        """Speech again before the last answer was spoken: hold it until this utterance ends."""
+        with self.take:
+            last = self.last_request
+            if last is None or last.held or last.withdrawn or last.event.reason == "released":
+                return None  # push-to-talk: releasing the button is a deliberate end
+            last.paused = True
+            self.continuing = last
+            return last
+
+    def _continue(self, result: ASRResult) -> tuple[ASRResult, bool]:
+        """The utterance that followed a paused answer has ended: with words, the answer is withdrawn and the
+        two transcripts become one request; without (a cough), the answer is released."""
+        with self.take:
+            previous, self.continuing = self.continuing, None
+            if previous is None:
+                return result, False
+            previous.paused = False
+            if previous.held or not result.text.strip():
+                self.take.notify_all()
+                return result, False
+            previous.withdrawn = True
+            if previous.turn is not None:
+                previous.turn.cancelled = True
+            self.take.notify_all()
+        self.emit({"type": "withdrawn", "turn": previous.turn.id if previous.turn else None})
+        return merge_results(previous.result, result), True
+
+    def _hold(self, request: Request | None, *, wait: bool = False) -> bool:
+        """Commit: from here on the request is not taken back. With ``wait``, while the customer is still
+        talking, wait to see whether they change it (a tool that changes something waits here). False:
+        it was withdrawn."""
+        if request is None:
+            return True
+        with self.take:
+            while wait and request.paused and not request.withdrawn and not self.closed:
+                self.take.wait(timeout=0.5)
+            if request.withdrawn:
+                return False
+            request.held = True
+            return True
+
+    def _withdrawn_cleanup(self, request: Request) -> None:
+        """The run's messages go (its question is in the merged request); the run stays, as "withdrawn".
+        On the turn thread, before the merged request's run reads the history."""
+        with self.db_factory() as db:
+            run = db.get(Run, request.run_id) if request.run_id is not None else None
+            if run is not None:
+                run.status, run.error = "withdrawn", None  # also a run that had finished before it was taken back
+            asked = {request.text} | ({run.input_text} if run is not None and run.input_text else set())
+            query = select(Message).where(Message.conversation_id == self.conversation_id, Message.id > request.before)
+            question_found = False
+            for message in db.execute(query.order_by(Message.id)).scalars().all():
+                if message.role == "user" and not question_found and message.content in asked:
+                    db.delete(message)
+                    question_found = True
+                elif message.role == "assistant" and run is not None and message.run_id == run.id:
+                    db.delete(message)
+            db.commit()
 
     # ================================================================ understanding
     def understand(self, result: ASRResult) -> Transcript:
@@ -253,29 +349,43 @@ class VoiceSession:
     def _utterance(self, result: ASRResult, event: Event, ended: float) -> None:
         """Hand the utterance to the turn thread and return: this worker keeps reading audio (VAD,
         barge-in, playback reports) while a slow run is still answering the previous one."""
-        self.utterances.put((result, event, ended))
+        result, merged = self._continue(result)
+        request = Request(result, event, ended, merged=merged)
+        with self.take:
+            self.last_request = request
+        self.utterances.put(request)
 
     # ================================================================ turns (one thread, in order)
     def _turns(self) -> None:
-        while (item := self.utterances.get()) is not None:
-            result, event, ended = item
+        while (request := self.utterances.get()) is not None:
+            result, event, ended = request.result, request.event, request.ended
             try:
                 self._settle_previous()  # the history the next run reads must hold what was heard
+                if request.withdrawn:  # still queued when the customer went on: the merged request follows
+                    continue
                 transcript = self.understand(result)
-                latency = {"endpoint_wait_ms": round(endpoint_wait_ms(event) if event.reason == "silence" else 0.0, 1),
+                waited = event.reason in ("silence", "complete")
+                latency = {"endpoint_wait_ms": round(endpoint_wait_ms(event) if waited else 0.0, 1),
                            "asr_final_ms": round(result.final_ms, 1)}
                 self.emit({"type": "transcript", "text": transcript.text,
                            "entities": [e.to_dict() for e in transcript.entities], "pii": transcript.pii,
-                           "hotword_fixes": [list(f) for f in transcript.fixes], "endpoint": event.reason, **latency})
+                           "hotword_fixes": [list(f) for f in transcript.fixes], "endpoint": event.reason,
+                           "merged": request.merged, **({"turn_verdict": event.verdict} if event.verdict else {}),
+                           **latency})
                 if not transcript.text:
+                    self._hold(request)
                     self.emit({"type": "no_speech"})
                     continue
-                self._decide(transcript, latency, ended)
+                self._decide(transcript, latency, ended, request)
             except Exception as exc:  # report, keep the session alive
                 logger.exception("voice turn failed")
                 self.emit({"type": "error", "message": f"{type(exc).__name__}"})
 
-    def _decide(self, transcript: Transcript, latency: dict, ended: float) -> None:
+    def _decide(self, transcript: Transcript, latency: dict, ended: float, request: Request | None = None) -> None:
+        if self.confirmations.pending is not None or self.readback is not None:
+            # A reply to a read-back changes the conversation's state at once: it is never taken back.
+            if not self._hold(request):
+                return
         reply = classify_reply(transcript.text)
         self.confirmations.new_turn()  # a confirmation the last run did not use does not carry over
         pending = self.confirmations.pending
@@ -315,11 +425,13 @@ class VoiceSession:
         unsure = [e for e in transcript.entities
                   if e.kind in ("order_id", "amount") and e.confidence < self.settings.voice_readback_threshold]
         if unsure:
+            if not self._hold(request):
+                return
             order = next((e.value for e in transcript.entities if e.kind == "order_id"), None)
             amount = next((e.value for e in transcript.entities if e.kind == "amount"), None)
             self.readback = {"text": transcript.text, "question": readback_entities(order, amount), "sentence": None}
             return self._prompt(self.readback["question"], transcript, "readback", latency, ended, entity=self.readback)
-        self.run_agent(transcript.text, latency, ended)
+        self.run_agent(transcript.text, latency, ended, request=request)
 
     @staticmethod
     def _heard(sentence: "Sentence | None") -> bool:
@@ -370,11 +482,16 @@ class VoiceSession:
         turn.run_done = True
         self._turn_sent(turn)
 
-    def run_agent(self, text: str, latency: dict, ended: float, confirmation: dict | None = None) -> Turn:
+    def run_agent(self, text: str, latency: dict, ended: float, confirmation: dict | None = None,
+                  request: Request | None = None) -> Turn:
+        """``request``: a new request that may still be taken back (voice/session.py docstring); replies
+        and confirmations pass none."""
         turn = self._new_turn(latency, ended)
+        turn.request = request
         try:
             rate_limiter.check(f"chat:{self.user_id}", self.settings.rate_limit_per_minute)
         except HTTPException:
+            self._hold(request)
             self._say(turn, BUSY_TEXT)
             turn.run_done = True
             self._turn_sent(turn)
@@ -384,29 +501,57 @@ class VoiceSession:
         try:
             slot = admission.enter(self.tenant_id, self.user_id)
         except HTTPException as exc:
+            self._hold(request)
             self._say(turn, exc.detail)
             turn.run_done = True
             self._turn_sent(turn)
             return turn
         try:
-            return self._run_admitted(turn, text, confirmation)
+            return self._run_admitted(turn, text, confirmation, request)
         finally:
             admission.leave(slot)
 
-    def _run_admitted(self, turn: Turn, text: str, confirmation: dict | None) -> Turn:
+    def _run_admitted(self, turn: Turn, text: str, confirmation: dict | None, request: Request | None) -> Turn:
         db = self.db_factory()
         pending_before = self.confirmations.pending
         streamed, blocked, replaced, final = False, False, None, None
+        s = self.services
+        if request is not None:
+            with self.take:
+                request.turn = turn
+                withdrawn = request.withdrawn
+            request.text = text
+            request.before = db.execute(select(func.max(Message.id)).where(
+                Message.conversation_id == self.conversation_id)).scalar() or 0
+            if withdrawn:
+                db.close()
+                turn.cancelled, turn.run_done = True, True
+                self._turn_sent(turn)
+                return turn
         try:
-            s = self.services
             runtime = AgentRuntime(db, self.settings, s.provider, s.embedder,
                                    gate_registry(s.registry, self.confirmations, lambda: text), s.breaker, s.commerce,
                                    reranker=getattr(s, "reranker", None))
             turn.marks["run_started"] = time.perf_counter()
-            for event in runtime.start(tenant=db.get(Tenant, self.tenant_id), user=db.get(User, self.user_id),
-                                       text=text, conversation=db.get(Conversation, self.conversation_id)):
-                self.emit({"type": "agent", "event": event})
+            events = runtime.start(tenant=db.get(Tenant, self.tenant_id), user=db.get(User, self.user_id),
+                                   text=text, conversation=db.get(Conversation, self.conversation_id))
+            for event in events:
                 kind = event["type"]
+                if request is not None:
+                    if kind == "run_started":
+                        request.run_id = event["run_id"]
+                    changes = kind == "tool_call" and (tool := s.registry.get(event["name"])) is not None \
+                        and tool.risk != "read"
+                    # Before a tool that changes something runs, the request is committed (waiting first
+                    # if the customer is still talking); a withdrawn one stops here, before the tool.
+                    if request.withdrawn or (changes and not self._hold(request, wait=True)):
+                        try:
+                            events.throw(RunWithdrawn())
+                        except (RunWithdrawn, StopIteration):
+                            pass
+                        turn.cancelled = True
+                        break
+                self.emit({"type": "agent", "event": event})
                 if kind == "token" and not blocked:  # whole sentences: the output gate releases no less
                     for sentence in split_sentences(event["text"]):
                         streamed = True
@@ -420,6 +565,10 @@ class VoiceSession:
                     final = event
         finally:
             db.close()
+        if request is not None and request.withdrawn:
+            turn.run_done = True
+            self._turn_sent(turn)
+            return turn
         if final:
             turn.message_id, turn.generated = final.get("message_id"), final.get("text") or ""
         if confirmation is not None:
@@ -476,6 +625,9 @@ class VoiceSession:
                 self.emit({"type": "error", "message": "TTS 失败"})
 
     def _synthesize(self, turn: Turn, sentence: Sentence) -> None:
+        if not self._hold(turn.request, wait=True):  # TTS starts: past this point nothing is taken back
+            turn.cancelled = True
+            return
         speech = speakable(sentence.written)
         sentence.spoken, sentence.redacted = speech.text, speech.redacted
         self.emit({"type": "say", "turn": turn.id, "id": sentence.id, "text": speech.text, "written": sentence.written,
@@ -495,6 +647,9 @@ class VoiceSession:
             sentence.played = True
 
     def _report(self, turn: Turn) -> None:
+        if turn.request is not None and turn.request.withdrawn:  # nothing was said; the turn thread cleans up
+            turn.sent.set()
+            return
         m, lat = turn.marks, turn.latency
         if "run_started" in m and "first_sentence" in m:
             lat["llm_first_sentence_ms"] = round((m["first_sentence"] - m["run_started"]) * 1000, 1)
@@ -537,6 +692,12 @@ class VoiceSession:
         utterance supersedes an answer still playing: that is an interruption, and the client is told to
         stop it. On close nothing supersedes it, and delivery stays unknown."""
         turn = self.turn
+        if turn is not None and turn.request is not None and turn.request.withdrawn:
+            if not turn.finalized:
+                turn.sent.wait(timeout=30)  # the TTS thread has let go of it
+                turn.finalized = True
+                self._withdrawn_cleanup(turn.request)
+            return
         if superseded and turn is not None and not self.assume_played and self._speaking():
             self._barge_in("superseded")
         if turn is not None and self.assume_played:
@@ -548,6 +709,8 @@ class VoiceSession:
 
     def _finalize(self, turn: Turn) -> None:
         """Keep what the customer heard as the message (see the module docstring)."""
+        if turn.request is not None and turn.request.withdrawn:  # _settle_previous deletes it instead
+            return
         with self.final_lock:
             if turn.finalized:
                 return
@@ -578,6 +741,10 @@ class VoiceSession:
         if self.closed:
             return
         self.closed = True
+        with self.take:  # a held answer goes ahead: the customer has gone, what they asked stands
+            if self.continuing is not None:
+                self.continuing.paused, self.continuing = False, None
+            self.take.notify_all()
         self.utterances.put(None)  # turns already queued are answered first; the run always completes
         self.turn_thread.join(timeout=self.settings.run_deadline_seconds + 30)
         if self.turn_thread.is_alive():

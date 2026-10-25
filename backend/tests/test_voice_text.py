@@ -337,3 +337,14 @@ def test_a_comma_inside_the_spoken_prefix_does_not_make_it_inferred():
 def test_punctuation_does_not_change_the_canonical_text():
     assert canonical("s o 二零二六零九一八零零一，我要退货退款，另外发票怎么开？") == \
         canonical("SO20260918001 我要退货退款，另外发票怎么开？")
+
+
+def test_token_probabilities_lower_an_entity_s_confidence():
+    # Whisper reports word probabilities; assess() used a name left over from an earlier version and
+    # raised NameError on every Whisper transcript with an order number or amount.
+    entities = extract_entities("SO20261019101 退198块")
+    low = assess(entities, char_probs=[("SO", 0.9), ("20261019101", 0.3), ("198", 0.95)])
+    order = next(e for e in low if e.kind == "order_id")
+    amount = next(e for e in low if e.kind == "amount")
+    assert order.confidence <= 0.4 and "low_token_probability" in order.notes
+    assert amount.confidence == 0.95 and amount.notes == []

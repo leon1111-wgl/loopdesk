@@ -228,7 +228,8 @@ def assess(entities: list[Entity], *, inferred_prefix: set[str] = frozenset(),
             score = min(score, 0.4)
             e.notes.append("passes_disagree")
         if char_probs:
-            probs = [p for token, p in char_probs if token and token.strip() and token.strip() in key]
+            key = e.value.upper() if e.kind == "order_id" else e.value
+            probs = [p for token, p in char_probs if token and token.strip() and token.strip().upper() in key]
             if probs and min(probs) < 0.5:
                 score = min(score, 0.4)
                 e.notes.append("low_token_probability")
