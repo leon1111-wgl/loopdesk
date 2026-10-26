@@ -34,6 +34,8 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 
 ## 功能一览
 
+![工作区入口：按企业与角色选择体验](docs/assets/login.png)
+
 （截图取自在线演示：Echo音乐，真实模型 `deepseek-v4-1-flash` 的录制，用 `frontend/scripts/screenshots.mjs` 生成，可复现；检索调试器和下面的证据校验演示取自电商租户 Leon优选 的本地运行。）
 
 <table>

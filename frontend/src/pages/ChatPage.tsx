@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { FlaskConical, Grid3x3, History, Mic, MicOff, PencilLine, Plus, Send, ShieldAlert, Square, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { ApiError, api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
-import { CHANNEL_TEXT, CUSTOMER_GREETING, Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
+import { CHANNEL_TEXT, CUSTOMER_GREETING, Logo, Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
 import type { AgentEvent, ChatMessage, Conversation, EvidenceItem, HandoffState, Verification } from "../types";
 import { VoiceClient, type VoiceConfig, type VoiceEvent, type VoiceMode } from "../voice";
 
@@ -349,6 +349,11 @@ export default function ChatPage() {
   }, [waiting, withPerson, conversationId, loadMessages]);
 
   useEffect(() => {
+    // A new conversation opens at the welcome heading, even when its suggestions scroll.
+    if (!messages.length && !live && !pendingUser) {
+      bottom.current?.parentElement?.scrollTo({ top: 0 });
+      return;
+    }
     bottom.current?.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "end" });
   }, [messages, live, pendingUser]);
 
@@ -638,6 +643,7 @@ export default function ChatPage() {
         <div className="messages">
           {messages.length === 0 && !pendingUser && (
             <div className="welcome">
+              <div className="welcome-mark"><Logo size={36} /></div>
               <h2>{user?.tenant.name} · {staff ? "对话测试台" : "在线客服"}</h2>
               <p className="muted" style={{ marginTop: 6 }}>
                 {staff

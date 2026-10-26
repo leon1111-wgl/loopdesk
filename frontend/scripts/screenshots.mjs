@@ -52,6 +52,14 @@ async function ask(page, question) {
 }
 
 const SHOTS = {
+  "login.png": async () => {
+    const context = await browser.newContext({ viewport: { width: 1440, height: 960 }, colorScheme: "light", locale: "zh-CN" });
+    const page = await context.newPage();
+    await page.goto(base + "/");
+    await page.getByRole("button", { name: /admin@echo.demo/ }).waitFor();
+    await shot(page, "login.png");
+    await context.close();
+  },
   // The README's first picture: a knowledge answer with its citations, the evidence check and, for
   // staff, the run on the right (model, tokens).
   "chat-real-model.png": async () => {

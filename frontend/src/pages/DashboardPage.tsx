@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Download } from "lucide-react";
+import { ArrowDownToLine, ArrowUpRight, CalendarDays, ChevronDown, ClipboardCheck, Headset, Ticket } from "lucide-react";
 import { api } from "../api";
 import { Empty, ErrorBanner, Kpi, TOOL_TEXT, ms, pct, useLoad, TIER_TEXT } from "../components/ui";
 
@@ -53,21 +53,18 @@ function Bars({ data, labels }: { data: Record<string, number>; labels?: Record<
 function DailyChart({ daily }: { daily: Overview["daily"] }) {
   if (!daily.length) return <Empty>暂无数据</Empty>;
   const max = Math.max(1, ...daily.map((d) => d.runs));
-  const w = 100 / daily.length;
   return (
-    <svg viewBox="0 0 100 60" preserveAspectRatio="none" style={{ width: "100%", height: 160 }} role="img" aria-label="每日运行量">
-      {daily.map((d, i) => {
-        const h = (d.runs / max) * 50;
-        const hh = (d.handoff / max) * 50;
-        return (
-          <g key={d.day}>
-            <rect x={i * w + w * 0.2} y={52 - h} width={w * 0.6} height={h} fill="var(--primary)" rx={0.8}><title>{`${d.day}：${d.runs} 次运行`}</title></rect>
-            <rect x={i * w + w * 0.2} y={52 - hh} width={w * 0.6} height={hh} fill="var(--info)" rx={0.8}><title>{`${d.day}：转人工 ${d.handoff}`}</title></rect>
-            <text x={i * w + w / 2} y={59} fontSize={3.2} textAnchor="middle" fill="var(--text-3)">{d.day}</text>
-          </g>
-        );
-      })}
-    </svg>
+    <div className="daily-chart" role="img" aria-label={daily.map((d) => `${d.day}：${d.runs} 次运行，转人工 ${d.handoff} 次`).join("；")}>
+      <div className="chart-scale"><span>{max}</span><span>{Math.round(max / 2)}</span><span>0</span></div>
+      <div className="chart-columns">
+        {daily.map((d) => (
+          <div className="chart-column" key={d.day} title={`${d.day}：${d.runs} 次运行，转人工 ${d.handoff} 次`}>
+            <div className="chart-bars"><div className="chart-bar total" style={{ height: `${d.runs / max * 100}%` }} /><div className="chart-bar handoff" style={{ height: `${d.handoff / max * 100}%` }} /></div>
+            <span>{d.day.replace(/^\d{4}-/, "").replace("-", "/")}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -97,19 +94,24 @@ const duration = (seconds: number | null | undefined) =>
 export default function DashboardPage() {
   const { data, error } = useLoad(() => api.get<Overview>("/api/metrics/overview?days=7"));
   return (
-    <div className="page stack" style={{ gap: 16 }}>
-      <div className="page-head">
+    <div className="page stack dashboard-page" style={{ gap: 16 }}>
+      <div className="page-head dashboard-heading">
         <div>
+          <div className="eyebrow">SERVICE OVERVIEW</div>
           <h1>运营看板</h1>
-          <p>近 7 天（按自然日计，含今天）的真实对话，不含评测运行。成本按配置的模型单价估算，离线模型的单价仅作示例。</p>
+          <p>掌握服务进展，把注意力留给需要跟进的问题。</p>
         </div>
-        <div className="row row-wrap" aria-label="导出近 30 天数据">
-          <span className="faint">导出近 30 天（CSV）</span>
-          {EXPORTS.map(([kind, label]) => (
-            <button key={kind} className="btn btn-sm" onClick={() => api.download(`/api/export/${kind}.csv?days=30`, `loopdesk-${kind}.csv`)}>
-              <Download size={14} aria-hidden="true" /> {label}
-            </button>
-          ))}
+        <div className="dashboard-actions">
+          <span className="period-label"><CalendarDays size={15} /> 近 7 天 · 含今天</span>
+          <details className="export-menu">
+            <summary className="btn"><ArrowDownToLine size={15} /> 导出数据 <ChevronDown size={13} /></summary>
+            <div className="export-options" aria-label="导出近 30 天数据">
+              <div className="faint">近 30 天 · CSV 文件</div>
+              {EXPORTS.map(([kind, label]) => (
+                <button key={kind} className="btn btn-text" onClick={() => api.download(`/api/export/${kind}.csv?days=30`, `loopdesk-${kind}.csv`)}>{label}<ArrowUpRight size={14} /></button>
+              ))}
+            </div>
+          </details>
         </div>
       </div>
       <ErrorBanner error={error} />
@@ -149,26 +151,26 @@ export default function DashboardPage() {
               <Link to="/knowledge">去核对 →</Link>
             </div>
           )}
-          <div className="grid grid-4">
+          <div className="work-queue" aria-label="需要跟进的工作">
+            <div className="work-queue-label"><span className="dot" /><b>待办工作</b><span>让服务继续向前</span></div>
+            <Link to="/approvals"><ClipboardCheck size={17} /><span>待审批</span><b>{data.pending_approvals}</b><ArrowUpRight size={14} /></Link>
+            <Link to="/handoffs"><Headset size={17} /><span>等待人工</span><b>{data.handoff_queue.waiting}</b><ArrowUpRight size={14} /></Link>
+            <Link to="/tickets"><Ticket size={17} /><span>待处理工单</span><b>{data.tickets.open}</b><ArrowUpRight size={14} /></Link>
+          </div>
+          <div className="section-heading"><h2>服务表现</h2><span>按{zoneLabel(data.timezone)}自然日统计 · 不含评测运行</span></div>
+          <div className="grid grid-4 primary-metrics">
             <Kpi label="Agent 运行" value={data.runs} sub={`已解决 ${data.status.completed ?? 0} · 转人工 ${data.status.handoff ?? 0} · 缓存命中 ${pct(data.cache_hit_rate)}`} />
             <Kpi label="自助解决率（按会话）" value={pct(data.resolution_rate)}
               sub={`${data.conversations} 个会话 · 转人工 ${pct(data.handoff_rate)} · 拒答 ${pct(data.refusal_rate)}`} />
             <Kpi label="平均证据覆盖率" value={pct(data.avg_evidence_coverage)}
               sub={`充分 ${data.verdicts.pass ?? 0} · 部分 ${data.verdicts.warn ?? 0} · 冲突 ${data.verdicts.blocked ?? 0}`} />
-            <Kpi label="待审批 / 等待人工"
-              value={<><Link to="/approvals">{data.pending_approvals}</Link> / <Link to="/handoffs">{data.handoff_queue.waiting}</Link></>}
+            <Kpi label="人工首次响应"
+              value={duration(data.handoff_queue.avg_first_response_s)}
               sub={`接待中 ${data.handoff_queue.in_progress} · 最长等待 ${duration(data.handoff_queue.longest_wait_s)} · 首次响应 ${duration(data.handoff_queue.avg_first_response_s)}`} />
-            <Kpi label="延迟 p50 / p95" value={`${ms(data.latency_p50_ms)} / ${ms(data.latency_p95_ms)}`}
-              sub={`出错 ${pct(data.failures.rate)}（${data.failures.runs} 次）· 近 15 分钟 ${data.failures.last_15m} 次`} />
-            <Kpi label="Token / 估算成本" value={data.tokens.toLocaleString()} sub={`¥${data.cost.toFixed(4)}`} />
-            <Kpi label="用户反馈" value={(data.feedback.up ?? 0) + (data.feedback.down ?? 0) + (data.feedback.correction ?? 0)}
-              sub={`有用 ${data.feedback.up ?? 0} · 无用 ${data.feedback.down ?? 0} · 纠错 ${data.feedback.correction ?? 0}`} />
-            <Kpi label="最近一次回归评测" value={data.last_eval ? pct(data.last_eval.pass_rate, 1) : "—"}
-              sub={data.last_eval ? <Link to="/evals">运行 #{data.last_eval.id} · {data.last_eval.total} 条用例</Link> : <Link to="/evals">去运行</Link>} />
           </div>
-          <div className="grid grid-3">
+          <div className="grid dashboard-charts">
             <div className="card">
-              <div className="card-head"><h3>每日运行量</h3><span className="faint">蓝：全部 · 紫：转人工 · 按{zoneLabel(data.timezone)}分天</span></div>
+              <div className="card-head"><h3>每日运行量</h3><span className="chart-legend"><span><i />全部</span><span><i />转人工</span></span></div>
               <div className="card-pad"><DailyChart daily={data.daily} /></div>
             </div>
             <div className="card">
@@ -176,9 +178,19 @@ export default function DashboardPage() {
               <div className="card-pad"><Bars data={data.tools} labels={TOOL_TEXT} /></div>
             </div>
             <div className="card">
-              <div className="card-head"><h3>模型路由</h3><span className="faint">重复问题走缓存，简单问题走快模型</span></div>
+              <div className="card-head"><h3>模型路由</h3></div><p className="chart-note faint">重复问题走缓存，简单问题走快模型</p>
               <div className="card-pad"><Bars data={data.route_tiers} labels={TIER_TEXT} /></div>
             </div>
+          </div>
+          <div className="section-heading"><h2>运行与质量</h2><span>成本按配置单价估算，离线模型单价仅作示例</span></div>
+          <div className="grid grid-4 secondary-metrics">
+            <Kpi label="延迟 p50 / p95" value={`${ms(data.latency_p50_ms)} / ${ms(data.latency_p95_ms)}`}
+              sub={`出错 ${pct(data.failures.rate)}（${data.failures.runs} 次）· 近 15 分钟 ${data.failures.last_15m} 次`} />
+            <Kpi label="Token / 估算成本" value={data.tokens.toLocaleString()} sub={`¥${data.cost.toFixed(4)}`} />
+            <Kpi label="用户反馈" value={(data.feedback.up ?? 0) + (data.feedback.down ?? 0) + (data.feedback.correction ?? 0)}
+              sub={`有用 ${data.feedback.up ?? 0} · 无用 ${data.feedback.down ?? 0} · 纠错 ${data.feedback.correction ?? 0}`} />
+            <Kpi label="最近一次回归评测" value={data.last_eval ? pct(data.last_eval.pass_rate, 1) : "—"}
+              sub={data.last_eval ? <Link to="/evals">运行 #{data.last_eval.id} · {data.last_eval.total} 条用例</Link> : <Link to="/evals">去运行</Link>} />
           </div>
           <div className="card table-wrap">
             <div className="card-head"><h3>Prompt 版本对比</h3><span className="faint">灰度期间按会话稳定分流，比较各版本在真实对话中的表现</span></div>

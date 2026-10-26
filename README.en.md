@@ -34,6 +34,8 @@ Recent iterations are in [CHANGELOG.md](CHANGELOG.md) (Chinese): four rounds of 
 
 ## Features at a glance
 
+![Workspace entry: choose a company and a role](docs/assets/login.png)
+
 (Screenshots are taken from the live demo: Echo Music, recorded with the real model `deepseek-v4-1-flash`, generated reproducibly by `frontend/scripts/screenshots.mjs`. The retrieval debugger and the evidence-check demo below come from a local run of the e-commerce tenant, Leon Select.)
 
 <table>

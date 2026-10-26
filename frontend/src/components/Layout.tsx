@@ -5,7 +5,9 @@ import {
   BookOpen,
   ClipboardCheck,
   FlaskConical,
+  Github,
   Headset,
+  Info,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -59,8 +61,11 @@ function DemoNotice() {
   );
   return (
     <div className="demo-notice" role="note" data-model={rec?.model.strong}>
-      静态演示：{source}。可以切换角色浏览、回放对话页里的示例问题；提交类操作不会生效。
-      <a href={REPO_URL} target="_blank" rel="noreferrer">在本地运行完整版本 ↗</a>
+      <Info size={15} aria-hidden="true" />
+      <div><strong>演示工作区</strong><span className="demo-source">{source}。</span>
+        <details><summary>使用说明与运行方式</summary><p>可以切换角色浏览、回放对话页里的示例问题；提交类操作不会生效。
+          <a href={REPO_URL} target="_blank" rel="noreferrer">在本地运行完整版本 ↗</a></p></details>
+      </div>
     </div>
   );
 }
@@ -169,8 +174,9 @@ export default function Layout() {
           </button>
         </div>
         <div className="tenant-card">
-          <div className="name">{user?.tenant.name}</div>
-          <div className="meta">{INDUSTRY_TEXT[user?.tenant.industry ?? ""] ?? "企业"} · 演示租户</div>
+          <span className="workspace-mark">{user?.tenant.name.slice(0, 1)}</span>
+          <div><div className="name">{user?.tenant.name}</div>
+            <div className="meta">{INDUSTRY_TEXT[user?.tenant.industry ?? ""] ?? "企业"} · 演示租户</div></div>
         </div>
         <nav className="nav" aria-label="主导航">
           {groups.map(([group, items]) => (
@@ -191,6 +197,7 @@ export default function Layout() {
             </div>
           ))}
         </nav>
+        <div className="sidebar-caption"><span className="dot" /> 有据可循 · 有人跟进</div>
         <div className="sidebar-foot">
           <span className="avatar me">{user?.name.slice(0, 1)}</span>
           <div style={{ minWidth: 0, lineHeight: 1.3 }}>
@@ -222,6 +229,7 @@ export default function Layout() {
             <b className="ellipsis">{TITLES[section] ?? "LoopDesk"}</b>
           </div>
           <div className="row">
+            <a className="source-link hide-compact" href={REPO_URL} target="_blank" rel="noreferrer"><Github size={15} /> 项目源码</a>
             <span className="badge">{isDemo ? "静态演示" : "演示环境"}<span className="hide-compact"> · 数据均为虚构</span></span>
             <button className="icon-btn" title={`主题：${themeLabel}（点击切换）`} aria-label={`切换主题，当前：${themeLabel}`} onClick={() => setTheme(nextTheme)}>
               {theme === "light" ? <Sun size={16} /> : theme === "dark" ? <Moon size={16} /> : <Monitor size={16} />}
