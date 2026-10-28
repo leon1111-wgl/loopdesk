@@ -19,7 +19,7 @@ def test_a_comma_only_paragraph_is_cut_at_clauses_within_the_cap():
 def test_text_without_any_punctuation_is_cut_by_length():
     pdf_text = "页面抽取文本没有任何标点" * 100  # 1,200 characters, like OCR output
     chunks = chunk_pages([pdf_text], max_chars=300)
-    assert [len(c.text) for c in chunks] == [300, 300, 300, 300]
+    assert [len(c.text) for c in chunks] == [300, 300, 300, 300, 160]  # windows overlap by 40 (N-211)
     assert all(c.page == 1 for c in chunks)
 
 

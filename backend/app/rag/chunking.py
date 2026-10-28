@@ -47,24 +47,63 @@ def parse_upload(filename: str, data: bytes) -> tuple[str, list[str] | None]:
     raise UnsupportedFile(f"暂不支持该文件类型，支持：{', '.join(SUPPORTED_SUFFIXES)}")
 
 
-_CLAUSE_RE = re.compile(r"(?<=[，,、：:])")
+_CLAUSE_RE = re.compile(r"(?<=[，、：])|(?<=[,:])(?!\d)")  # "1,299元" and "10:30" stay whole
+_GLUED_RE = re.compile(r"[0-9A-Za-z０-９.．,:%％¥￥$_\-/]")  # digits, Latin words, amounts, order ids
+_HARD_CUT_OVERLAP = 40
+
+
+def _safe_cut(text: str, start: int, end: int) -> int | None:
+    """The last position in (start, end] with no digit, Latin letter or amount sign on either
+    side. A cut at exactly ``end`` turned "每台199元" into "每台19" + "9元": the answer quoting
+    the first half passed the evidence check, and "9元" raised a false knowledge conflict.
+    A run of comma-separated numbers ("12345,12352,…") has no such position, so the second
+    choice is just after a separator."""
+    for i in range(end, start, -1):
+        if i >= len(text) or not (_GLUED_RE.match(text[i - 1]) or _GLUED_RE.match(text[i])):
+            return i
+    for i in range(end, start, -1):
+        if text[i - 1] in ",;: ":
+            return i
+    return None
+
+
+def _hard_cut(clause: str, max_chars: int) -> list[str]:
+    """Cut a clause with no clause mark into windows of at most ``max_chars``, each ending at a
+    safe position; consecutive windows share up to ``_HARD_CUT_OVERLAP`` characters, so the
+    sentence the cut went through is whole in at least one of them."""
+    overlap = min(_HARD_CUT_OVERLAP, max_chars // 5)
+    windows: list[str] = []
+    start = last = 0
+    while len(clause) - start > max_chars:
+        # No safe position means one glued run longer than the cap: a length cut is all there is.
+        cut = _safe_cut(clause, start, start + max_chars) or start + max_chars
+        if cut <= last:  # the overlap leads straight back to the previous cut: drop the overlap
+            start = last
+            continue
+        windows.append(clause[start:cut])
+        last = cut
+        back = _safe_cut(clause, max(start, cut - 2 * overlap), cut - overlap) if cut - start > 2 * overlap else None
+        start = back or cut
+    windows.append(clause[start:])
+    return windows
 
 
 def _split_long(unit: str, max_chars: int) -> list[str]:
     """A unit longer than ``max_chars`` (a comma-only paragraph, PDF text without full stops)
-    is cut at clause marks, and whatever is still too long is cut by length. Without this a
-    9,903-character paragraph became one chunk, and the answer quoting it was 9,906 characters."""
+    is cut at clause marks, and whatever is still too long is cut by length (``_hard_cut``).
+    Without this a 9,903-character paragraph became one chunk, and the answer quoting it was
+    9,906 characters."""
     if len(unit) <= max_chars:
         return [unit]
     pieces: list[str] = []
     current = ""
     for clause in (c for c in _CLAUSE_RE.split(unit) if c):
-        while len(clause) > max_chars:
+        if len(clause) > max_chars:
             if current:
                 pieces.append(current)
                 current = ""
-            pieces.append(clause[:max_chars])
-            clause = clause[max_chars:]
+            *windows, clause = _hard_cut(clause, max_chars)
+            pieces.extend(windows)
         if len(current) + len(clause) > max_chars:
             pieces.append(current)
             current = ""
