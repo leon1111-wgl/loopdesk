@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field, fields
 from decimal import Decimal
 from urllib.parse import urlsplit
@@ -38,6 +39,32 @@ class FeishuApp:
     verification_token: str
 
 
+def _check_order_id_pattern(pattern: str) -> None:
+    """Every order-number rule runs it on every message, so it has to be a plain, bounded pattern."""
+    if not 0 < len(pattern) <= 64:
+        raise ValueError("order_id_pattern must be 1 to 64 characters")
+    from .textutil import ORDER_ID_RE
+
+    try:
+        compiled = re.compile(pattern)
+        ORDER_ID_RE._compiled((pattern,))  # as it is used: inside the union ("(?i)" in the middle breaks it)
+    except re.error as exc:
+        raise ValueError(f"order_id_pattern is not a usable regular expression: {exc}") from None
+    if compiled.groups:  # findall would return the groups instead of the order numbers
+        raise ValueError("order_id_pattern must not have capturing groups; use (?:...)")
+    if re.search(r"(?<![\\\[])\^|(?<!\\)(?:\$|\\[AZbB])", pattern):  # boundaries are added; anchors never match in a message
+        raise ValueError("order_id_pattern must not have anchors or \\b; the boundaries are added around it")
+    # Amounts, phone numbers and words are in nearly every message: a format that takes them for order
+    # numbers would send each one to the order system and to the verifier's order-number check.
+    if any(compiled.fullmatch(s) for s in ("", "1234", "12345", "13800138000", "12345.67", "退款", "订单号")):
+        raise ValueError("order_id_pattern matches too much: an empty string, an amount, a phone number or words")
+    started = time.perf_counter()  # it runs on every customer message: no catastrophic backtracking
+    for probe in ("1" * 24 + "!", "A" * 24 + "!", "A1" * 12 + "!"):
+        compiled.search(probe)
+    if time.perf_counter() - started > 0.05:
+        raise ValueError("order_id_pattern backtracks too much (nested repetition such as (?:\\d+)+)")
+
+
 @dataclass(frozen=True)
 class CommerceApi:
     """One tenant's own order and payment systems, reached over HTTP (app/integrations/http.py; the
@@ -48,6 +75,9 @@ class CommerceApi:
     timeout: float = 5.0  # seconds per phase of an attempt (connecting: at most 3)
     max_attempts: int = 3  # for idempotent calls only: reads, and refunds carrying their idempotency key
     signing_secret: str | None = field(default=None, repr=False)  # when set, requests carry an HMAC-SHA256 signature
+    # The merchant's own order numbers, as a regular expression without capturing groups (e.g. "OMS\\d{4,10}"):
+    # what customers' words are searched for besides the demo "SO" numbers (textutil.ORDER_ID_RE, N-138).
+    order_id_pattern: str | None = None
 
     def __post_init__(self) -> None:
         url = urlsplit(self.base_url)
@@ -61,6 +91,8 @@ class CommerceApi:
             raise ValueError("timeout must be between 0 and 60 seconds")
         if not 1 <= self.max_attempts <= 5:
             raise ValueError("max_attempts must be between 1 and 5")
+        if self.order_id_pattern is not None:
+            _check_order_id_pattern(self.order_id_pattern)
         if self.timeout * self.max_attempts > 20:
             # A customer waits for these calls inside a run of 45 s, a refund turn makes two of them,
             # and the stale-run sweep has to allow for them (call_seconds).

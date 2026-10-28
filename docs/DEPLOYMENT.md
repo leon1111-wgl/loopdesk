@@ -200,7 +200,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowl
 | `FEISHU_APPS` | — | 飞书机器人，每个租户一个应用：`{"<租户 slug>": {"app_id", "app_secret", "verification_token"}}` |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_VERIFICATION_TOKEN` + `FEISHU_TENANT` | — | 只接一个租户时的旧写法，必须用 `FEISHU_TENANT` 指明属于哪个租户 |
 | `WECOM_WEBHOOK_KEY` | — | 企业微信群机器人（审批提醒） |
-| `COMMERCE_APIS` | — | 每个租户自己的订单和支付系统（HTTP）：`{"<租户 slug>": {"base_url", "token", "timeout", "max_attempts", "signing_secret"}}`，见“接入你自己的订单和支付系统”；没配置的租户用演示表 |
+| `COMMERCE_APIS` | — | 每个租户自己的订单和支付系统（HTTP）：`{"<租户 slug>": {"base_url", "token", "timeout", "max_attempts", "signing_secret", "order_id_pattern"}}`，见“接入你自己的订单和支付系统”；没配置的租户用演示表 |
 
 ## 接入你自己的订单和支付系统
 
@@ -214,7 +214,7 @@ LoopDesk 不记订单和资金的账。Agent 的三个订单类工具（查订�
 ### 配置
 
 ```bash
-LOOPDESK_COMMERCE_APIS='{"leon": {"base_url": "https://oms.example.com/loopdesk", "token": "<长随机串>", "timeout": 5, "max_attempts": 3, "signing_secret": "<可选>"}}'
+LOOPDESK_COMMERCE_APIS='{"leon": {"base_url": "https://oms.example.com/loopdesk", "token": "<长随机串>", "timeout": 5, "max_attempts": 3, "signing_secret": "<可选>", "order_id_pattern": "OMS\\d{4,10}"}}'
 ```
 
 | 字段 | 默认值 | 说明 |
@@ -224,6 +224,8 @@ LOOPDESK_COMMERCE_APIS='{"leon": {"base_url": "https://oms.example.com/loopdesk"
 | `timeout` | `5` | 一次尝试里每个阶段的超时（秒）：建立连接最多 3 秒，发送、等待响应各自不超过它 |
 | `max_attempts` | `3` | 只对幂等请求生效：查询，以及带幂等键的退款（1–5）。`timeout × max_attempts` 不能超过 20 秒：顾客在一次最长 45 秒的运行里等这些调用，一次退款要调用两次 |
 | `signing_secret` | 不签名 | 设置后每个请求带 `X-LoopDesk-Timestamp` 和 `X-LoopDesk-Signature: v1=<hex>`，签名是 HMAC-SHA256(密钥, 时间戳 `\n` 方法 `\n` 路径（含 base_url 里的路径和查询串）`\n` 幂等键（没有就是空串）`\n` 请求体)；每次重试重新签名。请求头里只有幂等键被签名，其他头靠 TLS 和令牌保护。对方应拒绝时间戳和当前时间相差超过 5 分钟的请求 |
+
+| `order_id_pattern` | 只认 `SO`+8–14 位数字 | 你们自己的订单号格式（正则，不能有捕获分组，用 `(?:…)`，最长 64 字符），例如 `OMS\d{4,10}`。顾客原话里的订单号靠它识别：离线模型选查单 / 退款工具、路由、答案缓存、证据校验核对回答里的订单号、转人工摘要都用它；不配的话 `SO` 以外的订单号一律认不出，顾客报了单号也只会被问“是哪一单”。前后自动加边界（前后紧挨字母或数字的不算），按大小写不敏感匹配、以大写发送。有行内标志（`(?i)`）、锚点（`^` `$` `\b`）、能匹配空串、金额、11 位手机号或普通词（会把它们当成订单号），或者嵌套重复导致回溯过多（`(?:\d+)+`，每条消息都要跑）的格式，启动时报错。识别是全部署共用的：别的租户的顾客打出这种格式只会多一次查不到的查询，订单归属仍由接口和权限判断决定 |
 
 每个租户各配各的，一个租户的令牌不会出现在另一个租户的请求里。字段写错、用了明文 http、缺少令牌、超时乘次数超过 20 秒时服务启动直接报错。
 

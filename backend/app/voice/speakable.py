@@ -66,9 +66,11 @@ def _digits(s: str) -> str:
 
 
 def _spell_order(order_id: str) -> str:
-    digits = order_id[2:]
+    # The letters one by one, then the rest in groups of four: "S O，…" and a merchant's "O M S，…" (N-138).
+    prefix = re.match(r"[A-Za-z]*", order_id).group(0)
+    digits = order_id[len(prefix):]
     groups = [digits[i:i + 4] for i in range(0, len(digits), 4)]
-    return "S O，" + "，".join("".join(_SPELL.get(c, c) for c in g) for g in groups)
+    return (" ".join(prefix.upper()) + "，" if prefix else "") + "，".join("".join(_SPELL.get(c, c) for c in g) for g in groups)
 
 
 def speakable(sentence: str) -> Speech:

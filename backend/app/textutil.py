@@ -47,7 +47,37 @@ _THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d{3})")
 CITE_RE = re.compile(r"[\[［](\d{1,2})[\]］]")  # models also write full-width ［1］
 # No \b: Python treats CJK characters as word characters, so "订单SO2026…" has no word
 # boundary before "S" and \b silently fails. Explicit look-arounds work next to Chinese.
-ORDER_ID_RE = re.compile(r"(?<![A-Za-z0-9])SO\d{8,14}(?!\d)", re.IGNORECASE)
+_DEMO_ORDER_ID = r"SO\d{8,14}(?!\d)"
+
+
+class _OrderIds:
+    """Order numbers in a customer's words (N-138): the demo tables' "SO" + 8-14 digits, and every
+    format a merchant's own order system declares (``order_id_pattern`` in LOOPDESK_COMMERCE_APIS).
+    Recognition is deployment-wide; whose order it is stays the gateway's and the tools' decision, so
+    one tenant's format in another tenant's chat only means a lookup that finds nothing. The settings
+    are read on every use: tests and the app factory swap them, and the compiled union is cached."""
+
+    @staticmethod
+    @lru_cache(maxsize=8)
+    def _compiled(extra: tuple[str, ...]) -> re.Pattern[str]:
+        alternatives = [_DEMO_ORDER_ID] + [rf"(?:{p})(?![A-Za-z0-9])" for p in extra]
+        return re.compile(rf"(?<![A-Za-z0-9])(?:{'|'.join(alternatives)})", re.IGNORECASE)
+
+    def _re(self) -> re.Pattern[str]:
+        from .config import get_settings  # config does not import this module; settings may be swapped
+
+        apis = get_settings().commerce_apis
+        return self._compiled(tuple(sorted({a.order_id_pattern for a in apis.values() if a.order_id_pattern})))
+
+    @property
+    def pattern(self) -> str:
+        return self._re().pattern
+
+    def __getattr__(self, name: str):  # search, findall, finditer, sub(count=...), fullmatch, ...
+        return getattr(self._re(), name)
+
+
+ORDER_ID_RE = _OrderIds()
 
 # "不用转人工，帮我查下物流" mentions 人工 but asks for the opposite: negated mentions are cut out
 # before any matching (the offline model and the explicit-request rule below share this).
@@ -182,7 +212,7 @@ def _demands_refund(text: str) -> bool:
     start = 0
     for sep in [*_DEMAND_SEP_RE.finditer(text), None]:
         end = sep.start() if sep else len(text)
-        bare = _DEMAND_FILLER_RE.sub("", text[start:end])
+        bare = _DEMAND_FILLER_RE.sub("", ORDER_ID_RE.sub("SO0", text[start:end]))  # any format, with its "和"
         if start > last_question and 0 < len(bare) <= _BARE_DEMAND_MAX and _BARE_DEMAND_RE.fullmatch(bare):
             return True
         start = sep.end() if sep else end
@@ -250,7 +280,7 @@ _CONFIRM_FILLER_RE = re.compile(r"[\s，,。.！!～~、]+|SO\d+", re.IGNORECASE
 
 def withdraw_confirmed(text: str) -> bool:
     """True when the message is nothing but a confirmation of a withdrawal offered the turn before."""
-    return bool(_WITHDRAW_CONFIRM_RE.fullmatch(_CONFIRM_FILLER_RE.sub("", normalize_width(text or ""))))
+    return bool(_WITHDRAW_CONFIRM_RE.fullmatch(_CONFIRM_FILLER_RE.sub("", ORDER_ID_RE.sub("SO0", normalize_width(text or "")))))
 
 
 def refund_bare_decline(text: str) -> bool:
