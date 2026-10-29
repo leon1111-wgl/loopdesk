@@ -23,8 +23,8 @@ for (const variant of [
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.getByRole("button", { name: /admin@echo.demo/ }).click();
       await expect(page).toHaveURL(/dashboard/);
-      await expect(page.locator(".chart-column > span")).toHaveCount(7);
-      for (const label of await page.locator(".chart-column > span").allTextContents()) expect(label).toMatch(/^\d{2}\/\d{2}$/);
+      await expect(page.locator(".trend-chart .x-label")).toHaveCount(7);
+      for (const label of await page.locator(".trend-chart .x-label").allTextContents()) expect(label).toMatch(/^\d{2}\/\d{2}$/);
       expect(await page.locator(".kpi").first().evaluate((el) => getComputedStyle(el).animationName)).toBe("none");
       // Keyboard users can reach and expand the export control without a pointer.
       await page.locator(".export-menu summary").focus();

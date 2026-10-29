@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ClipboardCheck } from "lucide-react";
 import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
-import { Empty, ErrorBanner, Modal, duration, fullTime, time, useLoad, yuan } from "../components/ui";
+import { Empty, ErrorBanner, Modal, duration, fullTime, time, useLoad, yuan, PageHeader, Segmented } from "../components/ui";
 import type { Refund } from "../types";
 
 // Refunds the payment system has not settled (GET /api/refunds), and the administrator's
@@ -184,19 +184,12 @@ export default function RefundsPage() {
 
   return (
     <div className="page stack" style={{ gap: 16 }}>
-      <div className="page-head">
-        <div>
-          <h1>退款对账</h1>
-          <p>
-            支付系统还没有给出结果的退款，需要人工确认的排在前面。对账任务（按部署的定时任务运行，建议每 5 分钟）用同一个幂等键重发
-            24 小时、超过 1 小时开工单；停止自动处理的，请在支付后台核实后{admin ? "" : "由管理员"}确认结果。
-          </p>
-        </div>
-        <div className="tabs">
-          <button className={tab === "open" ? "active" : ""} aria-pressed={tab === "open"} onClick={() => setTab("open")}>未结清</button>
-          <button className={tab === "all" ? "active" : ""} aria-pressed={tab === "all"} onClick={() => setTab("all")}>全部</button>
-        </div>
-      </div>
+      <PageHeader title="退款对账"
+        description={<>支付系统还没有给出结果的退款，需要人工确认的排在前面。对账任务（按部署的定时任务运行，建议每 5 分钟）用同一个幂等键重发
+            24 小时、超过 1 小时开工单；停止自动处理的，请在支付后台核实后{admin ? "" : "由管理员"}确认结果。</>}
+        actions={<>
+        <Segmented label="退款范围" value={tab} onChange={setTab} options={[["open", "未结清"], ["all", "全部"]]} />
+        </>} />
       <ErrorBanner error={error} />
       {summary && <div ref={notice} className="notice" role="status" tabIndex={-1}>{summary}</div>}
       <div className="card table-wrap">

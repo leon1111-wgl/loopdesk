@@ -34,7 +34,7 @@ async function signIn(browser: Browser, email: string, options: { fakeMicrophone
   await page.goto("/");
   // The login page lists the demo accounts; clicking one signs in with the demo password.
   await page.getByRole("button", { name: new RegExp(email.replace(".", "\\.")) }).click();
-  await expect(page.getByRole("button", { name: "退出登录" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
   return page;
 }
 
@@ -53,6 +53,23 @@ db.execute("""INSERT INTO refunds (tenant_id, order_id, customer_id, amount, rea
 db.commit()
 `;
   execFileSync(process.env.E2E_PYTHON ?? "python3", ["-c", script, db, orderId, email]);
+}
+
+/** Opens the pending approval for an order, reads its evidence package and approves it through the
+ * money confirmation, which repeats the order and the amount. */
+async function approve(page: Page, orderId: string, comment: string, amount: string) {
+  const row = page.getByRole("row").filter({ hasText: orderId }).filter({ hasText: "待审批" });
+  await expect(row).toHaveCount(1);
+  await row.getByRole("button", { name: /审核/ }).click();
+  const sheet = page.getByRole("dialog", { name: /审批单 #\d+/ });
+  await expect(sheet).toContainText("Agent 提交的证据包");
+  await sheet.getByPlaceholder("审批意见（会告知顾客）").fill(comment);
+  await sheet.getByRole("button", { name: "通过并执行" }).click();
+  const confirm = page.getByRole("dialog", { name: "确认通过并退款" });
+  await expect(confirm).toContainText(orderId);
+  await expect(confirm.getByRole("button", { name: "取消" })).toBeFocused();
+  await confirm.getByRole("button", { name: new RegExp(`确认退款 ${amount}`) }).click();
+  await expect(sheet).toHaveCount(0);
 }
 
 async function ask(page: Page, text: string) {
@@ -184,10 +201,7 @@ test("refund over the auto limit waits for an admin, then the customer sees the 
 
   const leon = await signIn(browser, "admin@leon.demo");
   await leon.goto("/approvals");
-  const card = leon.locator(".card").filter({ hasText: "SO20261008002" }).filter({ hasText: "待审批" });
-  await expect(card).toHaveCount(1);
-  await card.getByPlaceholder("审批意见（会告知顾客）").fill("核实无误");
-  await card.getByRole("button", { name: "通过并执行" }).click();
+  await approve(leon, "SO20261008002", "核实无误", "¥");
   await expect(leon.getByText(/审批单 #\d+ 已通过并执行/)).toBeVisible();
 
   // The customer's page polls while an approval is pending: the resumed answer arrives
@@ -209,10 +223,7 @@ test("Echo音乐: an annual-card refund waits for an agent; the member sees it g
 
   const chloe = await signIn(browser, "agent@echo.demo");
   await chloe.goto("/approvals");
-  const card = chloe.locator(".card").filter({ hasText: "SO20261015102" }).filter({ hasText: "待审批" });
-  await expect(card).toHaveCount(1);
-  await card.getByPlaceholder("审批意见（会告知顾客）").fill("年卡未使用会员权益，同意退款");
-  await card.getByRole("button", { name: "通过并执行" }).click();
+  await approve(chloe, "SO20261015102", "年卡未使用会员权益，同意退款", "¥198");
   await expect(chloe.getByText(/审批单 #\d+ 已通过并执行/)).toBeVisible();
 
   await expect(answers).toHaveCount(before + 1, { timeout: 20_000 });

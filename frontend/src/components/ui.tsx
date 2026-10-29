@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useId, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
+import { AlertTriangle, Inbox, X } from "lucide-react";
+import { useLocation } from "react-router-dom";
+import { useAuth } from "../auth";
 
 export const TIER_TEXT: Record<string, string> = { fast: "快模型", strong: "强模型", cache: "答案缓存", rule: "规则（未调用模型）" };
 export const tierText = (tier?: string | null) => TIER_TEXT[tier ?? ""] ?? tier ?? "—";
@@ -57,15 +59,61 @@ export function VerdictBadge({ verdict, coverage }: { verdict?: string | null; c
   );
 }
 
-export function Modal({ title, onClose, children, footer }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode }) {
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+
+/** Keeps keyboard focus inside a dialog while it is open (WCAG 2.4.3): focus moves in on open unless
+ * a child already took it (autoFocus), Tab and Shift+Tab wrap around, Escape calls onClose, and when
+ * the dialog goes away focus returns to the element that opened it, if nothing else has taken it. */
+export function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose: () => void) {
+  const opener = useRef<Element | null>(null);
+  if (opener.current === null && typeof document !== "undefined") opener.current = document.activeElement;
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const box = ref.current;
+    if (!box) return;
+    if (!box.contains(document.activeElement)) {
+      (box.querySelector<HTMLElement>("[data-autofocus]") ?? box.querySelector<HTMLElement>(FOCUSABLE) ?? box).focus();
+    }
+    const onKey = (e: KeyboardEvent) => {
+      // Only the top-most dialog reacts: a confirmation opened over a drawer closes first.
+      const dialogs = document.querySelectorAll("[data-dialog]");
+      if (dialogs[dialogs.length - 1] !== box) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const items = [...box.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.offsetParent !== null || el === document.activeElement);
+      if (!items.length) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !box.contains(document.activeElement))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !box.contains(document.activeElement))) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      const back = opener.current;
+      if (back instanceof HTMLElement && back.isConnected && (document.activeElement === document.body || document.activeElement === null)) back.focus();
+    };
+  }, [ref]);
+}
+
+export function Modal({ title, onClose, children, footer, size }: {
+  title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; size?: "sm";
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  useFocusTrap(box, onClose);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="card modal" role="dialog" aria-modal="true" aria-label={title}>
+      <div ref={box} className={`card modal ${size === "sm" ? "modal-sm" : ""}`} role="dialog" aria-modal="true" aria-label={title} data-dialog tabIndex={-1}>
         <div className="card-head">
           <h2>{title}</h2>
           <button className="icon-btn" onClick={onClose} aria-label="关闭">
@@ -73,40 +121,143 @@ export function Modal({ title, onClose, children, footer }: { title: string; onC
           </button>
         </div>
         <div className="card-pad stack">{children}</div>
-        {footer && <div className="card-head" style={{ borderTop: "1px solid var(--border)", borderBottom: "none", justifyContent: "flex-end" }}>{footer}</div>}
+        {footer && <div className="modal-foot">{footer}</div>}
       </div>
     </div>
   );
 }
 
-export function Drawer({ title, onClose, children }: { title: ReactNode; onClose: () => void; children: ReactNode }) {
+/** A confirmation in the console's own dialog (never window.confirm): the consequence in one or two
+ * sentences, then cancel and the action. tone "danger" for deletions and money going out. */
+export function ConfirmDialog({ title, children, confirmText, tone, busy, onConfirm, onClose }: {
+  title: string; children: ReactNode; confirmText: string; tone?: "danger" | "primary"; busy?: boolean;
+  onConfirm: () => void; onClose: () => void;
+}) {
+  return (
+    <Modal title={title} onClose={onClose} size="sm"
+      footer={<>
+        <button className="btn" onClick={onClose} data-autofocus>取消</button>
+        <button className={`btn ${tone === "danger" ? "btn-danger-solid" : "btn-primary"}`} disabled={busy} onClick={onConfirm}>{confirmText}</button>
+      </>}>
+      <div className={`confirm-body ${tone === "danger" ? "danger" : ""}`}>
+        <AlertTriangle size={20} aria-hidden="true" />
+        <div className="stack" style={{ minWidth: 0, flex: 1 }}>{children}</div>
+      </div>
+    </Modal>
+  );
+}
+
+export function Drawer({ title, onClose, children, footer, width }: {
+  title: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; width?: number;
+}) {
   const titleId = useId();
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const box = useRef<HTMLElement>(null);
+  useFocusTrap(box, onClose);
   return (
     <>
       <div className="drawer-backdrop" onClick={onClose} />
-      <aside className="drawer" role="dialog" aria-modal="true" aria-labelledby={titleId}>
-        <div className="card-head" style={{ position: "sticky", top: 0, background: "var(--surface)", zIndex: 1 }}>
+      <aside ref={box} className="drawer" role="dialog" aria-modal="true" aria-labelledby={titleId} data-dialog tabIndex={-1}
+        style={width ? { width: `min(${width}px, 100%)` } : undefined}>
+        <div className="drawer-head">
           <div id={titleId} style={{ minWidth: 0 }}>{title}</div>
           <button className="icon-btn" onClick={onClose} aria-label="关闭">
             <X size={18} />
           </button>
         </div>
-        <div className="card-pad">{children}</div>
+        <div className="drawer-body">{children}</div>
+        {footer && <div className="drawer-foot">{footer}</div>}
       </aside>
     </>
   );
 }
 
-export function Kpi({ label, value, sub }: { label: string; value: ReactNode; sub?: ReactNode }) {
+/** A small menu opened from a button: closes on Escape, a click outside, or choosing an item. */
+export function Dropdown({ label, button, children, align, className }: {
+  label: string; button: ReactNode; children: (close: () => void) => ReactNode; align?: "left" | "right"; className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const id = useId();
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (!root.current?.contains(e.target as Node)) setOpen(false); };
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setOpen(false);
+      toggle.current?.focus();
+    };
+    document.addEventListener("mousedown", away);
+    window.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      window.removeEventListener("keydown", key);
+    };
+  }, [open]);
+  return (
+    <div ref={root} className={`menu ${className ?? ""}`}>
+      <button ref={toggle} type="button" className="menu-toggle" aria-label={label} aria-expanded={open} aria-controls={id}
+        onClick={() => setOpen((v) => !v)}>
+        {button}
+      </button>
+      {open && <div id={id} className={`menu-panel ${align === "left" ? "left" : ""}`}>{children(() => setOpen(false))}</div>}
+    </div>
+  );
+}
+
+const NAV_GROUP: Record<string, string> = {
+  dashboard: "服务", chat: "服务", handoffs: "服务", approvals: "服务", tickets: "服务", refunds: "服务",
+  knowledge: "知识与质量", evals: "知识与质量", flywheel: "知识与质量", traces: "运维", audit: "运维",
+};
+
+/** Page title block: breadcrumb trail (tenant / nav group by default), title, description, actions. */
+export function PageHeader({ title, description, actions, crumbs: given, className }: {
+  title: ReactNode; description?: ReactNode; actions?: ReactNode; crumbs?: string[]; className?: string;
+}) {
+  const { user } = useAuth();
+  const group = NAV_GROUP[useLocation().pathname.split("/")[1] ?? ""];
+  const crumbs = given ?? [user?.tenant.name ?? "", group ?? ""].filter(Boolean);
+  return (
+    <div className={`page-head ${className ?? ""}`}>
+      <div className="page-title">
+        {crumbs && crumbs.length > 0 && (
+          <nav className="breadcrumb" aria-label="当前位置">{crumbs.map((c, i) => <span key={i}>{c}</span>)}</nav>
+        )}
+        <h1>{title}</h1>
+        {description && <p>{description}</p>}
+      </div>
+      {actions && <div className="page-actions">{actions}</div>}
+    </div>
+  );
+}
+
+/** Filter buttons in a segmented control; each is a toggle button (aria-pressed). */
+export function Segmented<T extends string>({ options, value, onChange, label }: {
+  options: [T, ReactNode][]; value: T; onChange: (v: T) => void; label: string;
+}) {
+  return (
+    <div className="segmented" role="group" aria-label={label}>
+      {options.map(([key, text]) => (
+        <button key={key} type="button" className={value === key ? "active" : ""} aria-pressed={value === key} onClick={() => onChange(key)}>{text}</button>
+      ))}
+    </div>
+  );
+}
+
+export function Skeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="skeleton-rows" aria-label="加载中" role="status">
+      {Array.from({ length: rows }, (_, i) => <span key={i} className="skeleton" />)}
+    </div>
+  );
+}
+
+export function Kpi({ label, value, sub, extra }: { label: string; value: ReactNode; sub?: ReactNode; extra?: ReactNode }) {
   return (
     <div className="card kpi">
       <div className="kpi-label">{label}</div>
       <div className="kpi-value">{value}</div>
+      {extra}
       {sub && <div className="kpi-sub">{sub}</div>}
     </div>
   );
@@ -116,12 +267,17 @@ export function Json({ value }: { value: unknown }) {
   return <pre className="json mono">{JSON.stringify(value, null, 2)}</pre>;
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="empty">{children}</div>;
+export function Empty({ children, icon }: { children: ReactNode; icon?: ReactNode }) {
+  return (
+    <div className="empty">
+      {icon !== null && <span className="empty-icon" aria-hidden="true">{icon ?? <Inbox size={22} />}</span>}
+      <div>{children}</div>
+    </div>
+  );
 }
 
 export function ErrorBanner({ error }: { error: string | null }) {
-  return error ? <div className="error-banner">{error}</div> : null;
+  return error ? <div className="error-banner" role="alert">{error}</div> : null;
 }
 
 // How the console names a tenant's industry and greets its customers.

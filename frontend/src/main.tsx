@@ -5,7 +5,7 @@ import App from "./App";
 import { AuthProvider } from "./auth";
 import { initTheme } from "./components/ui";
 import { installReplay, isDemo } from "./demo/replay";
-import "./styles.css";
+import "./styles/index.css";
 
 initTheme();
 

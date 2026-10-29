@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { api } from "../api";
-import { Empty, ErrorBanner, Json, Kpi, ROLE_TEXT, StatusBadge, VerdictBadge, ms, pressable, time, useLoad, tierText } from "../components/ui";
+import { Empty, ErrorBanner, Json, Kpi, ROLE_TEXT, StatusBadge, VerdictBadge, ms, pressable, time, useLoad, tierText, PageHeader } from "../components/ui";
 import type { EvidenceItem, RunRow, SpanRow } from "../types";
 
 const KIND_TEXT: Record<string, string> = {
@@ -96,11 +96,9 @@ export default function TracesPage() {
   if (runId) return <div className="page"><RunDetailView runId={runId} /></div>;
   return (
     <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>链路追踪</h1>
-          <p>每次 Agent 运行都是一条 trace：路由、模型调用、工具、审批、证据校验，全部可回放。日志中的手机号、身份证等信息已脱敏。</p>
-        </div>
+      <PageHeader title="链路追踪"
+        description="每次 Agent 运行都是一条 trace：路由、模型调用、工具、审批、证据校验，全部可回放。日志中的手机号、身份证等信息已脱敏。"
+        actions={<>
         <div className="row">
           <select className="select" style={{ width: 140 }} value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">全部状态</option>
@@ -111,7 +109,7 @@ export default function TracesPage() {
           </select>
           <label className="row small muted"><input type="checkbox" checked={includeEval} onChange={(e) => setIncludeEval(e.target.checked)} /> 含评测运行</label>
         </div>
-      </div>
+        </>} />
       <ErrorBanner error={error} />
       <div className="card table-wrap">
         <table className="table">

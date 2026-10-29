@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
-import { Empty, ErrorBanner, docVersion, time, useLoad } from "../components/ui";
+import { Empty, ErrorBanner, docVersion, time, useLoad, PageHeader } from "../components/ui";
 
 interface AuditEntry {
   id: number;
@@ -139,18 +139,16 @@ export default function AuditPage() {
     () => api.get<AuditEntry[]>(`/api/audit?limit=200${category ? `&category=${category}` : ""}`), [category]);
   return (
     <div className="page stack" style={{ gap: 16 }}>
-      <div className="page-head">
-        <div>
-          <h1>操作审计</h1>
-          <p>管理员对风控额度、知识文档、知识补丁、评测用例和个人数据的修改，以及员工的审批决定、数据导出、人工接待和工单处理：谁、什么时候、做了什么。Agent 自己的操作见链路追踪。</p>
-        </div>
+      <PageHeader title="操作审计"
+        description="管理员对风控额度、知识文档、知识补丁、评测用例和个人数据的修改，以及员工的审批决定、数据导出、人工接待和工单处理：谁、什么时候、做了什么。Agent 自己的操作见链路追踪。"
+        actions={<>
         <div className="row">
           <select className="select" style={{ width: 140 }} value={category} onChange={(e) => setCategory(e.target.value)}
             aria-label="审计记录类别">
             {CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </div>
-      </div>
+        </>} />
       <ErrorBanner error={error} />
       <IntegrityNotice />
       <div className="card table-wrap">

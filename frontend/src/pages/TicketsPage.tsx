@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Check, Hand } from "lucide-react";
 import { api } from "../api";
-import { Empty, ErrorBanner, Modal, time, useLoad } from "../components/ui";
+import { Empty, ErrorBanner, Modal, time, useLoad, PageHeader } from "../components/ui";
 
 interface Ticket {
   id: number;
@@ -95,13 +95,11 @@ export default function TicketsPage() {
 
   return (
     <div className="page stack" style={{ gap: 16 }}>
-      <div className="page-head">
-        <div>
-          <h1>工单</h1>
-          <p>Agent 为顾客创建的工单，按对顾客承诺的响应时限排序。接手后处理，处理结果会发到顾客的对话里。</p>
-        </div>
+      <PageHeader title="工单"
+        description="Agent 为顾客创建的工单，按对顾客承诺的响应时限排序。接手后处理，处理结果会发到顾客的对话里。"
+        actions={<>
         <label className="row small"><input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> 显示已处理</label>
-      </div>
+        </>} />
       <ErrorBanner error={error ?? actionError} />
       <div className="card table-wrap">
         <table className="table">

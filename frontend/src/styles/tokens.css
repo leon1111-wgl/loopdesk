@@ -1,0 +1,142 @@
+/* Design tokens (docs/DESIGN.md). Palette, radii and control sizes follow Semi Design's token system;
+   every text and fill colour is tuned to WCAG AA (>= 4.5:1) on the surface it sits on, in both
+   themes. scripts/contrast.mjs checks the pairs: run `pnpm contrast` after changing a value. */
+
+:root {
+  --bg: #f5f6f7;
+  --surface: #ffffff;
+  --surface-2: #f7f8fa;
+  --hover: #f3f4f6;
+  --pressed: #e9ebee;
+  --border: #e4e6e9;
+  --border-2: #eef0f2;
+  --text: #1c1f23;
+  --text-2: #494c4f;
+  --text-3: #6b7075;
+  --disabled: #b8bcc1;
+
+  --primary: #0064fa;
+  --primary-hover: #0062d6;
+  --primary-soft: #eaf5ff;
+  --primary-line: #cbe7fe;
+  /* Fills that carry white text (buttons, counters); in dark mode they differ from --primary,
+     which must stay light enough to read on dark surfaces. */
+  --primary-solid: #0064fa;
+  --primary-solid-hover: #0057d9;
+
+  --success: #237a2e;
+  --success-soft: #ecf7ec;
+  --success-solid: #237a2e;
+  --warning: #a65200;
+  --warning-soft: #fff8ea;
+  --warning-solid: #a65200;
+  --warning-mark: #fc8800; /* dots and bars only, never text */
+  --danger: #d52515;
+  --danger-soft: #fef2ed;
+  --danger-solid: #d52515;
+  --info: #6a3ac7;
+  --info-soft: #f3eefc;
+
+  /* Chart series, validated as a pair (CVD and normal-vision separation, 3:1 on the surface). */
+  --chart-1: #0064fa;
+  --chart-2: #0a8f9e;
+  --chart-grid: #eef0f2;
+  --nav-bg: #ffffff;
+  --overlay: rgba(22, 22, 26, 0.45);
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--primary);
+  --shadow-float: 0 0 1px rgba(0, 0, 0, 0.3), 0 4px 14px rgba(0, 0, 0, 0.1);
+
+  --radius-sm: 3px;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --control: 32px;
+  --control-sm: 24px;
+  --control-lg: 40px;
+  --topbar: 56px;
+  --nav-width: 216px;
+  --nav-rail: 64px;
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16161a;
+    --surface: #232429;
+    --surface-2: #2a2b30;
+    --hover: #2e2f35;
+    --pressed: #36373e;
+    --border: #3a3c42;
+    --border-2: #303237;
+    --text: #f9f9f9;
+    --text-2: #c6cacd;
+    --text-3: #9fa3a8;
+    --disabled: #5c6066;
+    --primary: #54a9ff;
+    --primary-hover: #7fc1ff;
+    --primary-soft: #14273f;
+    --primary-line: #1f4470;
+    --primary-solid: #0064fa;
+    --primary-solid-hover: #0057d9;
+    --success: #5dc264;
+    --success-soft: #17301b;
+    --success-solid: #237a2e;
+    --warning: #ffae43;
+    --warning-soft: #3a2a12;
+    --warning-solid: #a65200;
+    --warning-mark: #ffae43;
+    --danger: #fc725a;
+    --danger-soft: #3d201c;
+    --danger-solid: #d52515;
+    --info: #a68bf0;
+    --info-soft: #2a2140;
+    --chart-1: #4a90f0;
+    --chart-2: #20a69b;
+    --chart-grid: #303237;
+    --nav-bg: #1c1d22;
+    --overlay: rgba(0, 0, 0, 0.6);
+    --shadow-float: 0 0 1px rgba(0, 0, 0, 0.6), 0 4px 14px rgba(0, 0, 0, 0.45);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #16161a;
+  --surface: #232429;
+  --surface-2: #2a2b30;
+  --hover: #2e2f35;
+  --pressed: #36373e;
+  --border: #3a3c42;
+  --border-2: #303237;
+  --text: #f9f9f9;
+  --text-2: #c6cacd;
+  --text-3: #9fa3a8;
+  --disabled: #5c6066;
+  --primary: #54a9ff;
+  --primary-hover: #7fc1ff;
+  --primary-soft: #14273f;
+  --primary-line: #1f4470;
+  --primary-solid: #0064fa;
+  --primary-solid-hover: #0057d9;
+  --success: #5dc264;
+  --success-soft: #17301b;
+  --success-solid: #237a2e;
+  --warning: #ffae43;
+  --warning-soft: #3a2a12;
+  --warning-solid: #a65200;
+  --warning-mark: #ffae43;
+  --danger: #fc725a;
+  --danger-soft: #3d201c;
+  --danger-solid: #d52515;
+  --info: #a68bf0;
+  --info-soft: #2a2140;
+  --chart-1: #4a90f0;
+  --chart-2: #20a69b;
+  --chart-grid: #303237;
+  --nav-bg: #1c1d22;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --shadow-float: 0 0 1px rgba(0, 0, 0, 0.6), 0 4px 14px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}

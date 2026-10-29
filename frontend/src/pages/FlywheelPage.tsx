@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Check, X } from "lucide-react";
 import { ApiError, api } from "../api";
 import { useAuth } from "../auth";
-import { Empty, ErrorBanner, Kpi, StatusBadge, docVersion, pct, time, useLoad } from "../components/ui";
+import { Empty, ErrorBanner, Kpi, StatusBadge, docVersion, pct, time, useLoad, PageHeader } from "../components/ui";
 
 interface FeedbackRow {
   id: number;
@@ -172,12 +172,8 @@ export default function FlywheelPage() {
   const attributionTotal = Object.values(s?.attribution ?? {}).reduce((a, b) => a + b, 0);
   return (
     <div className="page stack" style={{ gap: 16 }}>
-      <div className="page-head">
-        <div>
-          <h1>数据飞轮</h1>
-          <p>客服的一次纠错 → 失败归因 + 回归评测用例 + 知识补丁草稿。管理员发布补丁后，知识库重建索引、用例转为生效，回归评测验证闭环。</p>
-        </div>
-      </div>
+      <PageHeader title="数据飞轮"
+        description="客服的一次纠错 → 失败归因 + 回归评测用例 + 知识补丁草稿。管理员发布补丁后，知识库重建索引、用例转为生效，回归评测验证闭环。" />
       <ErrorBanner error={error} />
       {disputed && (
         <div className="card" role="alert">

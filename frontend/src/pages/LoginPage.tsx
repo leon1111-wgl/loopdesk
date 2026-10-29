@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ArrowRight, BookOpenCheck, Check, ChevronRight, Github, Headset, ShieldCheck } from "lucide-react";
+import { ArrowRight, BookOpenCheck, Check, Github, Headset, ShieldCheck } from "lucide-react";
 import { REPO_URL, isDemo, recording } from "../demo/replay";
 import { api } from "../api";
 import { useAuth } from "../auth";
@@ -61,64 +61,58 @@ export default function LoginPage() {
         密码
         <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" placeholder="输入登录密码" />
       </label>
-      <button className="btn btn-primary" disabled={busy || !email || !password}>
+      <button className="btn btn-primary btn-lg" disabled={busy || !email || !password}>
         {busy ? "登录中…" : "登录工作台"}<ArrowRight size={16} aria-hidden="true" />
       </button>
     </form>
   );
 
+  const INDUSTRY: Record<string, string> = { "Echo音乐": "音乐流媒体", "Leon优选": "电商零售", "Iris云文档": "SaaS 服务" };
+
   return (
     <div className="login">
-      <section className="login-intro">
-        <div className="login-brand">
-          <Logo size={32} />
-          <b>LoopDesk</b>
-          <span className="login-brand-label">CUSTOMER OPERATIONS</span>
-        </div>
-        <div className="headline">
-          <div className="eyebrow">让每一次服务，都有据可循</div>
-          <h1>更好的服务，<br /><span>从容发生。</span></h1>
-          <p className="lead">
-            把智能客服、业务处理与团队协作，连接在一个清晰的工作台。让回答有出处，让复杂问题有人跟进。
-          </p>
-          <div className="service-flow" aria-label="服务处理流程示意">
-            <div className="flow-heading"><span>从提问，到解决</span><span>服务流程</span></div>
-            <div className="flow-steps">
-              <div><span className="flow-icon"><Headset size={20} /></span><b>接住问题</b><small>统一服务入口</small></div>
-              <ChevronRight size={16} className="flow-arrow" aria-hidden="true" />
-              <div><span className="flow-icon"><BookOpenCheck size={20} /></span><b>找到依据</b><small>知识与业务数据</small></div>
-              <ChevronRight size={16} className="flow-arrow" aria-hidden="true" />
-              <div><span className="flow-icon"><ShieldCheck size={20} /></span><b>妥善解决</b><small>校验与人工协作</small></div>
+      <header className="login-top">
+        <div className="login-brand"><Logo size={28} /><b>LoopDesk</b><span className="login-brand-label">智能客服工作台</span></div>
+        <a href={REPO_URL} target="_blank" rel="noreferrer" className="login-source"><Github size={15} aria-hidden="true" /> 项目源码</a>
+      </header>
+      <main className="login-main">
+        <div className="login-frame">
+          <section className="login-intro" aria-label="产品介绍">
+            <div className="eyebrow">让每一次服务，都有据可循</div>
+            <h1>多租户智能客服与人工协作平台</h1>
+            <p className="lead">智能客服、业务处理与团队协作在一个工作台：回答逐句核对出处，退款等高风险操作交给人工审批，每次纠错都沉淀为知识与评测用例。</p>
+            <ol className="service-flow" aria-label="服务处理流程">
+              <li><span className="flow-icon"><Headset size={16} aria-hidden="true" /></span><b>接住问题</b><small>统一服务入口</small></li>
+              <li><span className="flow-icon"><BookOpenCheck size={16} aria-hidden="true" /></span><b>找到依据</b><small>知识与业务数据</small></li>
+              <li><span className="flow-icon"><ShieldCheck size={16} aria-hidden="true" /></span><b>妥善解决</b><small>校验与人工协作</small></li>
+            </ol>
+            <ul className="capabilities">
+              {CAPABILITIES.map(([title, text]) => (
+                <li className="capability" key={title}>
+                  <Check size={14} aria-hidden="true" />
+                  <span><b>{title}</b><span className="desc">{text}</span></span>
+                </li>
+              ))}
+            </ul>
+            <div className="foot">Leon Wang · 个人作品 · 所有企业、人员与订单均为虚构（SYNTHETIC）</div>
+          </section>
+          <section className="login-panel">
+            <div className="login-heading">
+              <h2>{isDemo || demo?.accounts.length ? "选择演示账号" : "登录工作台"}</h2>
+              <p className="muted">{isDemo || demo?.accounts.length ? "从顾客、客服坐席或管理员的视角，体验一次完整服务。" : "使用工作邮箱登录，开始今天的服务。"}</p>
             </div>
-          </div>
-          <div className="capabilities">
-            {CAPABILITIES.map(([title, text]) => (
-              <div className="capability" key={title}>
-                <Check size={16} aria-hidden="true" />
-                <b>{title}</b>
-                <span className="desc">{text}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="foot"><span>DESIGNED FOR THOUGHTFUL SERVICE</span><span>Leon Wang · 个人作品 · 所有企业与业务数据均为虚构</span></div>
-      </section>
-      <section className="login-panel">
-        <div className="login-card">
-          <div className="login-panel-top"><span className="eyebrow">LOOPDESK WORKSPACE</span><a href={REPO_URL} target="_blank" rel="noreferrer"><Github size={16} /> 源码 <ArrowRight size={14} /></a></div>
-          <div className="login-heading">
-            <h2>{isDemo ? "选择你的工作视角" : "欢迎回到工作台"}</h2>
-            <p className="muted">{isDemo ? "从顾客、坐席或管理员的视角，体验一次完整服务。" : "使用工作邮箱登录，开始今天的服务。"}</p>
-          </div>
-          {error && <div className="error-banner" role="alert">{error}</div>}
-          {!isDemo && loginForm}
-          {demo && demo.accounts.length > 0 && (
-            <div className="stack login-accounts">
-              <div className="login-section-label"><span>演示空间</span><span>选择角色，即刻进入 <ArrowRight size={13} /></span></div>
+            {error && <div className="error-banner" role="alert">{error}</div>}
+            {!isDemo && !demo?.accounts.length && loginForm}
+            {demo && demo.accounts.length > 0 && (
               <div className="account-list">
                 {tenants.map((tenant, i) => (
                   <section className="account-tenant" key={tenant} aria-label={tenant}>
-                    <div className="account-group"><span className={`tenant-monogram tenant-${i}`}>{tenant.slice(0, 1)}</span><b>{tenant}</b><span className="faint">{i === 0 ? "主场景" : "跨行业场景"}</span></div>
+                    <div className="account-group">
+                      <span className={`tenant-monogram tenant-${i}`} aria-hidden="true">{tenant.slice(0, 1)}</span>
+                      <b>{tenant}</b>
+                      {INDUSTRY[tenant] && <span className="badge">{INDUSTRY[tenant]}</span>}
+                      <span className="faint">{i === 0 ? "主场景" : "跨行业场景"}</span>
+                    </div>
                     <div className="account-grid">
                     {demo.accounts.filter((a) => a.tenant === tenant).map((a) => (
                       <button key={a.email} className="account" disabled={busy}
@@ -133,12 +127,12 @@ export default function LoginPage() {
                   </section>
                 ))}
               </div>
-            </div>
-          )}
-          {isDemo && <div className="login-disclosure"><ShieldCheck size={17} aria-hidden="true" /><p>{demoSource()}。可浏览与回放示例，提交类操作不会保存。</p></div>}
-          {isDemo && <details className="login-other"><summary>使用邮箱登录</summary>{loginForm}</details>}
+            )}
+            {isDemo && <div className="login-disclosure"><ShieldCheck size={15} aria-hidden="true" /><p>{demoSource()}。可浏览与回放示例，提交类操作不会保存。</p></div>}
+            {(isDemo || (demo?.accounts.length ?? 0) > 0) && <details className="login-other"><summary>使用邮箱登录</summary>{loginForm}</details>}
+          </section>
         </div>
-      </section>
+      </main>
     </div>
   );
 }

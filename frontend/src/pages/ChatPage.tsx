@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { demoQuestions, isDemo } from "../demo/replay";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { FlaskConical, Grid3x3, History, Mic, MicOff, PencilLine, Plus, Send, ShieldAlert, Square, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { Activity, FlaskConical, Grid3x3, History, Mic, MicOff, PencilLine, Plus, Search, Send, ShieldAlert, Square, ThumbsDown, ThumbsUp, X } from "lucide-react";
 import { ApiError, api, streamChat } from "../api";
 import { isStaff, useAuth } from "../auth";
 import { CHANNEL_TEXT, CUSTOMER_GREETING, Logo, Modal, StatusBadge, TOOL_TEXT, VerdictBadge, Json, prefersReducedMotion, pressable, time, useMediaQuery, tierText } from "../components/ui";
@@ -96,6 +96,19 @@ function AnswerText({ text, citations, verification }: { text: string; citations
           <Fragment key={i}>{nodes}</Fragment>
         );
       })}
+    </div>
+  );
+}
+
+/** The documents an answer cites, by title: the evidence behind the [n] chips in the text. */
+function Sources({ citations }: { citations: EvidenceItem[] }) {
+  const docs = citations.filter((c) => c.kind === "kb");
+  const titles = [...new Map(docs.map((c) => [c.title, c])).values()];
+  if (!titles.length) return null;
+  return (
+    <div className="cite-sources">
+      <span>依据</span>
+      {titles.map((c) => <span key={c.ref} className="cite-chip" title={c.meta.heading ?? c.title}>《{c.title}》</span>)}
     </div>
   );
 }
@@ -249,6 +262,7 @@ export default function ChatPage() {
   const [correcting, setCorrecting] = useState<ChatMessage | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
   const busy = Boolean(live && !live.done);
   // Narrow screens hide the conversation list; it opens as a drawer from the chat bar.
@@ -585,6 +599,7 @@ export default function ChatPage() {
     }
   }
 
+  const current = conversations.find((c) => c.id === conversationId);
   const liveText = live ? live.steps[Math.max(0, ...Object.keys(live.steps).map(Number))] ?? "" : "";
   const tenant = user?.tenant.slug ?? "leon";
   const suggestions = [...(SUGGESTIONS[tenant] ?? []), ...(staff && tenant === "leon" ? STAFF_EXTRA : [])];
@@ -603,51 +618,65 @@ export default function ChatPage() {
         {...(listOpen ? { role: "dialog", "aria-modal": true } : {})}
       >
         <div className="convo-list-head">
-          <button className="btn" style={{ flex: 1 }} onClick={() => openConversation("/chat")}>
-            <Plus size={15} /> 新建对话
+          <span className="convo-list-title">{staff ? "测试对话" : "我的对话"}</span>
+          <span className="faint">{conversations.length}</span>
+          <span className="spacer" />
+          <button className="btn btn-sm btn-primary" onClick={() => openConversation("/chat")}>
+            <Plus size={14} /> 新建对话
           </button>
           <button ref={historyClose} className="icon-btn history-close" aria-label="关闭历史对话" onClick={closeHistory}>
             <X size={18} />
           </button>
         </div>
-        {conversations.length === 0 && <div className="empty">暂无历史对话</div>}
-        {conversations.map((c) => (
-          <div key={c.id} className={`convo-item ${c.id === conversationId ? "active" : ""}`} role="link"
-            aria-current={c.id === conversationId ? "page" : undefined} {...pressable(() => openConversation(`/chat/${c.id}`))}>
-            <div className="title ellipsis">{c.title}</div>
-            <div className="row faint" style={{ marginTop: 2 }}>
-              {time(c.updated_at)}
-              {c.status === "handoff" && <span className="badge badge-info">已转人工</span>}
-              {c.channel !== "web" && <span className="badge">{CHANNEL_TEXT[c.channel] ?? c.channel}</span>}
+        {conversations.length > 6 && (
+          <label className="search-input convo-search">
+            <Search size={14} aria-hidden="true" style={{ left: 21 }} />
+            <input className="input" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="搜索对话标题" aria-label="搜索对话" />
+          </label>
+        )}
+        <div className="convo-items">
+          {conversations.length === 0 && <div className="empty">暂无历史对话</div>}
+          {conversations.filter((c) => !filter.trim() || c.title.includes(filter.trim())).map((c) => (
+            <div key={c.id} className={`convo-item ${c.id === conversationId ? "active" : ""}`} role="link"
+              aria-current={c.id === conversationId ? "page" : undefined} {...pressable(() => openConversation(`/chat/${c.id}`))}>
+              <div className="title ellipsis">{c.title}</div>
+              <div className="row faint" style={{ marginTop: 2 }}>
+                {time(c.updated_at)}
+                {c.status === "handoff" && <span className="badge badge-info">已转人工</span>}
+                {c.channel !== "web" && <span className="badge">{CHANNEL_TEXT[c.channel] ?? c.channel}</span>}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </aside>
 
       <section className="chat-main" inert={listOpen || undefined}>
-        <div className="chat-bar">
+        <div className="chat-head">
           <button
             ref={historyToggle}
-            className="btn btn-sm history-toggle"
+            className="btn btn-sm history-toggle mobile-only"
             aria-expanded={listOpen}
             aria-controls="convo-list"
             onClick={() => setHistoryOpen(true)}
           >
             <History size={14} /> 历史对话{conversations.length > 0 && ` · ${conversations.length}`}
           </button>
+          <h2 className="ellipsis">{current?.title ?? (staff ? "新的测试对话" : "新对话")}</h2>
+          {current?.status === "handoff" && <span className="badge badge-info">已转人工</span>}
+          {staff && <span className="badge badge-primary hide-compact">员工视角 · 可见工具与证据校验</span>}
           <span className="spacer" />
-          <button className="btn btn-sm" onClick={() => navigate("/chat")}>
+          <button className="btn btn-sm mobile-only" onClick={() => navigate("/chat")}>
             <Plus size={14} /> 新建对话
           </button>
         </div>
         <div className="messages">
           {messages.length === 0 && !pendingUser && (
             <div className="welcome">
-              <div className="welcome-mark"><Logo size={36} /></div>
-              <h2>{user?.tenant.name} · {staff ? "对话测试台" : "在线客服"}</h2>
+              <div className="welcome-mark"><Logo size={40} /></div>
+              <h2>{staff ? `${user?.tenant.name} · 对话测试台` : `您好，这里是 ${user?.tenant.name} 在线客服`}</h2>
               <p className="muted" style={{ marginTop: 6 }}>
                 {staff
-                  ? "以员工身份测试 Agent。右侧会实时显示工具调用、审批和证据校验过程。"
+                  ? "以员工身份测试 Agent：选一个场景或直接提问，右侧会实时显示护栏、工具调用、审批和证据校验过程。"
                   : CUSTOMER_GREETING[user?.tenant.industry ?? ""] ?? "您好，请问有什么可以帮您？"}
               </p>
               <div className="suggestion-list">
@@ -670,7 +699,10 @@ export default function ChatPage() {
               <div className="bubble">
                 {m.role === "agent" && <div className="faint small" style={{ marginBottom: 4 }}>人工客服 {m.meta.agent}</div>}
                 {m.role === "assistant" ? (
-                  <AnswerText text={m.content} citations={m.meta.citations ?? []} verification={m.meta.verification} />
+                  <>
+                    <AnswerText text={m.content} citations={m.meta.citations ?? []} verification={m.meta.verification} />
+                    <Sources citations={m.meta.citations ?? []} />
+                  </>
                 ) : (
                   <div className="bubble-text">{m.content}</div>
                 )}
@@ -818,7 +850,8 @@ export default function ChatPage() {
 
       {staff && (
         <aside className="inspector">
-          <div className="inspector-head"><h3>运行详情</h3></div>
+          <div className="inspector-head"><Activity size={15} aria-hidden="true" /><h3>运行详情</h3>
+            {live && <span className={`badge ${live.done ? "badge-success" : "badge-primary"}`} style={{ marginLeft: "auto" }}>{live.done ? "已完成" : "运行中"}</span>}</div>
           <div className="inspector-body">
           {!live && <div className="faint">发送一条消息后，这里会按顺序列出护栏检查、工具调用、审批和证据校验的结果。</div>}
           {live && Object.keys(live.steps).length > 1 && (

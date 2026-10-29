@@ -1,8 +1,9 @@
-import { useRef, useState } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AlertTriangle, Check, FilePlus2, MessageSquarePlus, Pencil, Search, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import { Drawer, Empty, ErrorBanner, Modal, docVersion, pressable, time, useLoad } from "../components/ui";
+import { ConfirmDialog, Drawer, Empty, ErrorBanner, Modal, PageHeader, Skeleton, docVersion, pressable, time, useLoad } from "../components/ui";
 import type { DocumentRow } from "../types";
 
 interface DocChunk {
@@ -62,12 +63,12 @@ function RetrievalDebugger() {
       </div>
       <div className="card-pad stack">
         <div className="row">
-          <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} />
-          <select className="select" style={{ width: 140 }} value={scope} onChange={(e) => setScope(e.target.value)}>
+          <input className="input" aria-label="检索问题" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} />
+          <select className="select" style={{ width: 140, flexShrink: 0 }} aria-label="检索范围" value={scope} onChange={(e) => setScope(e.target.value)}>
             <option value="customer">顾客可见范围</option>
             <option value="staff">员工可见范围</option>
           </select>
-          <button className="btn btn-primary" onClick={run}><Search size={15} /> 检索</button>
+          <button className="btn btn-primary" style={{ flexShrink: 0 }} onClick={run}><Search size={15} /> 检索</button>
         </div>
         <ErrorBanner error={error} />
         {result && (
@@ -272,10 +273,10 @@ function OfficialChannelsCard({ admin, onChange }: { admin: boolean; onChange: (
       {draft ? (
         <div className="stack">
           <label className="stack small">官方域名（含子域名，每行一个）
-            <textarea rows={3} value={draft.domains} onChange={(e) => setDraft({ ...draft, domains: e.target.value })} />
+            <textarea className="textarea" rows={3} value={draft.domains} onChange={(e) => setDraft({ ...draft, domains: e.target.value })} />
           </label>
           <label className="stack small">官方客服账号（微信号、QQ 号或群号，每行一个）
-            <textarea rows={2} value={draft.contacts} onChange={(e) => setDraft({ ...draft, contacts: e.target.value })} />
+            <textarea className="textarea" rows={2} value={draft.contacts} onChange={(e) => setDraft({ ...draft, contacts: e.target.value })} />
           </label>
           <div className="row">
             <button className="btn btn-primary btn-sm" onClick={() => save({ official_domains: lines(draft.domains), official_contacts: lines(draft.contacts) })}>
@@ -317,9 +318,9 @@ function OfficialChannelsCard({ admin, onChange }: { admin: boolean; onChange: (
   );
 }
 
-function ConflictsCard({ admin, onChange }: { admin: boolean; onChange: () => void }) {
-  const { data, reload } = useLoad(() => api.get<Conflict[]>("/api/kb/conflicts"));
-  if (!data || data.length === 0) return null;
+function ConflictsCard({ admin, data, reload, onChange }: { admin: boolean; data: Conflict[] | null; reload: () => void; onChange: () => void }) {
+  if (!data) return <div className="card"><Skeleton rows={3} /></div>;
+  if (data.length === 0) return <div className="card"><Empty>没有待核对的知识冲突。两份文档对同一规则写了不同数字时，会出现在这里。</Empty></div>;
   async function resolve(id: number) {
     try {
       await api.post(`/api/kb/conflicts/${id}/resolve`, { note: "已核对" });
@@ -338,7 +339,7 @@ function ConflictsCard({ admin, onChange }: { admin: boolean; onChange: () => vo
       </div>
       <div className="card-pad stack">
         {data.map((c) => (
-          <div key={c.id} className="json small stack" style={{ gap: 6 }}>
+          <div key={c.id} className="conflict-item">
             <div className="row">
               {Object.entries(c.detail).map(([unit, v]) => (
                 <span key={unit} className="badge badge-warning">{unit}：{v.this.join("、")} ≠ {v.other.join("、")}</span>
@@ -361,107 +362,157 @@ function ConflictsCard({ admin, onChange }: { admin: boolean; onChange: () => vo
   );
 }
 
+type Tab = "docs" | "conflicts" | "channels" | "debug";
+
+/** WAI-ARIA tabs: arrow keys move between tabs, each tab controls one panel. */
+function Tabs({ tabs, value, onChange, label }: { tabs: [Tab, ReactNode][]; value: Tab; onChange: (t: Tab) => void; label: string }) {
+  const base = useId();
+  return (
+    <div className="tabs" role="tablist" aria-label={label}
+      onKeyDown={(e) => {
+        if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+        const i = tabs.findIndex(([k]) => k === value);
+        const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length][0];
+        onChange(next);
+        document.getElementById(`${base}-${next}`)?.focus();
+      }}>
+      {tabs.map(([key, text]) => (
+        <button key={key} id={`${base}-${key}`} type="button" role="tab" aria-selected={value === key} tabIndex={value === key ? 0 : -1}
+          className={value === key ? "active" : ""} onClick={() => onChange(key)}>{text}</button>
+      ))}
+    </div>
+  );
+}
+
 export default function KnowledgePage() {
   const { user } = useAuth();
   const admin = user?.role === "admin";
+  const [params, setParams] = useSearchParams();
+  const tab = (["docs", "conflicts", "channels", "debug"].includes(params.get("tab") ?? "") ? params.get("tab") : "docs") as Tab;
+  const setTab = (t: Tab) => setParams(t === "docs" ? {} : { tab: t }, { replace: true });
   const { data, error, reload } = useLoad(() => api.get<DocumentRow[]>("/api/kb/documents"));
+  const conflicts = useLoad(() => api.get<Conflict[]>("/api/kb/conflicts"));
   const [detail, setDetail] = useState<DocDetail | null>(null);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [revision, setRevision] = useState(0); // remounts the conflicts card after a document changes
+  const [query, setQuery] = useState("");
+  const [confirm, setConfirm] = useState<{ kind: "release"; chunk: DocChunk } | { kind: "remove"; id: number } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   function changed() {
     reload();
-    setRevision((r) => r + 1);
+    conflicts.reload();
   }
 
   async function open(id: number) {
     setDetail(await api.get<DocDetail>(`/api/kb/documents/${id}`));
   }
   async function release(chunk: DocChunk) {
-    const reasons = chunk.flag_reasons.map((r) => r.text).join("、");
-    const note = chunk.flag_reasons.some((r) => r.code === "outside_link" || r.code === "private_contact")
-      ? "\n\n注意：放行不会让回答里的站外链接或客服账号通过；如果它们是你们自己的，请加到“官方渠道”。" : "";
-    if (!window.confirm(`放行后这个片段会进入检索，顾客的问题可能用到它。确认已经读过全文，“${reasons}”是误判吗？${note}`)) return;
+    setConfirm(null);
     setDetail(await api.post<DocDetail>(`/api/kb/chunks/${chunk.id}/release`, {}));
     changed();
   }
   async function propose(id: number) {
     try {
       const r = await api.post<{ patch_id: number; sections: number; questions: number }>(`/api/kb/documents/${id}/questions`, {});
-      window.alert(`已为 ${r.sections} 个片段生成 ${r.questions} 条口语问法（补丁 #${r.patch_id}），请到「数据飞轮」审核后发布；发布前不影响检索。`);
+      setMessage(`已为 ${r.sections} 个片段生成 ${r.questions} 条口语问法（补丁 #${r.patch_id}），请到「数据飞轮」审核后发布；发布前不影响检索。`);
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : String(e));
+      setMessage(e instanceof Error ? e.message : String(e));
     }
   }
   async function remove(id: number) {
-    if (!window.confirm("删除后该文档的所有片段会从索引中移除，确定吗？")) return;
+    setConfirm(null);
     await api.del(`/api/kb/documents/${id}`);
     setDetail(null);
     changed();
   }
 
+  const docs = (data ?? []).filter((d) => !query.trim() || d.title.includes(query.trim()));
+  const flagged = (data ?? []).reduce((n, d) => n + d.flagged_chunks, 0);
   return (
     <div className="page stack" style={{ gap: 16 }}>
-      <div className="page-head">
-        <div>
-          <h1>知识库</h1>
-          <p>文档按标题切分并保留章节路径。入库时扫描提示注入和诈骗话术（索要验证码或银行卡号、私人微信、转账），命中的片段不进入检索，等管理员复核。</p>
-        </div>
-        {admin && <button className="btn btn-primary" onClick={() => setAdding(true)}><FilePlus2 size={16} /> 新增文档</button>}
-      </div>
+      <PageHeader title="知识库"
+        description="文档按标题切分并保留章节路径。入库时扫描提示注入和诈骗话术（索要验证码或银行卡号、私人微信、转账），命中的片段不进入检索，等管理员复核。"
+        actions={admin && <button className="btn btn-primary" onClick={() => setAdding(true)}><FilePlus2 size={16} /> 新增文档</button>} />
       <ErrorBanner error={error} />
-      <div className="card table-wrap">
-        <table className="table">
-          <thead><tr><th>标题</th><th>可见范围</th><th>片段数</th><th>安全扫描</th><th>知识冲突</th><th>版本</th><th>更新时间</th></tr></thead>
-          <tbody>
-            {data?.map((d) => (
-              <tr key={d.id} className="clickable" {...pressable(() => open(d.id))}>
-                <td><b>{d.title}</b> <span className="faint">{d.source}</span></td>
-                <td>{d.visibility === "public" ? <span className="badge badge-primary">公开</span> : <span className="badge badge-info">仅内部</span>}</td>
-                <td>{d.chunk_count}</td>
-                <td>{d.flagged_chunks ? <span className="badge badge-danger"><AlertTriangle size={12} /> {d.flagged_chunks} 个片段待复核</span> : <span className="faint">无</span>}</td>
-                <td>{d.conflicts ? <span className="badge badge-warning">{d.conflicts} 处待核对</span> : <span className="faint">无</span>}</td>
-                <td>{docVersion(d.version)}</td>
-                <td className="faint">{time(d.updated_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {message && <div className="notice" role="status">{message}</div>}
+      <Tabs label="知识库视图" value={tab} onChange={setTab} tabs={[
+        ["docs", <>文档<span className="count">{data?.length ?? ""}</span></>],
+        ["conflicts", <>知识冲突{conflicts.data && conflicts.data.length > 0 && <span className="badge badge-warning tab-badge">{conflicts.data.length}</span>}</>],
+        ["channels", "官方渠道"],
+        ["debug", "检索调试"],
+      ]} />
+      <div role="tabpanel" className="stack" style={{ gap: 16 }}>
+        {tab === "docs" && (
+          <div className="card">
+            <div className="card-toolbar">
+              <label className="search-input" style={{ width: 260, maxWidth: "100%" }}>
+                <Search size={14} aria-hidden="true" />
+                <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="按标题搜索" aria-label="按标题搜索文档" />
+              </label>
+              <span className="spacer" />
+              {flagged > 0 && <span className="badge badge-danger"><AlertTriangle size={12} /> {flagged} 个片段待复核</span>}
+              <span className="faint">{docs.length} 份文档</span>
+            </div>
+            {!data ? <Skeleton rows={5} /> : (
+              <div className="table-wrap">
+                <table className="table">
+                  <thead><tr><th>标题</th><th>可见范围</th><th className="num">片段数</th><th>安全扫描</th><th>知识冲突</th><th>版本</th><th>更新时间</th></tr></thead>
+                  <tbody>
+                    {docs.map((d) => (
+                      <tr key={d.id} className="clickable" {...pressable(() => open(d.id))}>
+                        <td><b>{d.title}</b> <span className="faint">{d.source}</span></td>
+                        <td>{d.visibility === "public" ? <span className="badge badge-primary">公开</span> : <span className="badge badge-info">仅内部</span>}</td>
+                        <td className="num">{d.chunk_count}</td>
+                        <td>{d.flagged_chunks ? <span className="badge badge-danger"><AlertTriangle size={12} /> {d.flagged_chunks} 个片段待复核</span> : <span className="faint">无</span>}</td>
+                        <td>{d.conflicts ? <span className="badge badge-warning">{d.conflicts} 处待核对</span> : <span className="faint">无</span>}</td>
+                        <td>{docVersion(d.version)}</td>
+                        <td className="faint nowrap">{time(d.updated_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {docs.length === 0 && <Empty>{query ? "没有标题匹配的文档" : "知识库还没有文档"}</Empty>}
+              </div>
+            )}
+          </div>
+        )}
+        {tab === "conflicts" && <ConflictsCard admin={admin} data={conflicts.data} reload={conflicts.reload} onChange={reload} />}
+        {tab === "channels" && <OfficialChannelsCard admin={admin} onChange={changed} />}
+        {tab === "debug" && <RetrievalDebugger />}
       </div>
-      <OfficialChannelsCard admin={admin} onChange={changed} />
-      <ConflictsCard key={revision} admin={admin} onChange={reload} />
-      <RetrievalDebugger />
       {adding && <AddDocModal onClose={() => setAdding(false)} onDone={() => { setAdding(false); changed(); }} />}
       {editing && detail && <EditDocModal doc={detail} onClose={() => setEditing(false)}
         onDone={() => { setEditing(false); changed(); open(detail.id); }} />}
       {detail && (
-        <Drawer title={<div><h2>{detail.title}</h2><div className="faint">{detail.chunk_count} 个片段 · 版本 {docVersion(detail.version)}</div></div>} onClose={() => setDetail(null)}>
-          <div className="stack">
+        <Drawer title={<div><h2>{detail.title}</h2><div className="faint">{detail.chunk_count} 个片段 · 版本 {docVersion(detail.version)} · {detail.visibility === "public" ? "公开" : "仅内部"}</div></div>}
+          onClose={() => setDetail(null)}>
+          <div className="stack" style={{ gap: 12 }}>
             {admin && (
-              <div className="row">
+              <div className="row row-wrap">
                 <button className="btn" onClick={() => setEditing(true)}>
                   <Pencil size={15} /> {detail.chunks.some((c) => c.page) ? "修改标题和可见范围" : "编辑"}</button>
                 <button className="btn" onClick={() => propose(detail.id)}
                   title="用模型为每个片段写 3-5 个顾客口语问法，审核发布后作为检索索引">
                   <MessageSquarePlus size={15} /> 生成口语问法</button>
-                <button className="btn btn-danger" onClick={() => remove(detail.id)}><Trash2 size={15} /> 删除文档</button>
+                <span className="spacer" />
+                <button className="btn btn-danger" onClick={() => setConfirm({ kind: "remove", id: detail.id })}><Trash2 size={15} /> 删除文档</button>
               </div>
             )}
             {detail.chunks.map((c) => (
-              <div key={c.id} className="json" style={c.flagged_injection ? { outline: "2px solid var(--danger)" } : undefined}>
+              <div key={c.id} className={`chunk ${c.flagged_injection ? "flagged" : ""}`}>
                 <div className="row faint">#{c.ord} · {c.heading || "（无标题）"}{c.page && ` · 第 ${c.page} 页`}
                   {c.flagged_injection && <span className="badge badge-danger">待复核，未进入检索</span>}
                   {!c.flagged_injection && c.reviewed_at && <span className="badge" title={time(c.reviewed_at)}>已复核放行</span>}
                 </div>
                 {c.flag_reasons.length > 0 && (
-                  <div className="row small">
+                  <div className="row row-wrap small">
                     <span className="faint">命中：</span>
                     {c.flag_reasons.map((r) => <span key={r.code} className="badge badge-warning">{r.text}</span>)}
                   </div>
                 )}
                 <div style={{ whiteSpace: "pre-wrap" }}>{c.text}</div>
                 {admin && c.flagged_injection && (
-                  <button className="btn btn-sm" style={{ width: "fit-content" }} onClick={() => release(c)}>
+                  <button className="btn btn-sm" style={{ width: "fit-content" }} onClick={() => setConfirm({ kind: "release", chunk: c })}>
                     <Check size={14} /> 复核无害，放行
                   </button>
                 )}
@@ -469,6 +520,19 @@ export default function KnowledgePage() {
             ))}
           </div>
         </Drawer>
+      )}
+      {confirm?.kind === "release" && (
+        <ConfirmDialog title="放行这个片段" confirmText="确认放行" onClose={() => setConfirm(null)} onConfirm={() => void release(confirm.chunk)}>
+          <p>放行后这个片段会进入检索，顾客的问题可能用到它。确认已经读过全文，“{confirm.chunk.flag_reasons.map((r) => r.text).join("、")}”是误判吗？</p>
+          {confirm.chunk.flag_reasons.some((r) => r.code === "outside_link" || r.code === "private_contact") && (
+            <p className="small muted">放行不会让回答里的站外链接或客服账号通过；如果它们是你们自己的，请加到“官方渠道”。</p>
+          )}
+        </ConfirmDialog>
+      )}
+      {confirm?.kind === "remove" && (
+        <ConfirmDialog title="删除文档" confirmText="删除" tone="danger" onClose={() => setConfirm(null)} onConfirm={() => void remove(confirm.id)}>
+          <p>删除后该文档的所有片段会从索引中移除，确定吗？</p>
+        </ConfirmDialog>
       )}
     </div>
   );

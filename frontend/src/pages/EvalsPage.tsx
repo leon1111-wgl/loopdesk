@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Play } from "lucide-react";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import { Empty, ErrorBanner, Kpi, StatusBadge, ms, pct, time, useLoad } from "../components/ui";
+import { Empty, ErrorBanner, Kpi, StatusBadge, ms, pct, time, useLoad, PageHeader } from "../components/ui";
 import type { EvalCase, EvalRunRow } from "../types";
 
 const CHECK_TEXT: Record<string, string> = {
@@ -61,11 +61,9 @@ export default function EvalsPage() {
   const m = detail?.metrics;
   return (
     <div className="page stack" style={{ gap: 16 }}>
-      <div className="page-head">
-        <div>
-          <h1>评测中心</h1>
-          <p>每条用例都走真实 Agent 循环（演练模式，不写业务数据），按轨迹打分：工具是否调对、是否触发审批、检索是否命中、回答是否通过证据校验。CI 中通过率低于阈值即阻止合并。</p>
-        </div>
+      <PageHeader title="评测中心"
+        description="每条用例都走真实 Agent 循环（演练模式，不写业务数据），按轨迹打分：工具是否调对、是否触发审批、检索是否命中、回答是否通过证据校验。CI 中通过率低于阈值即阻止合并。"
+        actions={<>
         {admin && (
           <div className="row">
             <label className="row small muted">
@@ -78,7 +76,7 @@ export default function EvalsPage() {
             <button className="btn btn-primary" disabled={busy} onClick={runSuite}><Play size={15} /> {busy ? "运行中…" : "运行回归评测"}</button>
           </div>
         )}
-      </div>
+        </>} />
       <ErrorBanner error={error ?? runs.error} />
       {m && detail && (
         <>
