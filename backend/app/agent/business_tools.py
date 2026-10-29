@@ -930,6 +930,7 @@ def build_registry() -> ToolRegistry:
         precheck=_refund_precheck,
         approval=_refund_policy,
         executed=_refund_executed,
+        repeat_on=("order_id",),
     ))
     registry.register(ToolDef(
         name="withdraw_refund_request",
@@ -969,5 +970,6 @@ def build_registry() -> ToolRegistry:
         },
         handler=handoff_to_human,
         risk="write",
+        repeat_on=(),  # one handoff per run, however the reason is worded
     ))
     return registry

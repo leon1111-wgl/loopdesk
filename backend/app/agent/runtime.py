@@ -48,7 +48,8 @@ from ..textutil import ORDER_ID_RE, asks_for_person, normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
 from .status_templates import case_state, compose as compose_status
-from .tools import ApprovalNeed, ApprovalRequired, Evidence, ToolContext, ToolError, ToolRegistry, ToolUnavailable
+from .tools import (ApprovalNeed, ApprovalRequired, Evidence, ToolContext, ToolDef, ToolError, ToolRegistry,
+                    ToolUnavailable)
 from ..tooling.output_scan import scan_output
 from ..tooling.toolset import toolset_for
 from .tracing import Tracer
@@ -71,6 +72,7 @@ UNSAFE_TEXT = ("抱歉，这条回复涉及您的账户和资金安全，没有�
 UNSAFE_REASON = "回答里有索要验证码、银行卡号、密码，或官方渠道以外的链接、联系方式、转账要求，已拦截并转人工"
 APPROVED_FALLBACK_TEXT = "您的申请已通过人工审核并处理完成。"
 REPEATED_CALL_NOTE = "与本步另一次调用的工具和参数完全相同，未重复执行，结果见那一次"
+DONE_WRITE_NOTE = "这项操作在本次处理的前面一步已经执行过，未重复执行，结果见那一步"
 # The answer still failed the check after one re-ask (LOOPDESK_VERIFIER=tiered): a person answers instead.
 UNVERIFIED_TEXT = "抱歉，这个问题我没能给出有可靠依据的答复。"
 REWRITE_BUDGET_SECONDS = 5.0
@@ -134,6 +136,29 @@ def rejected_result(tool: str, comment: str, label: str = "") -> dict[str, Any]:
     before that tells the customer its message as it stands (app.ops.stale_runs)."""
     return {"status": "rejected", "comment": comment,
             "message": f"{label or TOOL_LABEL.get(tool, '该操作')}申请未通过人工审核。审核意见：{comment or '无'}。"}
+
+
+def _canonical(value: Any) -> Any:
+    """Argument values as a repeat check compares them: 5 and 5.0 are one amount, " SO1 " is SO1."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return {str(k): _canonical(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def _call_key(name: str, arguments: dict[str, Any], fields: tuple[str, ...] | None = None) -> str:
+    if fields is not None:
+        arguments = {k: arguments.get(k) for k in fields}
+    return name + json.dumps(_canonical(arguments), ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _plain(chunk: str) -> str:
@@ -429,6 +454,7 @@ class AgentRuntime:
                 if not outcome.is_error:
                     executed = outcome
                     state["acted"] = True
+                    self._remember_write(state, call, self._tools(ctx).get(call.name))
                     # If the model then fails, the degraded reply is what was done, not a guess.
                     state["executed_message"] = str(outcome.output.get("message") or APPROVED_FALLBACK_TEXT)
             else:
@@ -515,8 +541,10 @@ class AgentRuntime:
                 if first := state.get("repeats", {}).get(call.id):
                     # Answered, not run: a second refund would fail on "退款中" and, as the last refund
                     # call, become what the customer is told, after the first one paid (N-201).
-                    messages.append(LLMMessage(role="tool", tool_call_id=call.id, name=call.name, content=json.dumps(
-                        {"duplicate_of": first, "note": REPEATED_CALL_NOTE}, ensure_ascii=False)))
+                    pointer = ({"done_in_step": first, "note": DONE_WRITE_NOTE} if isinstance(first, int)
+                               else {"duplicate_of": first, "note": REPEATED_CALL_NOTE})
+                    messages.append(LLMMessage(role="tool", tool_call_id=call.id, name=call.name,
+                                               content=json.dumps(pointer, ensure_ascii=False)))
                     continue
                 yield {"type": "tool_call", "id": call.id, "name": call.name, "arguments": call.arguments}
                 outcome = self._run_tool(tracer, ctx, call)
@@ -529,6 +557,7 @@ class AgentRuntime:
                     state["tool_errors"] = state.get("tool_errors", 0) + 1
                 elif (tool := self._tools(ctx).get(call.name)) and tool.risk != "read":
                     state["acted"] = True  # something changed: a policy quote would not say so
+                    self._remember_write(state, call, tool)
                 if outcome.output.get("degraded") and not run.error:
                     # Counted as a failure (dashboard, loopdesk_run_errors_total, not "resolved"):
                     # otherwise an embedding outage would only show in a log line.
@@ -594,7 +623,7 @@ class AgentRuntime:
                 if result.content and stream_tokens:
                     yield {"type": "step_done", "step": state["steps"]}
                 queue = list(result.tool_calls)
-                self._mark_repeats(tracer, state, queue)
+                self._mark_repeats(tracer, state, queue, self._tools(ctx))
                 continue
             answer = result.content.strip()
             checked = None
@@ -613,15 +642,30 @@ class AgentRuntime:
             return
 
     @staticmethod
-    def _mark_repeats(tracer: Tracer, state: dict[str, Any], calls: list[ToolCall]) -> None:
+    def _remember_write(state: dict[str, Any], call: ToolCall, tool: ToolDef | None) -> None:
+        """A write that took effect: the same write in a later step of this run is a repeat too.
+        Keyed on the tool's ``repeat_on`` fields, so a re-file that omits the amount or rewords the
+        reason is still the same refund."""
+        if tool is not None:
+            key = _call_key(call.name, call.arguments, tool.repeat_on)
+            state.setdefault("written", {}).setdefault(key, state["steps"])
+
+    @staticmethod
+    def _mark_repeats(tracer: Tracer, state: dict[str, Any], calls: list[ToolCall], tools: ToolRegistry) -> None:
         """Calls in one step with the same tool and arguments run once (parallel tool calls often
-        repeat). The rest get a pointer to the first, kept in the run state so a resume after an
-        approval still skips them."""
+        repeat), and so does a write that already took effect earlier in the run: a model that files
+        the refund again after the approval came back would be told "退款中" (N-201). The rest get a
+        pointer to the first, kept in the run state so a resume after an approval still skips them."""
+        written: dict[str, int] = state.get("written") or {}
         first: dict[str, str] = {}
-        repeats: dict[str, str] = {}
+        repeats: dict[str, str | int] = {}
         for c in calls:
-            key = c.name + json.dumps(c.arguments, ensure_ascii=False, sort_keys=True, default=str)
-            if key in first and first[key] != c.id:
+            key = _call_key(c.name, c.arguments)
+            tool = tools.get(c.name)
+            done = written.get(_call_key(c.name, c.arguments, tool.repeat_on)) if tool and tool.risk != "read" else None
+            if done is not None:  # pointed at by step: some providers number calls per step, ids come back
+                repeats[c.id] = done
+            elif key in first and first[key] != c.id:
                 repeats[c.id] = first[key]
             else:
                 first[key] = c.id

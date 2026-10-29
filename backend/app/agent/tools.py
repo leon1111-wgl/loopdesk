@@ -129,6 +129,9 @@ class ToolDef:
     precheck: Handler | None = None
     approval: Policy | None = None
     executed: Executed | None = None
+    # The arguments that make a write the same one again later in a run (N-201): a refund on an order
+    # already refunded is a repeat whatever its reason says. None compares every argument.
+    repeat_on: tuple[str, ...] | None = None
     # Tenant-declared tools (app/tooling): where it comes from, what people call it, how an
     # amount in its arguments is written ("HKD 120.00"), and the offline model's hints.
     source: str = "builtin"  # builtin | http | mcp
