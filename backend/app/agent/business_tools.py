@@ -531,6 +531,48 @@ def _velocity_reason(ctx: ToolContext, customer_id: int, amount: float) -> str |
 
 
 STAFF_FILED_REASON = "员工代顾客发起，需另一位员工审批"
+REJECTED_BEFORE_DAYS = 30
+
+
+def order_applications(db: Session, tenant_id: int, order_ids: list[str], before_id: int | None = None,
+                       per_order: int = 5) -> list[Approval]:
+    """Earlier refund applications for these orders, newest first, at most ``per_order`` of each (N-069):
+    a rejected one filed again must not land, unseen, with a reviewer who never saw the first. Ranked
+    per order, so a much re-applied order does not push another order's history off a page."""
+    if not order_ids:
+        return []
+    order_id = Approval.arguments["order_id"].as_string()
+    query = select(Approval.id, func.row_number().over(partition_by=order_id, order_by=Approval.id.desc()).label("n")
+                   ).where(Approval.tenant_id == tenant_id, Approval.tool_name == "request_refund",
+                           order_id.in_(order_ids))
+    if before_id is not None:
+        query = query.where(Approval.id < before_id)
+    ranked = query.subquery()
+    ids = select(ranked.c.id).where(ranked.c.n <= per_order)
+    return list(db.execute(select(Approval).where(Approval.id.in_(ids)).order_by(Approval.id.desc())).scalars())
+
+
+def _clip(text: str, limit: int) -> str:
+    # the full comment is on the card's history; the reason also goes to the reviewers' WeCom group
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _rejected_before(ctx: ToolContext, order_id: str) -> str | None:
+    """A rejection of the same order in the last 30 days: the new application goes to a person whatever
+    the amount, and the reviewer reads who rejected it and why. Without it a customer could ask again,
+    under the automatic limit (a rejected staff-filed or late application), and be paid straight away."""
+    since = datetime.now(timezone.utc) - timedelta(days=REJECTED_BEFORE_DAYS)
+    for earlier in order_applications(ctx.db, ctx.tenant.id, [order_id], per_order=50):
+        decided = earlier.decided_at
+        if earlier.status != "rejected" or decided is None:
+            continue
+        if (decided if decided.tzinfo else decided.replace(tzinfo=timezone.utc)) < since:
+            continue
+        reviewer = ctx.db.get(User, earlier.reviewer_id) if earlier.reviewer_id else None
+        return (f"该订单 {local_date(decided, zone_of(ctx.tenant))} 被{reviewer.name if reviewer else '审批人'}驳回过"
+                f"（审批单 #{earlier.id}，意见：{_clip(earlier.comment or '无', 60)}），重新申请需人工复核")
+    return None
 
 
 def reviewer_role(tenant: Tenant, amount: float) -> str:
@@ -583,6 +625,9 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
         velocity = _velocity_reason(ctx, _customer_id(ctx, order), amount)
         if velocity:
             reasons.append(velocity)
+    rejected = _rejected_before(ctx, order.order_id)
+    if rejected:
+        reasons.append(rejected)
     if reasons and ctx.is_staff and not has_other_reviewer(ctx.db, tenant, ctx.user.id, amount):
         # Filed anyway it could only be rejected, and meanwhile it blocks the customer's own application.
         if reviewer_role(tenant, amount) == "admin":

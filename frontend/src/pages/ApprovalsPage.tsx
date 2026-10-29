@@ -46,6 +46,7 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
     }
   }
 
+  const history = approval.history ?? [];
   const kb = approval.evidence.filter((e) => e.kind === "kb");
   const tools = approval.evidence.filter((e) => e.kind === "tool");
   return (
@@ -69,6 +70,23 @@ function ApprovalCard({ approval, onDecided }: { approval: Approval; onDecided: 
             <b style={{ fontSize: 20 }}>{yuan(approval.arguments.amount)}</b>
           </div>
           <div className="badge badge-warning" style={{ width: "fit-content" }}>{approval.reason}</div>
+          {history.length > 0 && (
+            <>
+              <div className="faint">该订单的历史申请（{history.length} 条）</div>
+              {history.map((h) => (
+                <div key={h.id} className="row small">
+                  <span className="mono">#{h.id}</span>
+                  <StatusBadge status={h.status} />
+                  <span>{yuan(h.amount)}</span>
+                  <span className="faint">
+                    {h.status === "pending" ? `${time(h.created_at)} 提交`
+                      : h.status === "withdrawn" ? `${time(h.decided_at)} 撤回` : `${h.reviewer ?? "审批人"} ${time(h.decided_at)}`}
+                    {h.status === "rejected" && h.comment && `，意见：${h.comment}`}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
           {approval.required_role === "admin" && (
             <div className="badge badge-info" style={{ width: "fit-content" }}>金额超过租户的审批分级线，需要管理员通过</div>
           )}

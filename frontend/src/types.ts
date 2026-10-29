@@ -128,6 +128,19 @@ export interface Approval {
   withdrawn_by: "customer" | "requester" | null;
   created_at: string;
   decided_at: string | null;
+  /** The same order's earlier refund applications, newest first (at most 5); absent in demo
+   * recordings made before N-069. */
+  history?: ApprovalHistoryItem[];
+}
+
+export interface ApprovalHistoryItem {
+  id: number;
+  status: Approval["status"];
+  amount: number | null;
+  reviewer: string | null;
+  comment: string;
+  created_at: string;
+  decided_at: string | null;
 }
 
 /** A row of the refund ledger (GET /api/refunds). follow_up: what the reconciliation job still does

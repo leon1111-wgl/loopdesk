@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit
 from ..admission import get_admission
-from ..agent.business_tools import WITHDRAWN_COMMENT, end_paused_run, reviewer_role
+from ..agent.business_tools import WITHDRAWN_COMMENT, end_paused_run, order_applications, reviewer_role
 from ..agent.runtime import REQUESTER_WITHDREW, ResumeError, decided_text
 from ..channels.feishu import FeishuClient
 from ..db import get_db
@@ -39,7 +39,8 @@ def required_role(a: Approval, tenant: Tenant) -> str:
     return reviewer_role(tenant, float((a.arguments or {}).get("amount") or 0))
 
 
-def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = None) -> dict:
+def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = None,
+                 earlier: list[Approval] | None = None) -> dict:
     requester = db.get(User, a.requested_by)
     reviewer = db.get(User, a.reviewer_id) if a.reviewer_id else None
     run = db.get(Run, a.run_id)
@@ -55,7 +56,26 @@ def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = N
                          if a.status == "withdrawn" else None),
         "created_at": iso(a.created_at), "decided_at": iso(a.decided_at),
         "refund": _refund_out(db, a, refunds),
+        "history": _history_out(db, a, earlier),
     }
+
+
+def _history_out(db: Session, a: Approval, earlier: list[Approval] | None) -> list[dict]:
+    """The order's earlier applications, newest first (N-069): who rejected it and why, before the
+    same request is approved by someone else. ``earlier``: the applications of a whole page's orders."""
+    order_id = str((a.arguments or {}).get("order_id") or "")
+    if a.tool_name != "request_refund" or not order_id:
+        return []
+    if earlier is None:
+        earlier = order_applications(db, a.tenant_id, [order_id], before_id=a.id)
+    rows = [e for e in earlier if e.id < a.id and str((e.arguments or {}).get("order_id")) == order_id][:5]
+    out = []
+    for e in rows:
+        reviewer = db.get(User, e.reviewer_id) if e.reviewer_id else None
+        out.append({"id": e.id, "status": e.status, "amount": (e.arguments or {}).get("amount"),
+                    "reviewer": reviewer.name if reviewer else None, "comment": e.comment,
+                    "created_at": iso(e.created_at), "decided_at": iso(e.decided_at)})
+    return out
 
 
 def _refund_out(db: Session, a: Approval, refunds: dict[int, Refund] | None) -> dict | None:
@@ -82,7 +102,13 @@ def list_approvals(status_filter: str = "pending", principal: Principal = Depend
     rows = db.execute(query.order_by(Approval.id.desc()).limit(200)).scalars().all()
     refunds = {r.approval_id: r for r in db.execute(select(Refund).where(
         Refund.approval_id.in_([a.id for a in rows]))).scalars()} if rows else {}
-    return [approval_out(db, a, refunds) for a in rows]
+    orders = sorted({str((a.arguments or {}).get("order_id")) for a in rows
+                     if a.tool_name == "request_refund" and (a.arguments or {}).get("order_id")})
+    # each card shows five applications older than itself: room for the page's own rows of that order
+    on_page = max((sum(str((a.arguments or {}).get("order_id")) == o for a in rows) for o in orders), default=0)
+    earlier = order_applications(db, principal.tenant.id, orders, before_id=max((a.id for a in rows), default=0),
+                                 per_order=5 + on_page)
+    return [approval_out(db, a, refunds, earlier) for a in rows]
 
 
 @router.post("/{approval_id}/decide")
