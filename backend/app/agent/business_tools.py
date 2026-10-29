@@ -30,7 +30,7 @@ from ..rag.conflicts import disputed
 from ..rag.retrieval import gate_options, hybrid_search
 from ..security import Principal
 from ..textutil import (ORDER_ID_RE, REFUND_RE, normalize_width, refund_bare_decline, refund_declined, refund_requested,
-                        refund_withdraw_requested, withdraw_confirmed)
+                        refund_withdraw_requested, stated_refund_amount, withdraw_confirmed)
 from . import handoff
 from .tools import ApprovalNeed, ApprovalRequired, ToolContext, ToolDef, ToolError, ToolRegistry, ToolUnavailable
 
@@ -450,7 +450,8 @@ def _validated(ctx: ToolContext, args: dict[str, Any]) -> tuple[OrderInfo, float
     if amount <= 0:
         raise ToolError("退款金额必须大于 0")
     if amount > order.amount + 1e-6:
-        raise ToolError(f"退款金额 ¥{amount:.2f} 超过订单实付金额 ¥{order.amount:.2f}")
+        raise ToolError(f"退款金额 ¥{amount:.2f} 超过订单实付金额 ¥{order.amount:.2f}，最多可退 ¥{order.amount:.2f}；"
+                        f"如需按 ¥{order.amount:.2f} 申请，请回复“退{order.amount:g}元”")
     if order.status not in REFUNDABLE:
         raise ToolError(f"该订单当前状态为“{_status_text(order)}”，不能发起退款")
     if _no_online_refund(order):
@@ -480,6 +481,19 @@ def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。"
                         "请回答顾客的问题；顾客明确要求退款时再申请。")
     order, amount = _validated(ctx, args)
+    # The customer named an amount and the call files another (N-218): "退我20就行" filed as the full ¥45, or
+    # "退我500" quietly capped at the ¥32 paid. A reviewer who reads only the card would pay what nobody asked for.
+    # Only the customer's own words, about one order: a member of staff writes "顾客要退 50，只能退 30", and in
+    # "SO…009 退我20，SO…010 全退" the 20 belongs to one of the two calls.
+    one_order = len({m.upper() for m in ORDER_ID_RE.findall(normalize_width(ctx.customer_text))}) <= 1
+    stated = (stated_refund_amount(ctx.customer_text)
+              if ctx.approval_id is None and not ctx.is_staff and one_order else None)
+    if stated is not None and abs(stated - amount) > 0.005:
+        if stated > order.amount + 1e-6:
+            raise ToolError(f"顾客要退 ¥{stated:.2f}，超过订单实付金额 ¥{order.amount:.2f}，最多可退 ¥{order.amount:.2f}；"
+                            f"请先和顾客确认是否按 ¥{order.amount:.2f} 申请，顾客确认后再提交")
+        raise ToolError(f"顾客要退 ¥{stated:.2f}，这次申请的是 ¥{amount:.2f}，金额不一致，没有提交；"
+                        "请按顾客说的金额申请，顾客改了金额时以顾客最新说的为准")
     return {"order_id": order.order_id, "amount": amount}
 
 

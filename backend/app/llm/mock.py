@@ -17,9 +17,9 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..textutil import (NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, REFUND_AMOUNT, REFUND_APPLY_RE, REFUND_RE,
+from ..textutil import (NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, REFUND_APPLY_RE, REFUND_RE,
                         estimate_tokens, expand_query, normalize_width, refund_bare_decline, refund_requested,
-                        refund_withdraw_requested, withdraw_confirmed,
+                        refund_withdraw_requested, stated_refund_amount, withdraw_confirmed,
                         split_sentences, strip_citations, token_set)
 from .base import ChatResult, LLMMessage, LLMProvider, StreamEvent, ToolCall, ToolSpec, Usage
 
@@ -48,7 +48,6 @@ _ASKING = re.compile(r"多久|多长时间|怎么|如何|什么|哪些|是否|�
 _URGENT = re.compile(r"紧急|严重|马上|立刻")
 _AMOUNT = re.compile(r"[¥￥]\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:元|块)")
 _HALF = re.compile(r"退一半(?!运费|邮费|的?运费)|一半的钱|退半价")
-_REFUND_AMOUNT = re.compile(REFUND_AMOUNT)
 
 HALLUCINATION = "另外，所有订单均支持 90 天无理由退货，退款 2 小时内到账。"
 REASK_MARKER = "（系统核对，不是顾客的话）"  # verifier.REASK_MARKER (not imported: the agent package imports this one)
@@ -290,9 +289,11 @@ class MockLLM(LLMProvider):
                     return "search_knowledge", {"query": "退款 到账 工作日"}
                 if can("request_refund"):
                     # A gullible model takes the user's number: the one after 退 ("899 块买的 退 100 块"), never a declined one.
-                    kept = NEGATED_REFUND_RE.sub("，", text)
-                    amount_match = _REFUND_AMOUNT.search(kept) or _AMOUNT.search(kept)
-                    amount = (float(re.search(r"\d+(?:\.\d+)?", amount_match.group()).group()) if amount_match
+                    # "退我20就行" names 20 without a unit (N-218).
+                    stated = stated_refund_amount(text)
+                    amount_match = None if stated is not None else _AMOUNT.search(NEGATED_REFUND_RE.sub("，", text))
+                    amount = (stated if stated is not None
+                              else float(re.search(r"\d+(?:\.\d+)?", amount_match.group()).group()) if amount_match
                               else round(float(order.get("amount", 0)) / 2, 2) if _HALF.search(text)
                               else float(order.get("amount", 0)))
                     return "request_refund", {"order_id": order_id, "amount": amount, "reason": text[:120]}

@@ -293,6 +293,25 @@ def refund_bare_decline(text: str) -> bool:
     return not (REFUND_INQUIRY_RE.search(rest) or _QUESTION_RE.search(rest) or REFUND_RE.search(rest))
 
 
+# The bare "退我20就行", "退给我 500", "给我退 1,299 吧" (N-218): a number right after who gets it, then the end of
+# the demand. Not a count, a share or a time ("退我 2 件", "退我20%", "退我 3 次了都没到账", "退我 2 天内到账吗"), what
+# was said before ("上次退我 20 的那个"), a price ("退我45元买的音箱") or an order number without its prefix.
+_BARE_REFUND_AMOUNT = re.compile(
+    r"(?:退(?:给)?我|给我退)\s*[¥￥]?\s*((?:\d{1,3}(?:,\d{3})+|\d{1,7})(?:\.\d{1,2})?)(?!\d|[.,]\d)\s*(?:块|元)?钱?\s*"
+    r"(?=$|[，。！？!?,.~～、；;]|就|吧|啊|呀|呗|行|好|谢|给|补偿|赔偿|可以)")
+_REFUND_AMOUNT_RE = re.compile(REFUND_AMOUNT)
+
+
+def stated_refund_amount(text: str) -> float | None:
+    """The amount the customer asks back in this message, if they name one (N-218): "退 100 块", "只退 50 元就行",
+    "退我20就行". None for "我要退款" or "退一半"; an amount they took back ("不要退 100 了") is not stated."""
+    kept = NEGATED_REFUND_RE.sub("，", normalize_width(text or ""))
+    match = _REFUND_AMOUNT_RE.search(kept)
+    number = (re.search(r"\d+(?:\.\d+)?", match.group()).group() if match
+              else (bare.group(1).replace(",", "") if (bare := _BARE_REFUND_AMOUNT.search(kept)) else None))
+    return float(number) if number is not None and float(number) > 0 else None
+
+
 def refund_declined(text: str) -> bool:
     """The message mentions a refund but does not ask for one: filing one would go against it."""
     text = normalize_width(text or "")
