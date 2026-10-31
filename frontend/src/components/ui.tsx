@@ -103,7 +103,8 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose: () => 
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
-      openDialogs.splice(openDialogs.indexOf(box), 1);
+      const at = openDialogs.indexOf(box);
+      if (at >= 0) openDialogs.splice(at, 1);
       const back = opener.current;
       if (back instanceof HTMLElement && back.isConnected && (document.activeElement === document.body || document.activeElement === null)) back.focus();
     };
@@ -140,7 +141,7 @@ export function ConfirmDialog({ title, children, confirmText, tone, busy, onConf
   return (
     <Modal title={title} onClose={onClose} size="sm"
       footer={<>
-        <button className="btn" onClick={onClose} data-autofocus>取消</button>
+        <button className="btn" onClick={onClose} disabled={busy} data-autofocus>取消</button>
         <button className={`btn ${tone === "danger" ? "btn-danger-solid" : "btn-primary"}`} disabled={busy} onClick={onConfirm}>{confirmText}</button>
       </>}>
       <div className={`confirm-body ${tone === "danger" ? "danger" : ""}`}>

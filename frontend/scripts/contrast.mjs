@@ -32,5 +32,5 @@ for (const [theme, t] of [["light", light], ["dark", dark]]) {
     if (r < min) { failed++; console.log(`FAIL ${theme}: ${fg} on ${bg} = ${r.toFixed(2)}`); }
   }
 }
-console.log(failed ? `${failed} pair(s) below 4.5:1` : `all ${pairs.length * 2} pairs meet AA`);
+console.log(failed ? `${failed} pair(s) below their minimum` : `all ${pairs.length * 2} pairs meet WCAG AA (4.5:1, 3:1 for large text)`);
 process.exit(failed ? 1 : 0);

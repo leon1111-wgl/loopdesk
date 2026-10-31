@@ -303,7 +303,13 @@ export default function HandoffsPage() {
   const shown = rows.filter((h) =>
     (filter === "all" || (filter === "queued" ? h.position : !h.position)) &&
     (!query.trim() || `${h.customer ?? ""} ${h.summary} ${h.last_message}`.includes(query.trim())));
-  const current = shown.find((h) => h.ticket_id === selected) ?? shown[0] ?? null;
+  // The open conversation stays open while the filter, the search or a refresh changes the list (a
+  // reply being typed is not lost); a new pick is made only when it has left the queue.
+  const current = rows.find((h) => h.ticket_id === selected) ?? null;
+  useEffect(() => {
+    if (data && !data.some((h) => h.ticket_id === selected) && data.length) setSelected(data[0].ticket_id);
+  }, [data, selected]);
+  const hidden = current !== null && !shown.includes(current);
   return (
     <div className="page workbench-page">
       <PageHeader title="人工接待"
@@ -351,6 +357,7 @@ export default function HandoffsPage() {
                 </li>
               ))}
               {shown.length === 0 && <li><Empty icon={null}>没有符合条件的会话</Empty></li>}
+              {hidden && <li className="faint wb-hidden-note">正在接待的 {current.customer} 不在筛选结果中</li>}
             </ul>
           </section>
           {current ? <HandoffPanel key={current.ticket_id} handoff={current} onChanged={() => void reload()} />
