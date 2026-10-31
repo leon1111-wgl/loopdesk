@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ClipboardCheck } from "lucide-react";
 import { api, ApiError } from "../api";
 import { useAuth } from "../auth";
-import { Empty, ErrorBanner, Modal, duration, fullTime, time, useLoad, yuan, PageHeader, Segmented } from "../components/ui";
+import { Empty, ErrorBanner, Modal, duration, fullTime, time, useLoad, yuan, PageHeader, Segmented, Skeleton } from "../components/ui";
 import type { Refund } from "../types";
 
 // Refunds the payment system has not settled (GET /api/refunds), and the administrator's
@@ -245,7 +245,7 @@ export default function RefundsPage() {
             })}
           </tbody>
         </table>
-        {loading && !data && <Empty>加载中…</Empty>}
+        {loading && !data && <Skeleton rows={4} />}
         {data && data.length === 0 && (
           <Empty>
             {tab === "open"

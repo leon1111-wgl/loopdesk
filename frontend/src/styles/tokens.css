@@ -1,6 +1,7 @@
-/* Design tokens (docs/DESIGN.md). Palette, radii and control sizes follow Semi Design's token system;
-   every text and fill colour is tuned to WCAG AA (>= 4.5:1) on the surface it sits on, in both
-   themes. scripts/contrast.mjs checks the pairs: run `pnpm contrast` after changing a value. */
+/* Design tokens (docs/DESIGN.md). The default theme is the blue-black workspace below
+   (:root[data-theme="dark"], also used when nothing is chosen); the light theme keeps Semi Design's
+   palette. Every text and fill colour is tuned to WCAG AA (>= 4.5:1) on the surface it sits on, in
+   both themes: run `pnpm contrast` after changing a value. */
 
 :root {
   --bg: #f5f6f7;
@@ -46,97 +47,119 @@
   --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--primary);
   --shadow-float: 0 0 1px rgba(0, 0, 0, 0.3), 0 4px 14px rgba(0, 0, 0, 0.1);
 
-  --radius-sm: 3px;
-  --radius: 6px;
-  --radius-lg: 8px;
+  /* Section accents: each part of the console has its own colour (nav, page header, KPI rule). */
+  --acc-service: #0064fa;
+  --acc-knowledge: #0f766e;
+  --acc-ops: #a65200;
+  --accent: var(--acc-service);
+  --accent-soft: #eaf5ff;
+  --highlight: linear-gradient(100deg, #1e6bff, #6d5dfc 55%, #c084fc);
+  --line-strong: #d4d8dd;
+
+  --radius-sm: 4px;
+  --radius: 12px;
+  --radius-ctl: 8px;
+  --radius-lg: 14px;
   --control: 32px;
   --control-sm: 24px;
   --control-lg: 40px;
-  --topbar: 56px;
+  --topbar: 60px;
+  --subnav: 46px;
   --nav-width: 216px;
   --nav-rail: 64px;
 
+  --num: "DIN Alternate", "Bahnschrift", "D-DIN", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #16161a;
-    --surface: #232429;
-    --surface-2: #2a2b30;
-    --hover: #2e2f35;
-    --pressed: #36373e;
-    --border: #3a3c42;
-    --border-2: #303237;
-    --text: #f9f9f9;
-    --text-2: #c6cacd;
-    --text-3: #9fa3a8;
-    --disabled: #5c6066;
-    --primary: #54a9ff;
-    --primary-hover: #7fc1ff;
-    --primary-soft: #14273f;
-    --primary-line: #1f4470;
-    --primary-solid: #0064fa;
-    --primary-solid-hover: #0057d9;
-    --success: #5dc264;
-    --success-soft: #17301b;
-    --success-solid: #237a2e;
-    --warning: #ffae43;
-    --warning-soft: #3a2a12;
+  :root[data-theme="system"] {
+    --bg: #0b0d12;
+    --surface: #12151c;
+    --surface-2: #181c25;
+    --hover: #1d222c;
+    --pressed: #222733;
+    --border: #20242e;
+    --border-2: #1a1e27;
+    --line-strong: #303644;
+    --text: #eceef2;
+    --text-2: #b9bfca;
+    --text-3: #8d95a3;
+    --disabled: #4e5562;
+    --primary: #4c9bff;
+    --primary-hover: #7ab4ff;
+    --primary-soft: #142441;
+    --primary-line: #1f3a6b;
+    --primary-solid: #1e6bff;
+    --primary-solid-hover: #1757d6;
+    --success: #34d399;
+    --success-soft: #0f2a22;
+    --success-solid: #0f7a55;
+    --warning: #f5b83d;
+    --warning-soft: #2e2412;
     --warning-solid: #a65200;
-    --warning-mark: #ffae43;
-    --danger: #fc725a;
-    --danger-soft: #3d201c;
-    --danger-solid: #d52515;
-    --info: #a68bf0;
-    --info-soft: #2a2140;
-    --chart-1: #4a90f0;
-    --chart-2: #20a69b;
-    --chart-grid: #303237;
-    --nav-bg: #1c1d22;
-    --overlay: rgba(0, 0, 0, 0.6);
-    --shadow-float: 0 0 1px rgba(0, 0, 0, 0.6), 0 4px 14px rgba(0, 0, 0, 0.45);
+    --warning-mark: #f5b83d;
+    --danger: #fb7185;
+    --danger-soft: #331a21;
+    --danger-solid: #d42e45;
+    --info: #a78bfa;
+    --info-soft: #221d3a;
+    --acc-service: #4c9bff;
+    --acc-knowledge: #2dd4bf;
+    --acc-ops: #f5b83d;
+    --accent-soft: #142441;
+    --chart-1: #4c9bff;
+    --chart-2: #2dd4bf;
+    --chart-grid: #20242e;
+    --nav-bg: #0b0d12;
+    --overlay: rgba(0, 0, 0, 0.62);
+    --shadow-float: 0 0 0 1px #303644, 0 18px 40px -12px rgba(0, 0, 0, 0.7);
     color-scheme: dark;
-  }
+}
 }
 
 :root[data-theme="dark"] {
-  --bg: #16161a;
-  --surface: #232429;
-  --surface-2: #2a2b30;
-  --hover: #2e2f35;
-  --pressed: #36373e;
-  --border: #3a3c42;
-  --border-2: #303237;
-  --text: #f9f9f9;
-  --text-2: #c6cacd;
-  --text-3: #9fa3a8;
-  --disabled: #5c6066;
-  --primary: #54a9ff;
-  --primary-hover: #7fc1ff;
-  --primary-soft: #14273f;
-  --primary-line: #1f4470;
-  --primary-solid: #0064fa;
-  --primary-solid-hover: #0057d9;
-  --success: #5dc264;
-  --success-soft: #17301b;
-  --success-solid: #237a2e;
-  --warning: #ffae43;
-  --warning-soft: #3a2a12;
+  --bg: #0b0d12;
+  --surface: #12151c;
+  --surface-2: #181c25;
+  --hover: #1d222c;
+  --pressed: #222733;
+  --border: #20242e;
+  --border-2: #1a1e27;
+  --line-strong: #303644;
+  --text: #eceef2;
+  --text-2: #b9bfca;
+  --text-3: #8d95a3;
+  --disabled: #4e5562;
+  --primary: #4c9bff;
+  --primary-hover: #7ab4ff;
+  --primary-soft: #142441;
+  --primary-line: #1f3a6b;
+  --primary-solid: #1e6bff;
+  --primary-solid-hover: #1757d6;
+  --success: #34d399;
+  --success-soft: #0f2a22;
+  --success-solid: #0f7a55;
+  --warning: #f5b83d;
+  --warning-soft: #2e2412;
   --warning-solid: #a65200;
-  --warning-mark: #ffae43;
-  --danger: #fc725a;
-  --danger-soft: #3d201c;
-  --danger-solid: #d52515;
-  --info: #a68bf0;
-  --info-soft: #2a2140;
-  --chart-1: #4a90f0;
-  --chart-2: #20a69b;
-  --chart-grid: #303237;
-  --nav-bg: #1c1d22;
-  --overlay: rgba(0, 0, 0, 0.6);
-  --shadow-float: 0 0 1px rgba(0, 0, 0, 0.6), 0 4px 14px rgba(0, 0, 0, 0.45);
+  --warning-mark: #f5b83d;
+  --danger: #fb7185;
+  --danger-soft: #331a21;
+  --danger-solid: #d42e45;
+  --info: #a78bfa;
+  --info-soft: #221d3a;
+  --acc-service: #4c9bff;
+  --acc-knowledge: #2dd4bf;
+  --acc-ops: #f5b83d;
+  --accent-soft: #142441;
+  --chart-1: #4c9bff;
+  --chart-2: #2dd4bf;
+  --chart-grid: #20242e;
+  --nav-bg: #0b0d12;
+  --overlay: rgba(0, 0, 0, 0.62);
+  --shadow-float: 0 0 0 1px #303644, 0 18px 40px -12px rgba(0, 0, 0, 0.7);
   color-scheme: dark;
 }

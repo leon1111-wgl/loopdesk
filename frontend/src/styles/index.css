@@ -3,6 +3,7 @@
 @import "./shell.css";
 @import "./workbench.css";
 @import "./pages.css";
+@import "./intro.css";
 
 .mobile-only { display: none !important; }
 @media (max-width: 780px) {

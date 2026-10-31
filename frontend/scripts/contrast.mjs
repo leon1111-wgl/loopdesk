@@ -18,6 +18,7 @@ const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
 const pairs = [
   ...["text", "text-2", "text-3", "primary"].flatMap((fg) => ["surface", "surface-2", "bg", "hover"].map((bg) => [fg, bg])),
   ["text-2", "primary-soft"], ["primary", "primary-soft"],
+  ...["acc-service", "acc-knowledge", "acc-ops"].flatMap((c) => [[c, "surface"], [c, "bg"], [c, "surface-2"]]),
   ...["success", "warning", "danger", "info"].flatMap((c) => [[c, `${c}-soft`], [c, "surface"]]),
   ...["primary-solid", "primary-solid-hover", "success-solid", "warning-solid", "danger-solid"].map((c) => ["#ffffff", c]),
 ];

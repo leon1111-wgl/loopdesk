@@ -5,6 +5,8 @@ import { api } from "../api";
 import { useAuth } from "../auth";
 import { Logo, ROLE_TEXT } from "../components/ui";
 
+const SKIP_INTRO_KEY = "loopdesk.skip-intro"; // IntroPage's "下次直接进入"
+
 function demoSource(): string {
   const rec = recording();
   return rec && !rec.model.offline
@@ -24,7 +26,9 @@ const CAPABILITIES: [string, string][] = [
   ["服务质量可追踪", "从一次对话到完整运行链路"],
 ];
 
-export default function LoginPage() {
+/** The sign-in panel: demo accounts by tenant (in demo mode) and the e-mail form. The intro page
+ * embeds it, so "进入控制台" lands on it without another page. */
+export default function LoginPage({ embedded }: { embedded?: boolean } = {}) {
   const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -69,11 +73,53 @@ export default function LoginPage() {
 
   const INDUSTRY: Record<string, string> = { "Echo音乐": "音乐流媒体", "Leon优选": "电商零售", "Iris云文档": "SaaS 服务" };
 
+  const panel = (
+  <section className="login-panel" aria-label="登录">
+    {!embedded && <div className="login-heading">
+      <h2>{isDemo || demo?.accounts.length ? "选择演示账号" : "登录工作台"}</h2>
+      <p className="muted">{isDemo || demo?.accounts.length ? "从顾客、客服坐席或管理员的视角，体验一次完整服务。" : "使用工作邮箱登录，开始今天的服务。"}</p>
+    </div>}
+    {error && <div className="error-banner" role="alert">{error}</div>}
+    {!isDemo && !demo?.accounts.length && loginForm}
+    {demo && demo.accounts.length > 0 && (
+      <div className="account-list">
+        {tenants.map((tenant, i) => (
+          <section className="account-tenant" key={tenant} aria-label={tenant}>
+            <div className="account-group">
+              <span className={`tenant-monogram tenant-${i}`} aria-hidden="true">{tenant.slice(0, 1)}</span>
+              <b>{tenant}</b>
+              {INDUSTRY[tenant] && <span className="badge">{INDUSTRY[tenant]}</span>}
+              <span className="faint">{i === 0 ? "主场景" : "跨行业场景"}</span>
+            </div>
+            <div className="account-grid">
+            {demo.accounts.filter((a) => a.tenant === tenant).map((a) => (
+              <button key={a.email} className="account" disabled={busy}
+                title={a.email} aria-label={`${a.name} ${ROLE_TEXT[a.role]} ${a.email} 进入`}
+                onClick={() => submit(undefined, { email: a.email, password: demo.password ?? "" })}>
+                <span className={`avatar role-${a.role}`}>{a.name.slice(0, 1)}</span>
+                <span className="account-person"><b>{a.name}</b><span>{ROLE_TEXT[a.role]}</span></span>
+                <ArrowRight size={14} className="go" aria-hidden="true" />
+              </button>
+            ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    )}
+    {isDemo && <div className="login-disclosure"><ShieldCheck size={15} aria-hidden="true" /><p>{demoSource()}。可浏览与回放示例，提交类操作不会保存。</p></div>}
+    {(isDemo || (demo?.accounts.length ?? 0) > 0) && <details className="login-other"><summary>使用邮箱登录</summary>{loginForm}</details>}
+  </section>
+  );
+  if (embedded) return panel;
+
   return (
     <div className="login">
       <header className="login-top">
         <div className="login-brand"><Logo size={28} /><b>LoopDesk</b><span className="login-brand-label">智能客服工作台</span></div>
-        <a href={REPO_URL} target="_blank" rel="noreferrer" className="login-source"><Github size={15} aria-hidden="true" /> 项目源码</a>
+        <span className="row" style={{ gap: 16 }}>
+          <a href={import.meta.env.BASE_URL} className="login-source" onClick={() => { try { localStorage.removeItem(SKIP_INTRO_KEY); } catch { /* ignore */ } }}>产品介绍</a>
+          <a href={REPO_URL} target="_blank" rel="noreferrer" className="login-source"><Github size={15} aria-hidden="true" /> 项目源码</a>
+        </span>
       </header>
       <main className="login-main">
         <div className="login-frame">
@@ -96,41 +142,7 @@ export default function LoginPage() {
             </ul>
             <div className="foot">Leon Wang · 个人作品 · 所有企业、人员与订单均为虚构（SYNTHETIC）</div>
           </section>
-          <section className="login-panel">
-            <div className="login-heading">
-              <h2>{isDemo || demo?.accounts.length ? "选择演示账号" : "登录工作台"}</h2>
-              <p className="muted">{isDemo || demo?.accounts.length ? "从顾客、客服坐席或管理员的视角，体验一次完整服务。" : "使用工作邮箱登录，开始今天的服务。"}</p>
-            </div>
-            {error && <div className="error-banner" role="alert">{error}</div>}
-            {!isDemo && !demo?.accounts.length && loginForm}
-            {demo && demo.accounts.length > 0 && (
-              <div className="account-list">
-                {tenants.map((tenant, i) => (
-                  <section className="account-tenant" key={tenant} aria-label={tenant}>
-                    <div className="account-group">
-                      <span className={`tenant-monogram tenant-${i}`} aria-hidden="true">{tenant.slice(0, 1)}</span>
-                      <b>{tenant}</b>
-                      {INDUSTRY[tenant] && <span className="badge">{INDUSTRY[tenant]}</span>}
-                      <span className="faint">{i === 0 ? "主场景" : "跨行业场景"}</span>
-                    </div>
-                    <div className="account-grid">
-                    {demo.accounts.filter((a) => a.tenant === tenant).map((a) => (
-                      <button key={a.email} className="account" disabled={busy}
-                        title={a.email} aria-label={`${a.name} ${ROLE_TEXT[a.role]} ${a.email} 进入`}
-                        onClick={() => submit(undefined, { email: a.email, password: demo.password ?? "" })}>
-                        <span className={`avatar role-${a.role}`}>{a.name.slice(0, 1)}</span>
-                        <span className="account-person"><b>{a.name}</b><span>{ROLE_TEXT[a.role]}</span></span>
-                        <ArrowRight size={14} className="go" aria-hidden="true" />
-                      </button>
-                    ))}
-                    </div>
-                  </section>
-                ))}
-              </div>
-            )}
-            {isDemo && <div className="login-disclosure"><ShieldCheck size={15} aria-hidden="true" /><p>{demoSource()}。可浏览与回放示例，提交类操作不会保存。</p></div>}
-            {(isDemo || (demo?.accounts.length ?? 0) > 0) && <details className="login-other"><summary>使用邮箱登录</summary>{loginForm}</details>}
-          </section>
+          {panel}
         </div>
       </main>
     </div>

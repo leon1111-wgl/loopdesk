@@ -197,7 +197,7 @@ export default function ApprovalsPage() {
           <div className="table-wrap">
             <table className="table">
               <thead>
-                <tr><th>审批单</th><th>订单</th><th className="num">金额</th><th>申请人</th><th>需要审批的原因</th><th>状态</th><th>提交时间</th><th><span className="sr-only">操作</span></th></tr>
+                <tr><th>审批单</th><th>订单</th><th className="num">金额</th><th className="hide-compact">申请人</th><th className="hide-compact">需要审批的原因</th><th>状态</th><th className="hide-compact">提交时间</th><th><span className="sr-only">操作</span></th></tr>
               </thead>
               <tbody>
                 {data?.map((a) => (
@@ -205,13 +205,13 @@ export default function ApprovalsPage() {
                     <td className="nowrap"><b>#{a.id}</b> <span className="faint">{TOOL_TEXT[a.tool_name] ?? a.tool_name}</span></td>
                     <td className="mono nowrap">{String(a.arguments.order_id ?? "")}</td>
                     <td className="num nowrap"><b>{yuan(a.arguments.amount)}</b></td>
-                    <td className="nowrap">{a.requested_by?.name}<div className="faint">{ROLE_TEXT[a.requested_by?.role ?? ""]}</div></td>
-                    <td style={{ minWidth: 200 }}>
+                    <td className="nowrap hide-compact">{a.requested_by?.name}<div className="faint">{ROLE_TEXT[a.requested_by?.role ?? ""]}</div></td>
+                    <td className="hide-compact" style={{ minWidth: 200 }}>
                       <div className="clamp-2">{a.reason}</div>
                       {a.required_role === "admin" && <span className="badge badge-info" style={{ marginTop: 4 }}>需管理员</span>}
                     </td>
                     <td className="nowrap"><StatusBadge status={a.status} /></td>
-                    <td className="nowrap faint">{time(a.created_at)}</td>
+                    <td className="nowrap faint hide-compact">{time(a.created_at)}</td>
                     <td className="actions">
                       <button className="btn btn-sm" onClick={(e) => { e.stopPropagation(); setOpenId(a.id); }}>
                         <FileSearch size={14} /> {a.status === "pending" ? "审核" : "查看"}

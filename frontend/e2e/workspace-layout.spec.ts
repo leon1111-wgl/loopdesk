@@ -18,7 +18,9 @@ for (const variant of [
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     try {
+      // The intro page: its call to action, and the demo accounts on the same page.
       await page.goto("/");
+      await expect(page.getByRole("button", { name: "进入控制台" }).first()).toBeVisible();
       await expect(page.getByRole("button", { name: /admin@echo.demo/ })).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.getByRole("button", { name: /admin@echo.demo/ }).click();
@@ -32,11 +34,14 @@ for (const variant of [
       await expect(page.getByRole("button", { name: "会话全文", exact: true })).toBeVisible();
       await page.keyboard.press("Enter");
       await expect(page.locator(".export-options")).not.toBeVisible();
+      // Sections in the top bar (a bottom tab bar on phones), each with its row of page tabs.
+      const nav = page.getByRole("navigation", { name: "导航菜单" });
+      await nav.getByRole("link", { name: /^知识与质量/ }).click();
+      await expect(page).toHaveURL(/knowledge/);
+      await expect(page.getByRole("navigation", { name: "知识与质量页面" }).getByRole("link", { name: "评测中心" })).toBeVisible();
       if (variant.width < 780) {
-        await page.getByRole("button", { name: /打开导航菜单/ }).click();
-        await expect(page.getByRole("dialog", { name: "导航菜单" })).toBeVisible();
-        await page.getByRole("link", { name: "知识库", exact: true }).click();
-        await expect(page.getByRole("dialog", { name: "导航菜单" })).toHaveCount(0);
+        const box = await nav.boundingBox();
+        expect(box && box.y + box.height).toBeCloseTo(variant.height, 0); // pinned to the bottom of the screen
       }
       for (const route of ["dashboard", "approvals", "handoffs", "tickets", "refunds", "knowledge", "evals", "flywheel", "traces", "audit", "chat"]) {
         await page.goto(`/${route}`);

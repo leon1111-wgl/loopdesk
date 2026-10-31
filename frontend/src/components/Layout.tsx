@@ -1,12 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   Activity,
   BookOpen,
   Check,
   ChevronDown,
-  ChevronsLeft,
-  ChevronsRight,
   ClipboardCheck,
   FlaskConical,
   Github,
@@ -14,7 +12,6 @@ import {
   Info,
   LayoutDashboard,
   LogOut,
-  Menu,
   MessagesSquare,
   Monitor,
   Moon,
@@ -23,13 +20,12 @@ import {
   ScrollText,
   Ticket,
   Sun,
-  X,
 } from "lucide-react";
 import { api } from "../api";
 import { isStaff, useAuth } from "../auth";
 import { REPO_URL, isDemo, recording } from "../demo/replay";
 import type { Approval, Handoff, User } from "../types";
-import { Dropdown, INDUSTRY_TEXT, Logo, ROLE_TEXT, useMediaQuery, useTheme } from "./ui";
+import { Dropdown, INDUSTRY_TEXT, Logo, ROLE_TEXT, useTheme } from "./ui";
 
 interface NavItem {
   to: string;
@@ -43,7 +39,6 @@ interface DemoAccounts {
   password: string | null;
 }
 
-const NAV_KEY = "loopdesk.nav-collapsed";
 
 function DemoNotice() {
   const rec = recording();
@@ -148,6 +143,14 @@ function UserMenu({ user }: { user: User }) {
   );
 }
 
+interface Section {
+  key: "service" | "knowledge" | "ops";
+  label: string;
+  short: string;
+  icon: ReactNode;
+  items: NavItem[];
+}
+
 export default function Layout() {
   const { user } = useAuth();
   const location = useLocation();
@@ -157,20 +160,6 @@ export default function Layout() {
   const [openTickets, setOpenTickets] = useState(0); // issue tickets promised a response
   const [unsettled, setUnsettled] = useState(0); // refunds nothing settles any more: a person checks the payment system
   const [theme, setTheme] = useTheme();
-  // Below 780px the side nav becomes an off-canvas drawer opened from the top bar.
-  const compact = useMediaQuery("(max-width: 780px)");
-  const [navOpen, setNavOpen] = useState(false);
-  const drawerOpen = compact && navOpen;
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(NAV_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
-  const toggleRef = useRef<HTMLButtonElement>(null);
-  const closeRef = useRef<HTMLButtonElement>(null);
-  const restoreFocus = useRef(false);
 
   useEffect(() => {
     if (!staff) return;
@@ -197,66 +186,43 @@ export default function Layout() {
     return () => window.clearInterval(timer);
   }, [staff, location.pathname]);
 
-  // Dismissing the drawer returns focus to the menu button. This runs after the render
-  // that removes `inert` from the main column; focusing earlier would be ignored.
-  const closeNav = () => {
-    restoreFocus.current = true;
-    setNavOpen(false);
-  };
-
-  useEffect(() => {
-    if (!drawerOpen) {
-      if (restoreFocus.current) toggleRef.current?.focus();
-      restoreFocus.current = false;
-      return;
-    }
-    closeRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeNav();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [drawerOpen]);
-
-  function toggleCollapsed() {
-    setCollapsed((v) => {
-      try {
-        localStorage.setItem(NAV_KEY, v ? "0" : "1");
-      } catch {
-        /* storage unavailable: the choice lasts for this page only */
-      }
-      return !v;
-    });
-  }
-
-  const groups: [string, NavItem[]][] = [
-    ["服务", [
-      { to: "/dashboard", label: "运营看板", icon: <LayoutDashboard size={16} /> },
-      { to: "/chat", label: "对话测试台", icon: <MessagesSquare size={16} /> },
-      { to: "/handoffs", label: "人工接待", icon: <Headset size={16} />, count: waiting },
-      { to: "/approvals", label: "审批队列", icon: <ClipboardCheck size={16} />, count: pending },
-      { to: "/tickets", label: "工单", icon: <Ticket size={16} />, count: openTickets },
-      { to: "/refunds", label: "退款对账", icon: <ReceiptText size={16} />, count: unsettled },
-    ]],
-    ["知识与质量", [
-      { to: "/knowledge", label: "知识库", icon: <BookOpen size={16} /> },
-      { to: "/evals", label: "评测中心", icon: <FlaskConical size={16} /> },
-      { to: "/flywheel", label: "数据飞轮", icon: <RefreshCcw size={16} /> },
-    ]],
-    ["运维", [
-      { to: "/traces", label: "链路追踪", icon: <Activity size={16} /> },
-      ...(user?.role === "admin" ? [{ to: "/audit", label: "操作审计", icon: <ScrollText size={16} /> }] : []),
-    ]],
+  // Role-aware sections: each has its own accent colour and a row of page tabs under the top bar.
+  const sections: Section[] = [
+    { key: "service", label: "服务运营", short: "服务", icon: <Headset size={16} />, items: [
+      { to: "/dashboard", label: "运营看板", icon: <LayoutDashboard size={15} /> },
+      { to: "/chat", label: "对话测试台", icon: <MessagesSquare size={15} /> },
+      { to: "/handoffs", label: "人工接待", icon: <Headset size={15} />, count: waiting },
+      { to: "/approvals", label: "审批队列", icon: <ClipboardCheck size={15} />, count: pending },
+      { to: "/tickets", label: "工单", icon: <Ticket size={15} />, count: openTickets },
+      { to: "/refunds", label: "退款对账", icon: <ReceiptText size={15} />, count: unsettled },
+    ] },
+    { key: "knowledge", label: "知识与质量", short: "知识", icon: <BookOpen size={16} />, items: [
+      { to: "/knowledge", label: "知识库", icon: <BookOpen size={15} /> },
+      { to: "/evals", label: "评测中心", icon: <FlaskConical size={15} /> },
+      { to: "/flywheel", label: "数据飞轮", icon: <RefreshCcw size={15} /> },
+    ] },
+    { key: "ops", label: "运维审计", short: "运维", icon: <Activity size={16} />, items: [
+      { to: "/traces", label: "链路追踪", icon: <Activity size={15} /> },
+      ...(user?.role === "admin" ? [{ to: "/audit", label: "操作审计", icon: <ScrollText size={15} /> }] : []),
+    ] },
   ];
+  const path = "/" + (location.pathname.split("/")[1] || "chat");
+  const current = sections.find((sec) => sec.items.some((i) => i.to === path)) ?? sections[0];
 
-  const nextTheme = theme === "system" ? "light" : theme === "light" ? "dark" : "system";
+  const nextTheme = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
   const themeLabel = { system: "跟随系统", light: "浅色", dark: "深色" }[theme];
-  const railed = collapsed && !compact;
+  const themeButton = (
+    <button className="icon-btn" title={`主题：${themeLabel}（点击切换）`} aria-label={`切换主题，当前：${themeLabel}`} onClick={() => setTheme(nextTheme)}>
+      {theme === "light" ? <Sun size={16} /> : theme === "dark" ? <Moon size={16} /> : <Monitor size={16} />}
+    </button>
+  );
   const industry = INDUSTRY_TEXT[user?.tenant.industry ?? ""] ?? "企业";
 
   if (!user) return null;
   if (!staff) {
     // Customers get a consumer chat, not the console: a brand bar and the conversation.
     return (
-      <div className="shell shell-customer">
+      <div className="shell shell-customer" data-section="service">
         <header className="topbar topbar-customer">
           <div className="customer-brand">
             <span className="workspace-mark" aria-hidden="true">{user.tenant.name.slice(0, 1)}</span>
@@ -267,9 +233,7 @@ export default function Layout() {
           </div>
           <span className="spacer" />
           <span className="badge env-tag">{isDemo ? "静态演示" : "演示环境"}<span className="hide-compact"> · 数据均为虚构</span></span>
-          <button className="icon-btn" title={`主题：${themeLabel}（点击切换）`} aria-label={`切换主题，当前：${themeLabel}`} onClick={() => setTheme(nextTheme)}>
-            {theme === "light" ? <Sun size={16} /> : theme === "dark" ? <Moon size={16} /> : <Monitor size={16} />}
-          </button>
+          {themeButton}
           <UserMenu user={user} />
         </header>
         <div className="main">
@@ -280,80 +244,47 @@ export default function Layout() {
     );
   }
 
+  const sectionCount = (sec: Section) => sec.items.reduce((n, i) => n + (i.count ?? 0), 0);
   return (
-    <div className={`shell ${drawerOpen ? "nav-open" : ""} ${railed ? "nav-collapsed" : ""}`}>
-      <header className="topbar" inert={drawerOpen || undefined}>
-        <button
-          ref={toggleRef}
-          className="icon-btn nav-toggle"
-          aria-label={pending + waiting ? `打开导航菜单（${pending} 条待审批，${waiting} 位顾客等待人工）` : "打开导航菜单"}
-          aria-expanded={drawerOpen}
-          aria-controls="app-nav"
-          onClick={() => setNavOpen(true)}
-        >
-          <Menu size={18} />
-          {pending + waiting > 0 && <span className="toggle-dot" />}
-        </button>
-        <div className="brand">
-          <Logo size={24} />
+    <div className="shell" data-section={current.key}>
+      <header className="topbar">
+        <NavLink to="/dashboard" className="brand" aria-label="LoopDesk 首页">
+          <Logo size={28} />
           <span className="brand-name">LoopDesk</span>
+          <small className="brand-sub hide-compact">客服工作台</small>
+        </NavLink>
+        <nav className="main-nav" aria-label="导航菜单">
+          {sections.map((sec) => (
+            <NavLink key={sec.key} to={sec.items[0].to} data-section={sec.key}
+              className={`nav-item ${sec === current ? "active" : ""}`} aria-current={sec === current ? "true" : undefined}
+              aria-label={sectionCount(sec) > 0 && sec !== current ? `${sec.label}（${sectionCount(sec)} 条待处理）` : sec.label}>
+              {sec.icon}
+              <span className="nav-long">{sec.label}</span>
+              <span className="nav-short" aria-hidden="true">{sec.short}</span>
+              {sectionCount(sec) > 0 && sec !== current && <span className="count">{sectionCount(sec)}<span className="sr-only"> 条待处理</span></span>}
+            </NavLink>
+          ))}
+        </nav>
+        <div className="top-actions">
+          <TenantSwitcher user={user} />
+          <span className="badge env-tag hide-compact">{isDemo ? "静态演示" : "演示环境"} · 数据均为虚构</span>
+          <a className="icon-btn hide-compact" href={REPO_URL} target="_blank" rel="noreferrer" title="项目源码" aria-label="项目源码"><Github size={16} /></a>
+          {themeButton}
+          <UserMenu user={user} />
         </div>
-        <span className="topbar-sep" aria-hidden="true" />
-        <TenantSwitcher user={user} />
-        <span className="spacer" />
-        <span className="badge env-tag">{isDemo ? "静态演示" : "演示环境"}<span className="hide-compact"> · 数据均为虚构</span></span>
-        <a className="icon-btn hide-compact" href={REPO_URL} target="_blank" rel="noreferrer" title="项目源码" aria-label="项目源码"><Github size={16} /></a>
-        <button className="icon-btn" title={`主题：${themeLabel}（点击切换）`} aria-label={`切换主题，当前：${themeLabel}`} onClick={() => setTheme(nextTheme)}>
-          {theme === "light" ? <Sun size={16} /> : theme === "dark" ? <Moon size={16} /> : <Monitor size={16} />}
-        </button>
-        <UserMenu user={user} />
       </header>
-      <div className="shell-body">
-        {drawerOpen && <div className="scrim" onClick={closeNav} />}
-        <aside
-          id="app-nav"
-          className="sidebar"
-          aria-label="导航菜单"
-          {...(drawerOpen ? { role: "dialog", "aria-modal": true } : {})}
-        >
-          <div className="sidebar-head">
-            <Logo size={22} />
-            <span className="brand-name">LoopDesk</span>
-            <button ref={closeRef} className="icon-btn nav-close" aria-label="关闭导航菜单" onClick={closeNav}>
-              <X size={18} />
-            </button>
-          </div>
-          <nav className="nav" aria-label="主导航">
-            {groups.map(([group, items]) => (
-              <div key={group} className="nav-section">
-                <div className="nav-group">{group}</div>
-                {items.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    className={({ isActive }) => (isActive ? "active" : "")}
-                    title={railed ? item.label : undefined}
-                    onClick={() => setNavOpen(false)}
-                  >
-                    {item.icon}
-                    <span className="nav-label">{item.label}</span>
-                    {item.count ? <span className="count">{item.count}<span className="sr-only"> 条待处理</span></span> : null}
-                  </NavLink>
-                ))}
-              </div>
-            ))}
-          </nav>
-          <div className="sidebar-foot">
-            <button className="nav-collapse" onClick={toggleCollapsed} aria-label={railed ? "展开导航" : "收起导航"} title={railed ? "展开导航" : "收起导航"}>
-              {railed ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
-              <span className="nav-label">收起导航</span>
-            </button>
-          </div>
-        </aside>
-        <div className="main" inert={drawerOpen || undefined}>
-          {isDemo && <DemoNotice />}
-          <Outlet />
-        </div>
+      <nav className="subnav" aria-label={`${current.label}页面`}>
+        {current.items.map((item) => (
+          <NavLink key={item.to} to={item.to} className={({ isActive }) => `sub-item ${isActive ? "active" : ""}`}>
+            {item.icon}
+            <span>{item.label}</span>
+            {item.count ? <span className="count">{item.count}<span className="sr-only"> 条待处理</span></span> : null}
+          </NavLink>
+        ))}
+      </nav>
+      <div className="main">
+        {isDemo && <DemoNotice />}
+        <Outlet />
       </div>
     </div>
   );

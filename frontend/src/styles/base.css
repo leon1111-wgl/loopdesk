@@ -46,20 +46,21 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 
 /* ---------- card ---------- */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; }
-.card-pad { padding: 16px 20px; }
-.card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; min-height: 52px; padding: 12px 20px; border-bottom: 1px solid var(--border-2); }
-.card-head h2, .card-head h3 { font-size: 16px; font-weight: 600; }
+.card.accent-rule { border-top: 2px solid var(--accent); }
+.card-pad { padding: 16px 18px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; min-height: 52px; padding: 12px 18px; border-bottom: 1px solid var(--border); }
+.card-head h2, .card-head h3 { font-size: 15px; font-weight: 600; }
 .card-head > .faint { font-size: 12px; }
 .card-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border-2); }
-.card-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--border-2); }
+.card-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
 
 /* ---------- buttons ---------- */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--control); padding: 0 12px;
-  border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: var(--radius);
-  cursor: pointer; white-space: nowrap; font-weight: 500; transition: background 120ms, border-color 120ms, color 120ms;
+  border: 1px solid var(--line-strong); background: var(--surface-2); color: var(--text); border-radius: 999px;
+  cursor: pointer; white-space: nowrap; font-weight: 600; font-size: 13px; transition: background 120ms, border-color 120ms, color 120ms;
 }
-.btn:hover { background: var(--hover); }
+.btn:hover { background: var(--pressed); }
 .btn:active:not(:disabled) { background: var(--pressed); }
 .btn:disabled { color: var(--disabled); background: var(--surface-2); border-color: var(--border-2); cursor: not-allowed; }
 .btn-primary { background: var(--primary-solid); border-color: var(--primary-solid); color: #fff; }
@@ -74,8 +75,8 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 .btn-text { border-color: transparent; background: transparent; padding: 0 6px; color: var(--primary); font-weight: 400; }
 .btn-text:hover { background: var(--primary-soft); color: var(--primary); }
 .btn-text:disabled { background: transparent; border-color: transparent; }
-.btn-sm { height: var(--control-sm); padding: 0 8px; font-size: 12px; gap: 4px; }
-.btn-lg { height: var(--control-lg); padding: 0 16px; }
+.btn-sm { height: 28px; padding: 0 10px; font-size: 12px; gap: 4px; }
+.btn-lg { height: 44px; padding: 0 22px; font-size: 15px; }
 .btn-block { width: 100%; }
 .icon-btn {
   border: none; background: transparent; width: var(--control); height: var(--control); border-radius: var(--radius);
@@ -85,8 +86,8 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
 
 /* ---------- form controls ---------- */
 .input, .select, .textarea {
-  width: 100%; height: var(--control); padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--surface); outline: none; transition: border-color 120ms, box-shadow 120ms;
+  width: 100%; height: var(--control); padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-ctl);
+  background: var(--surface-2); outline: none; transition: border-color 120ms, box-shadow 120ms;
 }
 .textarea { height: auto; min-height: 84px; padding: 6px 10px; resize: vertical; line-height: 1.5715; }
 .input:hover, .select:hover, .textarea:hover { border-color: var(--text-3); }
@@ -108,8 +109,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary-solid)
 
 /* ---------- tags (badge) ---------- */
 .badge {
-  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px; border-radius: var(--radius-sm);
-  font-size: 12px; line-height: 20px; white-space: nowrap; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border);
+  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 6px;
+  font-size: 12px; line-height: 20px; white-space: nowrap; background: var(--pressed); color: var(--text-2); border: 1px solid transparent;
 }
 .badge-success { background: var(--success-soft); color: var(--success); border-color: transparent; }
 .badge-warning { background: var(--warning-soft); color: var(--warning); border-color: transparent; }
@@ -125,10 +126,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary-solid)
 .table-wrap { position: relative; overflow-x: auto; }
 .table { width: 100%; border-collapse: collapse; }
 .table th {
-  height: 40px; padding: 0 16px; text-align: left; font-weight: 500; font-size: 12px; color: var(--text-2);
-  background: var(--surface-2); border-bottom: 1px solid var(--border); white-space: nowrap;
+  height: 40px; padding: 0 16px; text-align: left; font-weight: 500; font-size: 12px; color: var(--text-3);
+  background: transparent; border-bottom: 1px solid var(--border); white-space: nowrap;
 }
-.table td { padding: 12px 16px; border-bottom: 1px solid var(--border-2); vertical-align: top; }
+.table td { padding: 12px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .table tr:last-child td { border-bottom: none; }
 .table tbody tr:hover td { background: var(--hover); }
 .table tr.clickable { cursor: pointer; }
@@ -144,16 +145,16 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary-solid)
   position: relative; height: 40px; padding: 0; border: none; background: transparent; cursor: pointer; color: var(--text-2);
 }
 .tabs button:hover { color: var(--text); }
-.tabs button.active { color: var(--primary); font-weight: 600; }
-.tabs button.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--primary); }
+.tabs button.active { color: var(--text); font-weight: 600; }
+.tabs button.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent, var(--primary)); }
 .tabs .count { margin-left: 4px; color: var(--text-3); font-weight: 400; }
-.tabs button.active .count { color: var(--primary); }
-.segmented { display: inline-flex; padding: 2px; gap: 2px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
+.tabs button.active .count { color: var(--accent, var(--primary)); }
+.segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; }
 .segmented button {
-  height: 26px; padding: 0 10px; border: none; border-radius: 4px; background: transparent; color: var(--text-2); cursor: pointer; white-space: nowrap;
+  height: 26px; padding: 0 12px; border: none; border-radius: 999px; background: transparent; color: var(--text-3); cursor: pointer; white-space: nowrap; font-size: 12px; font-weight: 600;
 }
 .segmented button:hover { color: var(--text); }
-.segmented button.active { background: var(--surface); color: var(--primary); font-weight: 600; box-shadow: 0 0 0 1px var(--border); }
+.segmented button.active { background: var(--text); color: var(--bg); }
 .segmented .count { margin-left: 4px; font-weight: 400; color: inherit; opacity: 0.85; }
 
 /* ---------- banners ---------- */
@@ -179,7 +180,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary-solid)
 /* ---------- KPI ---------- */
 .kpi { padding: 16px 20px; min-width: 0; position: relative; }
 .kpi-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); }
-.kpi-value { font-size: 28px; line-height: 36px; font-weight: 600; margin-top: 8px; letter-spacing: -0.01em; }
+.kpi-value { font-size: 30px; line-height: 38px; font-weight: 700; margin-top: 8px; letter-spacing: -0.5px; font-family: var(--num); }
 .kpi-sub { font-size: 12px; color: var(--text-3); margin-top: 6px; line-height: 1.6; }
 
 /* ---------- misc content ---------- */
@@ -221,7 +222,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--primary-solid)
 }
 .menu-panel.left { left: 0; right: auto; }
 .menu-item {
-  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 10px; border: none; border-radius: 4px;
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 10px; border: none; border-radius: 8px;
   background: transparent; color: var(--text); text-align: left; cursor: pointer; font-size: 13px;
 }
 .menu-item:hover { background: var(--hover); color: var(--text); }

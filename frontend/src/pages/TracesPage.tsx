@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { api } from "../api";
-import { Empty, ErrorBanner, Json, Kpi, ROLE_TEXT, StatusBadge, VerdictBadge, ms, pressable, time, useLoad, tierText, PageHeader } from "../components/ui";
+import { Empty, ErrorBanner, Json, Kpi, ROLE_TEXT, StatusBadge, VerdictBadge, ms, pressable, time, useLoad, tierText, PageHeader, Skeleton } from "../components/ui";
 import type { EvidenceItem, RunRow, SpanRow } from "../types";
 
 const KIND_TEXT: Record<string, string> = {
@@ -22,15 +22,13 @@ function RunDetailView({ runId }: { runId: string }) {
   const { data, error } = useLoad(() => api.get<RunDetail>(`/api/runs/${runId}`), [runId]);
   const [open, setOpen] = useState<number | null>(null);
   if (error) return <ErrorBanner error={error} />;
-  if (!data) return <Empty>加载中…</Empty>;
+  if (!data) return <div className="card"><Skeleton rows={6} /></div>;
   const maxLatency = Math.max(1, ...data.spans.map((s) => s.latency_ms));
   return (
     <div className="stack" style={{ gap: 16 }}>
-      <div className="row">
-        <button className="btn btn-sm" onClick={() => navigate("/traces")}><ArrowLeft size={14} /> 返回列表</button>
-        <span className="mono faint">trace {data.id}</span>
-        {data.is_eval && <span className="badge badge-info">评测运行</span>}
-      </div>
+      <PageHeader title={<>运行详情 {data.is_eval && <span className="badge badge-info" style={{ verticalAlign: 3 }}>评测运行</span>}</>}
+        description={<span className="mono">trace {data.id}</span>}
+        actions={<button className="btn" onClick={() => navigate("/traces")}><ArrowLeft size={14} /> 返回列表</button>} />
       <div className="grid grid-4">
         <Kpi label="状态" value={<StatusBadge status={data.status} />} sub={`${data.steps} 步 · ${tierText(data.route_tier)}${data.route_tier === "cache" ? "" : ` ${data.model}`}`} />
         <Kpi label="端到端耗时" value={ms(data.latency_ms)} sub={time(data.created_at)} />

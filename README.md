@@ -34,13 +34,13 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 
 ## 功能一览
 
-![工作区入口：按企业与角色选择体验](docs/assets/login.png)
+![产品介绍页：一次退款从提问到受理的示例、运作方式，演示账号就在同一页](docs/assets/login.png)
 
 （截图由新版控制台回放仓库保存的 Echo音乐 真实模型 `deepseek-v4-1-flash` 录制生成，脚本为 `frontend/scripts/screenshots.mjs`。线上站点按兼容性检查选择真实模型或离线模型录制，实际来源以页面标注为准；检索调试器和下面的证据校验演示取自电商租户 Leon优选 的本地运行。）
 
 <table>
 <tr>
-<td width="50%"><img src="docs/assets/approvals.png" alt="审批队列"><br><b>审批队列</b>：金额、原因和 Agent 提交的证据包，通过后重新校验订单再执行</td>
+<td width="50%"><img src="docs/assets/approvals.png" alt="审批队列"><br><b>审批队列</b>：表格列出待审批的退款，证据包在侧边抽屉里，通过前还要在确认框里核对订单号和金额；执行前重新校验订单</td>
 <td width="50%"><img src="docs/assets/trace.png" alt="链路追踪"><br><b>链路追踪</b>：护栏、路由、模型、工具、审批、校验，每一步的输入输出和耗时</td>
 </tr>
 <tr>
@@ -48,7 +48,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 <td><img src="docs/assets/retrieval.png" alt="检索调试器"><br><b>检索调试器</b>：BM25 名次、向量名次、RRF 分数、相关度阈值、注入样本屏蔽</td>
 </tr>
 <tr>
-<td><img src="docs/assets/handoffs.png" alt="人工接待"><br><b>人工接待</b>：转人工后 Agent 不再回答，坐席按等待时间接待、回复，处理完把对话交还智能客服</td>
+<td><img src="docs/assets/handoffs.png" alt="人工接待"><br><b>人工接待</b>：三栏工作台。左侧排队与等待时长，中间对话（智能客服的转人工摘要、依据文档、常用语），右侧顾客、订单、审批、退款和工单；处理完把对话交还智能客服</td>
 <td><img src="docs/assets/handoff-customer.png" alt="顾客看到的人工回复"><br><b>顾客端</b>：人工回复单独标注，底部提示当前由谁服务或排在第几位</td>
 </tr>
 <tr>
@@ -57,13 +57,13 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 </tr>
 <tr>
 <td><img src="docs/assets/dashboard.png" alt="运营看板"><br><b>运营看板</b>：自助解决率、转人工率、拒答率（都按会话计算：拒答、差评和出错不算解决）、出错率与最近 15 分钟的故障提示、证据覆盖率、缓存命中率、Prompt 版本对比，按租户时区的自然日统计，支持导出 CSV（会话全文、工单、人工接待、运行记录、反馈、审批，按租户时区）</td>
-<td><img src="docs/assets/dashboard-dark.png" alt="深色模式"><br><b>深色模式</b>：跟随系统，也可以手动切换</td>
+<td><img src="docs/assets/dashboard-light.png" alt="浅色主题"><br><b>浅色主题</b>：默认是深色工作区，也可以切换到浅色或跟随系统</td>
 </tr>
 <tr>
 <td colspan="2"><img src="docs/assets/chat-verifier.png" alt="证据校验标出编造内容"><br><b>证据校验</b>：管理员打开「演示模式」后，离线模型在回答末尾编造了一句“90 天无理由退货，2 小时到账”。校验器发现证据里没有 90 和 2 这两个数字，把这句话标红，并把整条回答判为“证据冲突”</td>
 </tr>
 <tr>
-<td colspan="2"><img src="docs/assets/mobile-approvals.png" alt="手机端审批" width="260"> <img src="docs/assets/mobile-nav.png" alt="手机端导航" width="260"><br><b>手机端</b>：窄屏下用抽屉式导航，审批卡片改为单列，主管在手机上也能处理审批</td>
+<td colspan="2"><img src="docs/assets/mobile-approvals.png" alt="手机端审批" width="260"> <img src="docs/assets/mobile-nav.png" alt="手机端导航" width="260"><br><b>手机端</b>：分区导航变成底部标签栏，审批单以全屏抽屉打开，主管在手机上也能处理审批</td>
 </tr>
 </table>
 
@@ -99,7 +99,7 @@ LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（R
 - 售后时效由工具层判断，不靠模型自觉：签收 7 天内按规则自动处理；7 到 15 天只有质量问题可以退，工具看不到顾客上传的照片，所以一律转人工核实；超过 15 天直接拒绝，不进审批。期限按顾客提出申请的时间计算，审批排队不会让顾客因此超期。两个期限是租户配置（`PATCH /api/tenant`）。
 - 累计退款风控（防“薅羊毛”）：同一顾客 30 天内已退款 3 笔或累计超过 200 元时，即使单笔低于自动审批额度也要人工审核。统计按顾客而不是按操作人，坐席代为申请也绕不过去；几笔同时提交也绕不过去（执行时按顾客加锁，在锁内重新统计）。
 - 手机号、身份证、银行卡、邮箱在进入模型、写入数据库和链路之前脱敏，覆盖人们实际的输入习惯（`138-1234-5678`、`+86 138 1234 5678`、每 4 位一组的卡号）；不只是聊天消息，反馈意见、会话标题、审批意见、工单处理结果、人工回复这些自由文本入口也一样（有一条测试读遍所有表来核对）；接口带限流。
-- 控制台设计：参照电商后台和客服工作台的版式自建设计系统（Semi Design 的令牌体系，没有组件库依赖），文字和填充色两种主题下都过 WCAG AA 检查，对话框有焦点陷阱，见 [docs/DESIGN.md](docs/DESIGN.md)。
+- 控制台设计：产品介绍页 + 深色工作区（分区标签各有强调色，手机端底部标签栏），版式参照电商后台和客服工作台，自建设计系统（沿用 Semi Design 的令牌体系，没有组件库依赖）；文字和填充色两种主题下都过 WCAG AA 检查，对话框有焦点陷阱，见 [docs/DESIGN.md](docs/DESIGN.md)。
 - 浏览器加固：所有响应都带 `nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`，以及只允许同源资源的 CSP（打包后的控制台已在该 CSP 下逐页验证，没有报错）。
 - 时区：时间一律按 UTC 存储和比较；给人看的日期（看板的每一天、告诉顾客的付款和签收日期）按租户时区（`PATCH /api/tenant` 的 `timezone`，IANA 名称，默认 Asia/Shanghai）。早上 6 点半签收的订单，不会被说成前一天签收。
 - 数据保留：`python -m app.ops.retention --days 90` 删除超过保留期的链路明细，并抹除对话正文、运行记录和已关闭工单中的文本；指标、审批和退款等审计记录保留；还在等待审批的运行、还没处理完的工单不会被处理。

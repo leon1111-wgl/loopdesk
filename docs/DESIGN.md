@@ -2,6 +2,8 @@
 
 The console follows the design language of Chinese e-commerce back offices: merchant consoles, their
 customer-service workbenches and ad-platform consoles built on Semi Design and Arco Design (both MIT).
+Since 2026-11-01 it also follows the owner's "rain-or-shine" app style: an intro page with a floating
+bar, a dark blue-black workspace, section tabs with their own accent colours and a phone tab bar.
 We borrow layout patterns and the token system only. No third-party logos, product names, trademarks
 or images appear in the UI; the product is LoopDesk and every tenant, person and order is synthetic.
 
@@ -29,19 +31,36 @@ take Semi's palette, radii, control heights and table/form anatomy, and implemen
 `src/styles/*.css` plus a few primitives in `src/components/ui.tsx` (Modal, Drawer, ConfirmDialog with a
 focus trap, Tabs, Tag, PageHeader, Dropdown). No new runtime dependency.
 
+## Intro page
+
+`/` for a visitor who is not signed in (`src/pages/IntroPage.tsx`, `src/styles/intro.css`):
+a floating rounded bar (brand, a centred pill nav whose active pill slides to the section in view,
+中文 / EN, the primary 进入控制台), a headline whose second line sits in a highlight block
+(`--highlight`, blue to violet), the two calls to action, a 下次直接进入 checkbox (remembered; the
+sign-in page then opens directly) and trust chips. Then an example run (one refund, six steps, marked
+示例 · 虚构数据), four structural numbers (tenants, roles, tools, e2e walkthroughs; no model metrics),
+运作方式 as a five-step stepper with clickable steps and a play / pause button (3.8 s per step, off
+under reduced motion), the three console areas, the demo accounts themselves (进入控制台 scrolls
+there), and a short FAQ. Only the intro has an English version; the console is Chinese.
+
 ## Layout grid and navigation
 
-- **Shell**: 56 px top bar across the full width; collapsible left side nav (216 px, 64 px icon rail
-  when collapsed, remembered per browser); content area on the grey page background, 24 px padding
-  (16 px on phones), cards on a 16 px gutter grid. Widths above 1600 px centre the content.
-- **Top bar**: logo and product name, then the **tenant switcher** (current workspace, its industry
-  and the SYNTHETIC tag; in demo mode it lists the other demo tenants and signs in with the same role
-  there). Right side: environment tag (演示环境 · 数据均为虚构), source link, theme toggle
-  (light / dark / system) and the **user menu** (name, role, e-mail, 退出登录).
-- **Side nav**: grouped (服务 / 知识与质量 / 运维), 40 px items, 16 px icons, the active item on a
-  primary-tint fill with primary text. Queue counts sit right-aligned as pills (red for work waiting on
-  a person). Below 780 px the nav is an off-canvas drawer opened from the top bar.
-- **Page header**: breadcrumb (租户 / 分组), 20 px title, one-line description, actions on the right.
+- **Shell**: 60 px top bar, then a 46 px row of page tabs for the current section; content on the
+  page background, 24 px padding (16 px on phones), cards on a 16 px gutter grid. Widths above
+  1600 px centre the content.
+- **Top bar**: brand, the **role-aware section tabs** (服务运营 / 知识与质量 / 运维审计; agents do
+  not see 操作审计), then the **tenant switcher** (current workspace and its industry; in demo mode
+  it signs in with the same role in another demo tenant), environment tag (演示环境 · 数据均为虚构),
+  source link, theme toggle (dark, light, system; dark is the default) and the **user menu**.
+- **Section accents**: service blue `--acc-service`, knowledge teal `--acc-knowledge`, ops amber
+  `--acc-ops`. The shell sets `--accent` from the section; the active tab underline, the active page
+  tab, the breadcrumb's last item and the first KPI rule use it. Buttons keep the brand blue.
+- **Page tabs**: pill tabs with icons; queue counts as red pills. A section tab shows the total of its
+  pages' counts when another section is open.
+- **Phones (≤ 780 px)**: the section tabs become a fixed bottom tab bar; the page tabs scroll
+  sideways. The top bar has no `backdrop-filter`, which would make it the containing block of that
+  fixed bar.
+- **Page header**: breadcrumb (租户 / 分区), 24 px title, one-line description, actions on the right.
 - **Customers** get no console chrome: a brand bar and the chat, centred.
 
 ## Tokens
@@ -50,19 +69,17 @@ All colours are CSS custom properties in `src/styles/tokens.css`; components nev
 Text and fills meet WCAG AA (4.5:1) against the surfaces they sit on, in both themes; `pnpm contrast`
 (`scripts/contrast.mjs`) checks every pair.
 
-| token | light | dark | use |
+| token | dark (default) | light | use |
 |---|---|---|---|
-| `--primary` | `#0064FA` (Semi blue-5) | `#54A9FF` | links, active nav, focus |
-| `--primary-solid` | `#0064FA` | `#0064FA` | fills behind white text |
-| `--primary-soft` / `--primary-line` | `#EAF5FF` / `#CBE7FE` | `#14273F` / `#1F4470` | selected rows, tags |
-| `--bg` | `#F5F6F7` | `#16161A` | page |
-| `--surface` / `--surface-2` | `#FFFFFF` / `#F7F8FA` | `#232429` / `#2A2B30` | cards / table head, fills |
-| `--border` / `--border-2` | `#E4E6E9` / `#EEF0F2` | `#3A3C42` / `#303237` | hairlines |
-| `--text` / `--text-2` / `--text-3` | `#1C1F23` / `#494C4F` / `#6B7075` | `#F9F9F9` / `#C6CACD` / `#9FA3A8` | 3 text levels |
-| `--success` | `#237A2E` | `#5DC264` | done, approved |
-| `--warning` | `#A65200` | `#FFAE43` | waiting, SLA soon |
-| `--danger` | `#D52515` | `#FC725A` | failed, overdue, money out |
-| `--info` | `#6A3AC7` | `#A68BF0` | a person (handoff, agent) |
+| `--bg` | `#0B0D12` | `#F5F6F7` | page |
+| `--surface` / `--surface-2` / `--pressed` | `#12151C` / `#181C25` / `#222733` | `#FFFFFF` / `#F7F8FA` / `#E9EBEE` | panels, fills |
+| `--border` / `--line-strong` | `#20242E` / `#303644` | `#E4E6E9` / `#D4D8DD` | hairlines / controls |
+| `--text` / `--text-2` / `--text-3` | `#ECEEF2` / `#B9BFCA` / `#8D95A3` | `#1C1F23` / `#494C4F` / `#6B7075` | 3 text levels |
+| `--primary` / `--primary-solid` | `#4C9BFF` / `#1E6BFF` | `#0064FA` / `#0064FA` | links / fills behind white text |
+| `--acc-service` / `--acc-knowledge` / `--acc-ops` | `#4C9BFF` / `#2DD4BF` / `#F5B83D` | `#0064FA` / `#0F766E` / `#A65200` | section accents |
+| `--success` / `--warning` / `--danger` | `#34D399` / `#F5B83D` / `#FB7185` | `#237A2E` / `#A65200` / `#D52515` | states |
+| `--info` | `#A78BFA` | `#6A3AC7` | a person (handoff, agent) |
+| `--highlight` | `#1E6BFF → #6D5DFC → #C084FC` | same | the intro headline block only |
 
 Each semantic colour has `-soft` (tag and banner fill) and `-solid` (white-text fill) variants.
 Shadows only on floating layers (menus, dialogs, drawers); everything else is 1 px hairlines.
@@ -70,9 +87,10 @@ Shadows only on floating layers (menus, dialogs, drawers); everything else is 1 
 ## Type, spacing, density
 
 - System font stack (PingFang SC / Microsoft YaHei / -apple-system), no web fonts; tabular numbers.
-- Scale: 12 (meta, table head) · 13 (dense cells) · 14 (body, default) · 16 (card title) ·
-  20 (page title) · 28 (KPI value). Weights 400 / 500 / 600.
-- 4 px spacing grid: 4, 8, 12, 16, 20, 24, 32. Radii 3 (tags), 6 (controls, cards), 8 (dialogs).
+- Scale: 12 (meta, table head) · 13 (dense cells) · 14 (body, default) · 15 (card title) ·
+  24 (page title) · 30 (KPI value, DIN-style numerals) · 38–66 (intro headline). Weights 400–800.
+- 4 px spacing grid: 4, 8, 12, 16, 20, 24, 32. Radii 6 (tags), 8 (inputs), 12 (cards), 14 (dialogs);
+  buttons, segmented controls and page tabs are pills.
 - Controls 32 px (small 24, large 40). Table rows 48 px with 12 × 16 px cells; head row 40 px on
   `--surface-2`, 12 px `--text-2` labels.
 

@@ -206,8 +206,8 @@ export function Dropdown({ label, button, children, align, className }: {
 }
 
 const NAV_GROUP: Record<string, string> = {
-  dashboard: "服务", chat: "服务", handoffs: "服务", approvals: "服务", tickets: "服务", refunds: "服务",
-  knowledge: "知识与质量", evals: "知识与质量", flywheel: "知识与质量", traces: "运维", audit: "运维",
+  dashboard: "服务运营", chat: "服务运营", handoffs: "服务运营", approvals: "服务运营", tickets: "服务运营", refunds: "服务运营",
+  knowledge: "知识与质量", evals: "知识与质量", flywheel: "知识与质量", traces: "运维审计", audit: "运维审计",
 };
 
 /** Page title block: breadcrumb trail (tenant / nav group by default), title, description, actions. */
@@ -339,25 +339,25 @@ export function Logo({ size = 24 }: { size?: number }) {
 type Theme = "system" | "light" | "dark";
 const THEME_KEY = "loopdesk.theme";
 
+// The blue-black workspace is the default; "system" follows the operating system.
 function applyTheme(theme: Theme) {
-  if (theme === "system") document.documentElement.removeAttribute("data-theme");
-  else document.documentElement.setAttribute("data-theme", theme);
+  document.documentElement.setAttribute("data-theme", theme);
 }
 
 export function initTheme() {
   try {
-    applyTheme((localStorage.getItem(THEME_KEY) as Theme) || "system");
+    applyTheme((localStorage.getItem(THEME_KEY) as Theme) || "dark");
   } catch {
-    /* storage unavailable: follow the system */
+    applyTheme("dark"); // storage unavailable: the default theme
   }
 }
 
 export function useTheme(): [Theme, (t: Theme) => void] {
   const [theme, setTheme] = useState<Theme>(() => {
     try {
-      return (localStorage.getItem(THEME_KEY) as Theme) || "system";
+      return (localStorage.getItem(THEME_KEY) as Theme) || "dark";
     } catch {
-      return "system";
+      return "dark";
     }
   });
   const update = useCallback((t: Theme) => {

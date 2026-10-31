@@ -23,12 +23,14 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch(process.env.E2E_CHROME ? { executablePath: process.env.E2E_CHROME } : {});
 
-async function signedIn(email, { mobile = false, dark = false } = {}) {
+// The console opens in its dark theme; light: true picks the light one, as the theme toggle would.
+async function signedIn(email, { mobile = false, light = false } = {}) {
   const context = await browser.newContext({
     viewport: mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 },
-    deviceScaleFactor: mobile ? 2 : 1, colorScheme: dark ? "dark" : "light", locale: "zh-CN",
+    deviceScaleFactor: mobile ? 2 : 1, colorScheme: light ? "light" : "dark", locale: "zh-CN",
     timezoneId: "Asia/Shanghai",
   });
+  if (light) await context.addInitScript(() => localStorage.setItem("loopdesk.theme", "light"));
   const page = await context.newPage();
   page.on("pageerror", (err) => console.error(`page error: ${err.message}`));
   await page.goto(base + "/");
@@ -53,7 +55,8 @@ async function ask(page, question) {
 
 const SHOTS = {
   "login.png": async () => {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 960 }, colorScheme: "light", locale: "zh-CN" });
+    // The intro page: the floating bar, the headline and the example run.
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark", locale: "zh-CN" });
     const page = await context.newPage();
     await page.goto(base + "/");
     await page.getByRole("button", { name: /admin@echo.demo/ }).waitFor();
@@ -71,6 +74,9 @@ const SHOTS = {
   "approvals.png": async () => {
     const page = await signedIn("admin@echo.demo");
     await page.goto(base + "/approvals");
+    // the evidence package opens in a side sheet
+    await page.getByRole("button", { name: /审核|查看/ }).first().click();
+    await page.getByRole("dialog").waitFor();
     await shot(page, "approvals.png");
   },
   "trace.png": async () => {
@@ -98,8 +104,7 @@ const SHOTS = {
   },
   "knowledge-conflicts.png": async () => {
     const page = await signedIn("admin@echo.demo");
-    await page.goto(base + "/knowledge");
-    await page.getByRole("heading", { name: /知识冲突/ }).evaluate((el) => el.closest(".card").scrollIntoView({ block: "start" }));
+    await page.goto(base + "/knowledge?tab=conflicts");
     await shot(page, "knowledge-conflicts.png");
   },
   "audit.png": async () => {
@@ -112,20 +117,21 @@ const SHOTS = {
     await page.goto(base + "/dashboard");
     await shot(page, "dashboard.png");
   },
-  "dashboard-dark.png": async () => {
-    const page = await signedIn("admin@echo.demo", { dark: true });
+  "dashboard-light.png": async () => {
+    const page = await signedIn("admin@echo.demo", { light: true });
     await page.goto(base + "/dashboard");
-    await shot(page, "dashboard-dark.png");
+    await shot(page, "dashboard-light.png");
   },
   "mobile-approvals.png": async () => {
     const page = await signedIn("admin@echo.demo", { mobile: true });
     await page.goto(base + "/approvals");
+    await page.getByRole("button", { name: /审核|查看/ }).first().click();
+    await page.getByRole("dialog").waitFor();
     await shot(page, "mobile-approvals.png");
   },
   "mobile-nav.png": async () => {
     const page = await signedIn("admin@echo.demo", { mobile: true });
-    await page.goto(base + "/dashboard");
-    await page.getByRole("button", { name: /打开导航菜单/ }).click();
+    await page.goto(base + "/dashboard");  // the section tabs as a bottom tab bar
     await shot(page, "mobile-nav.png");
   },
 };

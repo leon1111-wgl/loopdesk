@@ -14,9 +14,9 @@
 .work-queue > a:hover { background: var(--hover); color: var(--text); }
 .work-queue > a > b { margin-left: auto; font-size: 24px; font-weight: 600; color: var(--text); }
 .work-queue > a > svg:last-child { color: var(--text-3); }
-.wq-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--radius); background: var(--primary-soft); color: var(--primary); flex-shrink: 0; }
+.wq-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--radius); background: var(--accent-soft); color: var(--accent); flex-shrink: 0; }
 .sparkline { display: block; margin-top: 6px; }
-.primary-metrics .kpi:first-child { border-top: 2px solid var(--primary); }
+.primary-metrics .kpi:first-child { border-top: 2px solid var(--accent); }
 .secondary-metrics .kpi-value { font-size: 22px; line-height: 30px; }
 .dashboard-charts { grid-template-columns: 1.6fr 1fr 1fr; }
 .column-chart { display: flex; flex-direction: column; gap: 8px; }
