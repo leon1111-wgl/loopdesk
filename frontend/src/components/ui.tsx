@@ -60,6 +60,9 @@ export function VerdictBadge({ verdict, coverage }: { verdict?: string | null; c
 }
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+/** Open dialogs, most recent last: a confirmation or an edit dialog opened from a drawer is on top
+ * whatever its place in the DOM. */
+const openDialogs: HTMLElement[] = [];
 
 /** Keeps keyboard focus inside a dialog while it is open (WCAG 2.4.3): focus moves in on open unless
  * a child already took it (autoFocus), Tab and Shift+Tab wrap around, Escape calls onClose, and when
@@ -72,13 +75,13 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose: () => 
   useEffect(() => {
     const box = ref.current;
     if (!box) return;
+    openDialogs.push(box);
     if (!box.contains(document.activeElement)) {
       (box.querySelector<HTMLElement>("[data-autofocus]") ?? box.querySelector<HTMLElement>(FOCUSABLE) ?? box).focus();
     }
     const onKey = (e: KeyboardEvent) => {
-      // Only the top-most dialog reacts: a confirmation opened over a drawer closes first.
-      const dialogs = document.querySelectorAll("[data-dialog]");
-      if (dialogs[dialogs.length - 1] !== box) return;
+      // Only the dialog opened last reacts: a confirmation opened over a drawer closes first.
+      if (openDialogs[openDialogs.length - 1] !== box) return;
       if (e.key === "Escape") {
         e.preventDefault();
         close.current();
@@ -100,6 +103,7 @@ export function useFocusTrap(ref: RefObject<HTMLElement | null>, onClose: () => 
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
+      openDialogs.splice(openDialogs.indexOf(box), 1);
       const back = opener.current;
       if (back instanceof HTMLElement && back.isConnected && (document.activeElement === document.body || document.activeElement === null)) back.focus();
     };
@@ -196,7 +200,7 @@ export function Dropdown({ label, button, children, align, className }: {
   }, [open]);
   return (
     <div ref={root} className={`menu ${className ?? ""}`}>
-      <button ref={toggle} type="button" className="menu-toggle" aria-label={label} aria-expanded={open} aria-controls={id}
+      <button ref={toggle} type="button" className="menu-toggle" aria-label={label} aria-expanded={open} aria-controls={open ? id : undefined}
         onClick={() => setOpen((v) => !v)}>
         {button}
       </button>

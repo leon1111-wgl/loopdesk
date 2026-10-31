@@ -159,7 +159,7 @@ function HandoffPanel({ handoff, onChanged }: { handoff: Handoff; onChanged: () 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
-  const end = useRef<HTMLDivElement>(null);
+  const transcript = useRef<HTMLDivElement>(null);
   const load = useCallback(async () => {
     const r = await api.get<{ messages: ChatMessage[] }>(`/api/conversations/${handoff.conversation_id}/messages`);
     setLoaded(r.messages);
@@ -171,8 +171,10 @@ function HandoffPanel({ handoff, onChanged }: { handoff: Handoff; onChanged: () 
     const timer = window.setInterval(() => load().catch(() => undefined), 4000);
     return () => window.clearInterval(timer);
   }, [load]);
+  // Scroll the transcript only: scrollIntoView would also scroll the page (on phones the panes stack).
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end" });
+    const el = transcript.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
   async function act(path: "reply" | "close") {
@@ -219,7 +221,7 @@ function HandoffPanel({ handoff, onChanged }: { handoff: Handoff; onChanged: () 
             <Undo2 size={14} /> 结束人工服务
           </button>
         </div>
-        <div className="wb-transcript" aria-live="polite">
+        <div ref={transcript} className="wb-transcript" aria-live="polite">
           {handoff.reason && (
             <div className="ai-brief handoff-brief" aria-label="转人工摘要">
               <div className="ai-brief-head"><Bot size={14} aria-hidden="true" /> 智能客服的转人工摘要</div>
@@ -245,7 +247,6 @@ function HandoffPanel({ handoff, onChanged }: { handoff: Handoff; onChanged: () 
               </div>
             </div>
           ))}
-          <div ref={end} />
         </div>
         <div className="wb-composer">
           <ErrorBanner error={error} />
@@ -302,7 +303,7 @@ export default function HandoffsPage() {
   const shown = rows.filter((h) =>
     (filter === "all" || (filter === "queued" ? h.position : !h.position)) &&
     (!query.trim() || `${h.customer ?? ""} ${h.summary} ${h.last_message}`.includes(query.trim())));
-  const current = rows.find((h) => h.ticket_id === selected) ?? shown[0] ?? null;
+  const current = shown.find((h) => h.ticket_id === selected) ?? shown[0] ?? null;
   return (
     <div className="page workbench-page">
       <PageHeader title="人工接待"

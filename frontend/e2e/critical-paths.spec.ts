@@ -201,7 +201,7 @@ test("refund over the auto limit waits for an admin, then the customer sees the 
 
   const leon = await signIn(browser, "admin@leon.demo");
   await leon.goto("/approvals");
-  await approve(leon, "SO20261008002", "核实无误", "¥");
+  await approve(leon, "SO20261008002", "核实无误", "¥1299.00");
   await expect(leon.getByText(/审批单 #\d+ 已通过并执行/)).toBeVisible();
 
   // The customer's page polls while an approval is pending: the resumed answer arrives

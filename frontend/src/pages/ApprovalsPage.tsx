@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Check, FileSearch, X } from "lucide-react";
 import { api } from "../api";
@@ -18,7 +18,8 @@ function ApprovalDrawer({ approval, onClose, onDecided }: { approval: Approval; 
   const own = approval.requested_by?.id === user?.id;
   const needsAdmin = approval.required_role === "admin" && user?.role !== "admin";
   const orderId = String(approval.arguments.order_id ?? "");
-  const amount = yuan(approval.arguments.amount);
+  const amount = approval.arguments.amount == null ? "—" : yuan(approval.arguments.amount);
+  const closeUnlessBusy = () => { if (!busy) onClose(); }; // a decision in flight finishes in view
 
   async function decide(decision: "approve" | "reject") {
     setBusy(true);
@@ -57,7 +58,7 @@ function ApprovalDrawer({ approval, onClose, onDecided }: { approval: Approval; 
   const pending = approval.status === "pending";
   return (
     <>
-      <Drawer width={640} onClose={onClose}
+      <Drawer width={640} onClose={closeUnlessBusy}
         title={<div className="stack" style={{ gap: 4 }}>
           <div className="row"><h2>审批单 #{approval.id} · {TOOL_TEXT[approval.tool_name] ?? approval.tool_name}</h2><StatusBadge status={approval.status} /></div>
           <div className="faint">{fullTime(approval.created_at)} 提交 · <Link to={`/traces/${approval.run_id}`}>查看链路</Link></div>
@@ -141,8 +142,8 @@ function ApprovalDrawer({ approval, onClose, onDecided }: { approval: Approval; 
         </div>
       </Drawer>
       {confirm === "approve" && (
-        <ConfirmDialog title="确认通过并退款" confirmText={`确认退款 ${amount}`} tone="danger" busy={busy}
-          onClose={() => setConfirm(null)} onConfirm={() => void decide("approve")}>
+        <ConfirmDialog title="确认通过并退款" confirmText={amount === "—" ? "确认退款" : `确认退款 ${amount}`} tone="danger" busy={busy}
+          onClose={() => { if (!busy) setConfirm(null); }} onConfirm={() => void decide("approve")}>
           <div className="money-line">
             <span className="mono">{orderId}</span>
             <b>{amount}</b>
@@ -169,9 +170,12 @@ export default function ApprovalsPage() {
   const [lastDecision, setLastDecision] = useState<string | null>(null);
   const open = data?.find((a) => a.id === openId) ?? null;
 
-  // A link to an approval that is no longer pending looks in "全部".
+  // A link to an approval that is no longer pending looks in "全部" (once: the reviewer may switch back).
+  const looked = useRef(false);
   useEffect(() => {
-    if (requested && tab === "pending" && data && !data.some((a) => a.id === requested)) setTab("all");
+    if (looked.current || !requested || tab !== "pending" || !data) return;
+    looked.current = true;
+    if (!data.some((a) => a.id === requested)) setTab("all");
   }, [requested, tab, data]);
 
   function close() {

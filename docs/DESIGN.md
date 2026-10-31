@@ -106,7 +106,8 @@ Shadows only on floating layers (menus, dialogs, drawers); everything else is 1 
 - **Tags**: 20 px, 3 px radius, soft fill + text colour from one semantic token.
 - **Banner**: full-width soft fill, 1 px line of the same hue, leading icon, inline link at the end.
 - **Dialogs and drawers**: focus moves in on open, Tab stays inside, Escape closes, focus returns to
-  the opener. A money action always goes through a confirmation dialog that repeats the order and the
+  the opener. Open dialogs form a stack: the one opened last handles the keyboard, whatever its place in
+  the DOM. A drawer with a decision in flight does not close. A money action always goes through a confirmation dialog that repeats the order and the
   amount.
 
 ## Agent workbench (three panes)
@@ -117,7 +118,7 @@ Used by 人工接待 (handoff queue) and, with the run inspector on the right, t
 |---|---|---|
 | status filter (全部 / 排队中 / 接待中) with counts; search; each row: avatar, customer, channel tag, SLA timer (green < 5 min, amber < 15 min, red after), summary, last message | header (customer, status tag, 结束人工服务); AI handoff brief; transcript with the bot's citation chips and verdict tag; quick replies; the bot's last answer offered as an editable draft (参考回答); composer | customer facts (channel, waiting, priority, owner); orders named in the conversation; this conversation's approvals, refunds and tickets with status tags and actions (去审批, 查看工单, 去对账) |
 
-Below 1180 px the context panel folds under the chat; below 780 px the list becomes a drawer.
+Below 1180 px the context panel is hidden; below 780 px the panes stack (the queue scrolls in a 260 px box above the conversation). The transcript scrolls itself to the newest message; the page does not jump.
 
 ## States
 

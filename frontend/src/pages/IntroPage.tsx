@@ -185,20 +185,29 @@ function Stepper({ t }: { t: (typeof T)[Lang] }) {
   const Icon = STEP_ICONS[current];
   return (
     <div className="card how">
-      <div className="how-tabs" role="tablist" aria-label={t.howTitle}>
+      <div className="how-tabs">
+        <div className="how-steps" role="tablist" aria-label={t.howTitle}>
         {t.steps.map(([name], i) => (
-          <button key={name} type="button" role="tab" aria-selected={i === current} className={i === current ? "active" : ""}
-            onClick={() => { setCurrent(i); setPlaying(false); }}>
+          <button key={name} type="button" role="tab" aria-selected={i === current} aria-controls="how-panel" tabIndex={i === current ? 0 : -1}
+            className={i === current ? "active" : ""} onClick={() => { setCurrent(i); setPlaying(false); }}
+            onKeyDown={(e) => {
+              if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+              const next = (i + (e.key === "ArrowRight" ? 1 : t.steps.length - 1)) % t.steps.length;
+              setCurrent(next);
+              setPlaying(false);
+              (e.currentTarget.parentElement?.children[next] as HTMLElement | undefined)?.focus();
+            }}>
             <span className="how-num">{String(i + 1).padStart(2, "0")}</span>{name}
             {i === current && playing && <i className="how-progress" key={`p${current}`} aria-hidden="true" />}
           </button>
         ))}
+        </div>
         <button type="button" className="how-play" aria-pressed={playing} aria-label={playing ? t.pause : t.play}
           title={playing ? t.pause : t.play} onClick={() => setPlaying((p) => !p)}>
           {playing ? <Pause size={15} /> : <Play size={15} />}
         </button>
       </div>
-      <div className="how-card" role="tabpanel" aria-live="polite">
+      <div className="how-card" id="how-panel" role="tabpanel" aria-live={playing ? "off" : "polite"}>
         <span className="icon-tile lg" aria-hidden="true"><Icon size={24} /></span>
         <div>
           <h3>{title}</h3>
@@ -253,7 +262,7 @@ export default function IntroPage() {
           </label>
           <div className="chips">{t.chips.map((c) => <span key={c}><ShieldCheck size={14} aria-hidden="true" />{c}</span>)}</div>
         </div>
-        <div className="card live" aria-label={t.liveTitle}>
+        <section className="card live" aria-label={t.liveTitle}>
           <div className="card-head"><h2>{t.liveTitle}</h2><span className="badge badge-info">{t.liveTag}</span></div>
           <ol className="live-rows">
             {t.live.map(([name, sub], i) => (
@@ -265,7 +274,7 @@ export default function IntroPage() {
             ))}
           </ol>
           <div className="live-foot"><span>{t.liveFoot[0]}</span><span className="mono">{t.liveFoot[1]}</span></div>
-        </div>
+        </section>
       </section>
 
       <div className="intro-stats">

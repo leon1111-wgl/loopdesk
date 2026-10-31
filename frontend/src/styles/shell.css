@@ -138,7 +138,7 @@
   /* The section tabs become a bottom tab bar. No backdrop-filter on the top bar: it would become the
      containing block of this fixed bar. */
   .main-nav {
-    position: fixed; z-index: 40; left: 0; right: 0; bottom: 0; height: 60px; padding: 0 6px env(safe-area-inset-bottom);
+    position: fixed; z-index: 40; left: 0; right: 0; bottom: 0; height: calc(60px + env(safe-area-inset-bottom)); padding: 0 6px env(safe-area-inset-bottom);
     justify-content: space-around; gap: 0; background: var(--nav-bg); border-top: 1px solid var(--border);
   }
   .nav-item { flex: 1; flex-direction: column; justify-content: center; gap: 3px; padding: 0; font-size: 11px; }
@@ -147,7 +147,7 @@
   .nav-long { display: none; }
   .nav-short { display: inline; }
   .subnav { padding: 0 8px; }
-  .shell:not(.shell-customer) .main { padding-bottom: 60px; }
+  .shell:not(.shell-customer) .main { padding-bottom: calc(60px + env(safe-area-inset-bottom)); }
   .scrim { display: block; position: fixed; inset: 0; z-index: 44; background: var(--overlay); }
   .grid-2, .grid-4 { grid-template-columns: minmax(0, 1fr); }
   .page { padding: 16px 16px 32px; }

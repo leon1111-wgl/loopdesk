@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   Activity,
   BookOpen,
@@ -255,14 +255,14 @@ export default function Layout() {
         </NavLink>
         <nav className="main-nav" aria-label="导航菜单">
           {sections.map((sec) => (
-            <NavLink key={sec.key} to={sec.items[0].to} data-section={sec.key}
+            <Link key={sec.key} to={sec.items[0].to} data-section={sec.key}
               className={`nav-item ${sec === current ? "active" : ""}`} aria-current={sec === current ? "true" : undefined}
               aria-label={sectionCount(sec) > 0 && sec !== current ? `${sec.label}（${sectionCount(sec)} 条待处理）` : sec.label}>
               {sec.icon}
               <span className="nav-long">{sec.label}</span>
               <span className="nav-short" aria-hidden="true">{sec.short}</span>
               {sectionCount(sec) > 0 && sec !== current && <span className="count">{sectionCount(sec)}<span className="sr-only"> 条待处理</span></span>}
-            </NavLink>
+            </Link>
           ))}
         </nav>
         <div className="top-actions">

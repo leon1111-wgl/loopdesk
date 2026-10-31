@@ -14,6 +14,8 @@ for (const variant of [
       colorScheme: variant.dark ? "dark" : "light",
       reducedMotion: "reduce",
     });
+    // The console opens dark; the light variant picks the light theme as the toggle would.
+    if (!variant.dark) await context.addInitScript(() => localStorage.setItem("loopdesk.theme", "light"));
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));

@@ -30,7 +30,7 @@
 .hero h1 { font-size: clamp(38px, 5vw, 66px); line-height: 1.15; font-weight: 800; letter-spacing: 1px; }
 .hero h1 .hl {
   display: inline-block; white-space: nowrap; margin-top: 10px; padding: 2px 18px 8px; border-radius: 16px; color: #fff;
-  background: var(--highlight); box-shadow: 0 18px 50px -18px rgb(109 93 252 / 60%);
+  background: var(--highlight); box-shadow: 0 18px 50px -18px rgb(109 93 252 / 55%);
 }
 .hero .lead { margin-top: 24px; max-width: 560px; font-size: 16px; line-height: 1.85; color: var(--text-2); }
 .hero .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
@@ -68,7 +68,8 @@
 .intro-section h2 { font-size: 30px; font-weight: 700; }
 .intro-section header p { max-width: 520px; color: var(--text-3); font-size: 14px; line-height: 1.75; }
 
-.how-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto; gap: 10px; padding: 16px 18px 0; align-items: end; }
+.how-tabs { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 16px 18px 0; align-items: end; }
+.how-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 .how-tabs button[role="tab"] {
   position: relative; display: flex; align-items: center; gap: 8px; padding: 8px 0 12px; border: none; background: none; text-align: left;
   font-size: 14px; color: var(--text-3); border-bottom: 2px solid var(--line-strong); cursor: pointer;
@@ -112,7 +113,7 @@
 @media (max-width: 860px) {
   .intro-bar .pill-nav { display: none; }
   .intro-bar { grid-template-columns: 1fr auto; }
-  .how-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)) auto; }
+  .how-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .intro-sections { grid-template-columns: minmax(0, 1fr); }
   .intro-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .intro-stats div:nth-child(3) { border-left: 0; }
@@ -122,11 +123,11 @@
   .intro-bar { left: 8px; right: 8px; top: 8px; padding: 0 8px 0 12px; backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--surface); }
   .intro-bar .brand-name { display: inline; }
   .hero { padding: 96px 16px 40px; gap: 28px; }
-  .hero h1 .hl { padding: 0 12px 6px; border-radius: 12px; }
+  .hero h1 .hl { padding: 0 12px 6px; border-radius: 12px; white-space: normal; }
   .intro-section { padding: 56px 16px 0; }
   .intro-section > header { flex-direction: column; align-items: flex-start; gap: 8px; }
   .intro-section h2 { font-size: 24px; }
-  .how-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
+  .how-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .how-card { grid-template-columns: minmax(0, 1fr); margin: 12px; }
   .how-card .icon-tile { display: none; }
   .intro-stats div { padding: 16px; }
