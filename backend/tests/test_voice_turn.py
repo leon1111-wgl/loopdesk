@@ -285,20 +285,22 @@ def runs(conversation):
 
 
 def test_speech_before_the_answer_plays_takes_it_back_and_merges(voice):
-    # The endpointer cut "我想查一下订单" off; the customer goes on with the number before any audio played.
-    voice.asr.transcripts += ["我想查一下订单", "S O 二零二六一零一九一零一"]
+    # The endpointer cut "我想问一下" off; the customer goes on with the number before any audio played. (The
+    # fragment must not be a request of its own: "我想查一下订单" now lists the orders at once, N-057, and a fast
+    # answer reaches TTS, and is held, before the second fragment starts.)
+    voice.asr.transcripts += ["我想问一下", "S O 二零二六一零一九一零一"]
     with voice.connect(tts=SlowTTS(1.5)) as ws:
         say(ws)
         first = until(ws, "transcript")[-1]
-        assert first["text"] == "我想查一下订单"
+        assert first["text"] == "我想问一下"
         say(ws)  # within the TTS delay: nothing has been played yet
         events = until(ws, "turn_saved")
     withdrawn = [e for e in events if e["type"] == "withdrawn"]
     assert len(withdrawn) == 1
     merged = [e for e in events if e["type"] == "transcript"][-1]
-    assert merged["text"] == "我想查一下订单SO20261019101" and merged["merged"] is True
+    assert merged["text"] == "我想问一下SO20261019101" and merged["merged"] is True
     users = [m.content for m in messages(voice.conversation) if m.role == "user"]
-    assert users == ["我想查一下订单SO20261019101"]  # one request, as if the customer had not paused
+    assert users == ["我想问一下SO20261019101"]  # one request, as if the customer had not paused
     assert sum(m.role == "assistant" for m in messages(voice.conversation)) == 1
     statuses = [r.status for r in runs(voice.conversation)]
     assert statuses[0] == "withdrawn" and statuses[-1] == "completed"

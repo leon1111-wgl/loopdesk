@@ -44,7 +44,7 @@ from .rewrite import Frame, carry_order, carry_order_loosely, frame_of, is_follo
 from ..observability import request_id_var
 from ..security import Principal
 from .. import telemetry
-from ..textutil import HANDOFF_CANCEL_RE, ORDER_ID_RE, asks_for_person, normalize_width
+from ..textutil import ORDER_ID_RE, asks_for_person, handoff_cancelled, normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
 from .status_templates import case_state, compose as compose_status
@@ -290,10 +290,9 @@ class AgentRuntime:
             conversation.updated_at = datetime.now(timezone.utc)
             if conversation.status == "handoff":
                 ticket = handoff.active_ticket(self.db, conversation.id)
-                rest = HANDOFF_CANCEL_RE.sub("", text).strip(" ，,。.！!~～") if ticket is not None else ""
-                if (ticket is not None and HANDOFF_CANCEL_RE.search(text)
-                        and handoff.cancel_by_customer(self.db, ticket, conversation)):
-                    if len(rest) < 2:  # "算了 不用人工了": nothing else to answer
+                cancelled, rest = handoff_cancelled(text) if ticket is not None else (False, "")
+                if cancelled and handoff.cancel_by_customer(self.db, ticket, conversation):
+                    if not rest:  # "算了 不用人工了": nothing else to answer
                         yield from self._said(conversation, handoff.CANCELLED_TEXT)
                         return
                     text = rest  # "算了 不用人工了 退款多久到账": the question is answered now

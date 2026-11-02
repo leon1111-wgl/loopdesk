@@ -185,7 +185,7 @@ def carry_order(text: str, previous_user_question: str | None) -> str | None:
 # The opposite of _CARRY_WORDS: anything goes except another order, another item or a policy question. Money never moves
 # on it without the customer naming the order (ToolContext.unconfirmed_order): a refund is offered, not filed.
 _LOOSE_CARRY = re.compile(
-    r"慢|怎么办|咋办|咋整|催|着急|急用|等不了|太久|还要等|还没到|怎么还没|咋还没"
+    r"这么慢|太慢|好慢|怎么办|咋办|咋整|催|着急|急用|等不了|太久|还要等|还没到|怎么还没|咋还没"
     r"|维修|修理|返修|修一下|修好|换(?:个|一个)?新|换货|退换"
     r"|碎|坏|破|裂|漏|没声|不响|开线|划痕|瑕疵|质量|有问题|不能用|用不了")
 _POLICY_WORDS = re.compile(r"规则|政策|一般|通常|流程|条件|发票|积分|会员|运费险|优惠券")

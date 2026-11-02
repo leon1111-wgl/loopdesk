@@ -40,7 +40,7 @@ def required_role(a: Approval, tenant: Tenant) -> str:
 
 
 def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = None,
-                 earlier: list[Approval] | None = None) -> dict:
+                 earlier: list[Approval] | None = None, live_tools: set[str] | None = None) -> dict:
     requester = db.get(User, a.requested_by)
     reviewer = db.get(User, a.reviewer_id) if a.reviewer_id else None
     run = db.get(Run, a.run_id)
@@ -57,17 +57,21 @@ def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = N
         "created_at": iso(a.created_at), "decided_at": iso(a.decided_at),
         "refund": _refund_out(db, a, refunds),
         "history": _history_out(db, a, earlier),
-        "tool_off": _tool_off(db, a),
+        "tool_off": _tool_off(db, a, live_tools),
     }
 
 
-def _tool_off(db: Session, a: Approval) -> bool:
+def live_tool_names(db: Session, tenant_id: int) -> set[str]:
+    """The tools an approval can still be carried out with: built-in, and the tenant's switched on."""
+    return {t.name for t in get_services().registry.all()} | set(db.execute(select(TenantTool.name).where(
+        TenantTool.tenant_id == tenant_id, TenantTool.enabled.is_(True), TenantTool.status == "active")).scalars())
+
+
+def _tool_off(db: Session, a: Approval, live_tools: set[str] | None = None) -> bool:
     """A waiting application whose tenant tool is switched off or gone: approving it is refused (N-230)."""
-    if a.status != "pending" or a.tool_name in {t.name for t in get_services().registry.all()}:
+    if a.status != "pending":
         return False
-    return db.execute(select(TenantTool.id).where(
-        TenantTool.tenant_id == a.tenant_id, TenantTool.name == a.tool_name, TenantTool.enabled.is_(True),
-        TenantTool.status == "active")).first() is None
+    return a.tool_name not in (live_tools if live_tools is not None else live_tool_names(db, a.tenant_id))
 
 
 def _history_out(db: Session, a: Approval, earlier: list[Approval] | None) -> list[dict]:
@@ -118,7 +122,8 @@ def list_approvals(status_filter: str = "pending", principal: Principal = Depend
     on_page = max((sum(str((a.arguments or {}).get("order_id")) == o for a in rows) for o in orders), default=0)
     earlier = order_applications(db, principal.tenant.id, orders, before_id=max((a.id for a in rows), default=0),
                                  per_order=5 + on_page)
-    return [approval_out(db, a, refunds, earlier) for a in rows]
+    live = live_tool_names(db, principal.tenant.id)  # once per page, not per card
+    return [approval_out(db, a, refunds, earlier, live) for a in rows]
 
 
 @router.post("/{approval_id}/decide")

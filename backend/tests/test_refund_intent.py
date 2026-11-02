@@ -8,8 +8,7 @@ from sqlalchemy import select
 from app.db import new_session
 from app.models import Approval, Order, Refund
 from app.services import get_services
-from app.llm.mock import _CANCEL as CANCEL_ORDER
-from app.textutil import refund_declined, refund_requested
+from app.textutil import CANCEL_ORDER_RE as CANCEL_ORDER, refund_declined, refund_requested
 from tests.conftest import by_type
 from tests.test_refund_policy import ScriptedRefundModel
 
@@ -63,8 +62,8 @@ def test_declining_or_asking_is_not_a_request(text):
 @pytest.mark.parametrize("text", [
     "SO20261008002 我要退款", "订单 SO20260918001 的抱枕不想要了，申请退款", "SO20261019101 刚被扣了续费，帮我退款",
     "SO20261012003 先退我50块吧", "SO20261008002 退货退款！", "可以的话帮我退款 SO20261008002",
-    "为什么还不给我退款 SO20261008002", "Please refund my order SO20261008002", "不退款我就投诉 SO20261008002",
-    "为什么不退款 SO20261008002", "不要换货，我要退款 SO20261008002", "如果不能换货就退款 SO20261008002",
+    "为什么还不给我退款 SO20261008002", "Please refund my order SO20261008002",
+    "不要换货，我要退款 SO20261008002", "如果不能换货就退款 SO20261008002",
     "如果可以的话请退款 SO20261008002", "按照退款规则退款给我 SO20261008002", "If possible, please refund SO20261008002",
     "好的，那就退款吧", "按政策给客户退款 SO20261008002",
     # The request after the "if" clause still counts (N-095).

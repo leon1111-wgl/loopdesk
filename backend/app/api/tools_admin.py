@@ -91,14 +91,17 @@ def _stats(db: Session, tenant_id: int) -> dict[str, dict[str, Any]]:
             .join(Run, Run.id == Span.run_id).where(*live).group_by(Span.name)).all():
         stats[name] = {"calls": int(calls), "errors": int(failed or 0), "last_called_at": iso(last),
                        "last_error": None, "last_error_at": None}
-    for name, output, at in db.execute(
-            select(Span.name, Span.output, Span.started_at).join(Run, Run.id == Span.run_id)
-            .where(*live, Span.status.in_(_FAILED)).order_by(Span.id.desc()).limit(500)).all():
-        entry = stats.get(name)
-        if entry is not None and entry["last_error"] is None:
-            entry["last_error"] = str(((output or {}).get("output") or {}).get("error") or (output or {}).get("exception")
-                                      or "调用失败")[:200]
-            entry["last_error_at"] = iso(at)
+    for name, entry in stats.items():
+        if not entry["errors"]:
+            continue
+        row = db.execute(select(Span.output, Span.started_at).join(Run, Run.id == Span.run_id)
+                         .where(*live, Span.name == name, Span.status.in_(_FAILED))
+                         .order_by(Span.id.desc()).limit(1)).first()
+        output, at = (row[0] or {}, row[1]) if row else ({}, None)  # purged meanwhile: the count stays
+        # for staff: the operator's reason (a missing secret's name, the egress rule) before what the customer was told
+        entry["last_error"] = str(output.get("reason") or (output.get("output") or {}).get("error")
+                                  or output.get("exception") or "调用失败")[:200]
+        entry["last_error_at"] = iso(at)
     return stats
 
 

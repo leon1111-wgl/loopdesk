@@ -200,7 +200,8 @@ def test_a_greeting_is_not_a_refusal(ask, login):  # N-076
 
 
 @pytest.mark.parametrize("typed, meant", [("运废险怎么陪", "运费险怎么赔"), ("发漂怎么开", "发票怎么开"),
-                                          ("积分会不会过其", "积分会不会过期"), ("SO1 推款", "SO1 退款")])
+                                          ("积分会不会过其", "积分会不会过期"), ("积分会不会过其？", "积分会不会过期？"),
+                                          ("SO1 推款", "SO1 退款")])
 def test_common_typos(typed, meant):  # N-190
     assert fix_typos(typed) == meant
 
@@ -222,3 +223,42 @@ def test_what_carries_the_order_loosely(text, carried):
 def test_each_order_keeps_its_own_words():
     assert order_clauses("SO20261008002 到哪了 另外 SO20261008010 杯子能退吗") == {
         "SO20261008002": "SO20261008002 到哪了 另外 ", "SO20261008010": "SO20261008010 杯子能退吗"}
+
+
+# ---------------------------------------------------------------- second-model review
+@pytest.mark.parametrize("text", ["不要人工智能回复 我要真人", "别取消排队", "退款不需要人工审核吗"])
+def test_asking_for_a_person_in_the_queue_keeps_the_place(ask, login, text):
+    jack = login("customer2@leon.demo")
+    conversation, _ = ask(jack, "转人工")
+    _, events = ask(jack, text, conversation_id=conversation)
+    assert by_type(events, "final")[0]["status"] == "handoff"
+    with new_session() as db:
+        assert db.execute(select(Ticket.status).where(Ticket.kind == "handoff")).scalar_one() == "open"
+
+
+def test_a_warranty_question_is_not_a_repair_ticket(ask, login):
+    _, events = ask(login("customer@leon.demo"), "SO20261008002 保修期多久")
+    assert "create_ticket" not in _tools(events) and "search_knowledge" in _tools(events)
+
+
+@pytest.mark.parametrize("text", ["我不要人工了", "我不排了", "不用人工了谢谢"])
+def test_leaving_the_queue_in_other_words(ask, login, text):
+    jack = login("customer2@leon.demo")
+    conversation, _ = ask(jack, "转人工")
+    _, events = ask(jack, text, conversation_id=conversation)
+    assert by_type(events, "final")[0]["status"] != "handoff"
+
+
+def test_what_to_do_about_an_invoice_is_not_chasing_the_parcel(ask, login):
+    _, events = ask(login("customer@leon.demo"), "SO20261008002 发票开错了怎么办")
+    assert "track_shipment" not in _tools(events) and "催件" not in _final(events)
+
+
+@pytest.mark.parametrize("text", ["不过其实我想问一下运费险怎么赔", "超过其他订单的运费", "怎么陪你聊天", "明天就快第二天了"])
+def test_a_typo_rule_never_rewrites_another_word(text):
+    assert fix_typos(text) == text
+
+
+def test_a_conditional_complaint_with_i_want_still_goes_to_a_person(ask, login):
+    _, events = ask(login("customer@leon.demo"), "SO20261008002 要是今天不到我要投诉")
+    assert by_type(events, "final")[0]["status"] == "handoff"

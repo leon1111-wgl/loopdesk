@@ -119,7 +119,7 @@ Shadows only on floating layers (menus, dialogs, drawers); everything else is 1 
 
 Three summary cards first (the egress allowlist as mono chips, the money-tool caps restated from the
 tenant's refund tiers, the stats window), then two tables in cards: the tenant's tools (label, mono name
-and host, a risk tag 只读 / 写入 / 资金 in info / warning / danger, the approval policy as one sentence, a
+and host, a risk tag 只读 / 写入 / 资金 in neutral / warning / danger (info is kept for "a person"), the approval policy as one sentence, a
 state tag, calls with failures in danger text, the latest error with its time, a link to the waiting
 approvals) and the built-in tools, read-only. Editing is a 520 px drawer: the binding as a read-only
 block on `--surface-2` (it changes only through the API), then label, description, risk, mode, limits,

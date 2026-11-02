@@ -94,8 +94,21 @@ _EXPLICIT_PERSON_RE = re.compile(
 )
 
 
-# Leaving the queue for a person (N-062): "算了 不用人工了", "取消排队", "不需要转人工了".
-HANDOFF_CANCEL_RE = re.compile(r"(?:算了|那)?[，,\s]*(?:不用|不要|不需要|无需|取消)(?:转)?(?:人工|真人|排队)(?:客服)?了?|取消排队|不排(?:队)?了")
+# Leaving the queue for a person (N-062): "算了 不用人工了", "取消排队", "不需要转人工了". A whole clause only, so
+# "不要人工智能回复 我要真人", "别取消排队" and "退款不需要人工审核吗" stay in the queue.
+_HANDOFF_CANCEL_CLAUSE = re.compile(
+    r"(?:算了|那|好吧|嗯|那就)?(?:那?我)?(?:不用|不要|不需要|无需|取消)(?:转)?(?:人工(?!智能|审核|介入|费)|真人|排队)(?:客服|服务)?"
+    r"(?:了|啦|吧)*(?:谢谢|多谢)?|(?:那?我)?取消排队(?:了|吧)?|(?:那?我)?不排(?:队)?了(?:谢谢|多谢)?")
+_CANCEL_FILLER = re.compile(r"(?:算了|好吧|好的|嗯|那|那就|谢谢|ok)+", re.IGNORECASE)
+
+
+def handoff_cancelled(text: str) -> tuple[bool, str]:
+    """(the customer leaves the queue, what else the message says, "" when nothing)."""
+    parts = [p for p in re.split(r"[，,。.！!？?；;~～\s]+", normalize_width(text or "")) if p]
+    hit = [p for p in parts if _HANDOFF_CANCEL_CLAUSE.fullmatch(p)]
+    if not hit:
+        return False, text
+    return True, "，".join(p for p in parts if p not in hit and not _CANCEL_FILLER.fullmatch(p))
 
 
 def asks_for_person(text: str) -> bool:
@@ -129,18 +142,48 @@ REFUND_RE = re.compile(r"退款|退钱|退货|退掉|退我|" + REFUND_AMOUNT + 
                        # N-156: "money back please", "can I return this?"
                        r"|money\s+back|(?<![A-Za-z])return(?:ing)?\s+(?:this|it|the|my)(?![A-Za-z])", re.IGNORECASE)
 # Demands without a request verb, when nothing in the message asks (N-155, N-178): an amount ("退 100 块补偿就行",
-# "退款 18 块"), a share ("退一半"), "全款退", "退钱", and a threat or a complaint about not refunding ("不退款我就投诉",
-# "为什么不退款").
+# "退款 18 块"), a share ("退一半"), "全款退", "退钱", "money back". Not what already happened ("退钱了", "客服说已经退钱了",
+# "之前退全款了"), and not a complaint ("为什么不退款"): that is answered and offered an application.
 _IMPLIED_DEMAND_RE = re.compile(
     REFUND_AMOUNT + r"|(?:退款|退钱)" + _AMOUNT_OF + r"(?=$|[^一-鿿]|就|吧|给|行|好|谢)"
-    r"|退(?:一半|个?差价)(?!运费|邮费|的?运费)|(?:全额|全款)退|退(?:全款|全额)|退钱|退给我"
-    r"|money\s+back|(?:want|need|get)\s+(?:to\s+)?return(?![A-Za-z])"
-    r"|不退(?:款|钱|货)?.{0,2}就|(?:为什么|为啥|凭什么|怎么还|还)不(?:给我)?退")
+    r"|退(?:一半|个?差价)(?!运费|邮费|的?运费)|(?:全额|全款)退(?!了|过|啦|款了)|退(?:全款|全额)(?![了过啦])"
+    r"|退钱(?![了过啦])|退给我(?![了过])"
+    r"|money\s+back|(?:want|need)\s+(?:to\s+)?return(?![A-Za-z])")
+# Said about the past or by someone else, right in front of the request words: "已经帮我退了", "客服说退全款".
+# Not "东西已经坏了帮我退款" or "我说了要退款": the report has to be about the refund itself.
+_REPORTED_BEFORE = re.compile(r"(?:已经|已|早就|说|说好|答应)(?:帮我|给我|为我|帮您|给您)?$")
+# A request word inside a timing question asks when (P1 of the review): "when do I get my refund", "什么时候给我退款".
+# The question ends at a clause break (a space next to Chinese included: "什么时候发货 不发就帮我退款") or where a
+# consequence starts ("什么时候发货不发就帮我退款").
+_TIMING_WORD = re.compile(r"(?<![A-Za-z])(?:when|how\s+long|how\s+soon|what\s+time)(?![A-Za-z])|什么时候|啥时候|何时", re.IGNORECASE)
+_TIMING_ENDS = re.compile(r"[，,。.;；！!？?]|(?<=[\u4e00-\u9fff])\s|\s(?=[\u4e00-\u9fff])|就|那|不然|否则")
+_TIMING_REACH = 24
+
+
+def _in_timing_question(before: str) -> bool:
+    """The text in front of a request word is a timing question that has not ended yet."""
+    last = None
+    for last in _TIMING_WORD.finditer(before):
+        pass
+    if last is None:
+        return False
+    rest = before[last.end():]
+    return len(rest) <= _TIMING_REACH and not _TIMING_ENDS.search(rest)
+
+
+def _named_demand(pattern: re.Pattern, text: str) -> bool:
+    """A match of ``pattern`` that is neither reported nor inside a timing question in front of it."""
+    for match in pattern.finditer(text):
+        before = text[:match.start()]
+        if _REPORTED_BEFORE.search(before) or _in_timing_question(before):
+            continue
+        return True
+    return False
 REFUND_APPLY_RE = re.compile(
     r"我要退|申请退|帮我退|给我退|想退|要退|退一下|退掉|请(?:帮我|直接)?退|直接退|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退"
     r"|退我(?!的)|(?:给|帮|为)(?:客户|顾客|他|她|这位顾客)退|(?:我|客户|顾客|他|她)要求(?:全额|全款|全部)?退"
     r"|(?:want|need|request|issue|process|like|get)\s+(?:a\s+|my\s+|the\s+)?refund|refund\s+(?:me|it|my|this|the|order)"
-    r"|please\s+refund|(?:want|need|get)\s+(?:my\s+|the\s+)?money\s+back|money\s+back\s+please",
+    r"|please\s+refund|(?:want|need)\s+(?:my\s+|the\s+)?money\s+back|money\s+back\s+please",
     re.IGNORECASE)
 NEGATED_REFUND_RE = re.compile(
     r"(?:不是要?|不是想|不想要?|不要|不需要|不用|不打算|没打算|没说要|没想|并不想|先别|别|暂时不|暂不|先不)(?:给我|帮我)?"
@@ -273,9 +316,9 @@ def refund_requested(text: str) -> bool:
         return _demands_refund(kept)  # "SO… 退了吧": not one of the refund words, but a bare demand
     if _asks_what_if(kept):
         return False
-    if REFUND_APPLY_RE.search(kept) or _demands_refund(kept):
+    if _named_demand(REFUND_APPLY_RE, kept) or _demands_refund(kept):
         return True
-    return bool(_IMPLIED_DEMAND_RE.search(kept)) and not REFUND_INQUIRY_RE.search(kept)
+    return _named_demand(_IMPLIED_DEMAND_RE, kept) and not REFUND_INQUIRY_RE.search(kept)
 
 
 # Taking back a refund application that is still waiting for review (N-127): "我刚才的退款申请能撤回吗",
@@ -357,9 +400,23 @@ def stated_refund_amount(text: str) -> float | None:
     return float(number) if number is not None and float(number) > 0 else None
 
 
+# Cancelling an unshipped order is refunding it (N-063). Only a demand counts ("帮我取消订单", "不想要了 取消订单"),
+# never a question about it ("能取消订单吗", "取消订单会扣钱吗").
+CANCEL_ORDER_RE = re.compile(r"取消(?:这个|这笔|该|我的)?订单|(?:不想要|不要)了.{0,8}取消|退(?:掉)?(?:这个)?订单")
+_CANCEL_VERB_RE = re.compile(r"(?:帮我|给我|我要|我想|请|麻烦|直接|赶紧|马上)取消|不想要了|不要了")
+
+
+def cancel_requested(text: str) -> bool:
+    text = normalize_width(text or "")
+    return (bool(CANCEL_ORDER_RE.search(text)) and bool(_CANCEL_VERB_RE.search(text))
+            and not (REFUND_INQUIRY_RE.search(text) or _QUESTION_RE.search(text)))
+
+
 def refund_declined(text: str) -> bool:
     """The message mentions a refund but does not ask for one: filing one would go against it."""
     text = normalize_width(text or "")
+    if CANCEL_ORDER_RE.search(text) and not REFUND_RE.search(text):  # "能取消订单吗" asks; "帮我取消订单" files
+        return not cancel_requested(text)
     return bool(REFUND_RE.search(text) or NEGATED_REFUND_RE.search(text)) and not refund_requested(text)
 
 # Full-width digits and Latin letters (and ＋ －, which appear in phone numbers) become ASCII:
@@ -436,22 +493,26 @@ _tokenize_cached = lru_cache(maxsize=4096)(_tokenize)
 # so recall can only grow). Kept small and domain-specific on purpose: every entry should
 # be justified by an eval case ("colloquial" tag) or a real bad case from the flywheel.
 _VARIANT_CHARS = str.maketrans({"帐": "账"})
-# Common homophone typos of the key nouns (N-190, N-063): "推款", "运废险怎么陪", "发漂", "积分会不会过其".
-# Whole words only, read before the intent rules and retrieval; what the customer typed is kept as typed.
-TYPOS: dict[str, str] = {
-    "推款": "退款", "退宽": "退款", "退欵": "退款", "运废": "运费", "运肺": "运费", "发漂": "发票", "发瞟": "发票",
-    "过其": "过期", "怎么陪": "怎么赔", "咋陪": "咋赔", "到那了": "到哪了", "到那儿了": "到哪儿了", "物留": "物流",
-    "快第": "快递", "退贷": "退货", "积份": "积分",
-}
-_TYPO_RE = re.compile("|".join(sorted(map(re.escape, TYPOS), key=len, reverse=True)))
+# Common homophone typos of the key nouns (N-190, N-063): "推款", "运废险怎么陪", "发漂", "积分会不会过其". Read before
+# the intent rules and retrieval; what the customer typed is kept as typed. A typo that is also the start of another
+# word only counts at the end of a clause: "超过其他订单" and "怎么陪你" are left alone.
+_END = r"(?=[吗呢吧啊了？?！!。.，,\s]|$)"
+TYPOS: list[tuple[re.Pattern, str]] = [(re.compile(p), r) for p, r in (
+    ("推款", "退款"), ("退宽", "退款"), ("退欵", "退款"), ("运废", "运费"), ("运肺", "运费"), ("发漂", "发票"), ("发瞟", "发票"),
+    ("过其" + _END, "过期"), ("怎么陪" + _END, "怎么赔"), ("咋陪" + _END, "咋赔"), ("到那了", "到哪了"), ("到那儿了", "到哪儿了"),
+    ("物留(?=信息|到哪|查询)", "物流"), ("退贷", "退货"), ("积份", "积分"))]
 
 
 def fix_typos(text: str) -> str:
-    return _TYPO_RE.sub(lambda m: TYPOS[m.group(0)], text or "")
+    text = text or ""
+    for pattern, right in TYPOS:
+        text = pattern.sub(right, text)
+    return text
 QUERY_SYNONYMS: dict[str, str] = {
     "退回来": "退款 到账",
     "退钱": "退款",
     "钱啥时候": "退款 到账",
+    "money back": "退款 到账",
     "不想要": "七天无理由退货",
     "能退吗": "退货 退款",
     "能不能退": "退货 退款",

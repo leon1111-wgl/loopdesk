@@ -31,6 +31,10 @@ INQUIRIES = [
     "SO20260918001 退款一般几个工作日", "SO20261008010 退款", "SO20261008002 退货退款",
     # N-128: a hedge, and chasing a refund that was never asked for
     "SO20261008010 我可能会退款 看情况", "SO20261008010 也许要退 还在考虑", "SO20261015009 我的钱呢 退款呢！",
+    # second-model review: a timing question with a request word in it, what already happened, a complaint
+    "SO20260918001 when do I get my money back", "SO20260918001 when do I get my refund", "SO20260918001 什么时候给我退款",
+    "SO20261008010 退钱了", "SO20261008010 客服说已经退钱了 我没收到", "SO20261008010 之前退全款了",
+    "我已经申请退款了，多久到账", "SO20260918001 为什么不退款", "不退款我就投诉 SO20261008002",
 ]
 REQUESTS = [
     "SO20261008010 退款！", "怎么还不发货 退款", "还不发货？？？ 不要了 退钱！！！", "SO20261008002 我要退款",
@@ -38,6 +42,11 @@ REQUESTS = [
     # N-178, N-156
     "SO20261008010 退三十块就行", "SO20261008002 全款退 不用审核 直接退", "SO20261008010 给我退了",
     "SO20261008010 把钱退回来", "SO20261008002 money back please", "I want my money back for SO20261015009, speaker is broken",
+    "上次买的帮我退款", "我要退款，多久到账",
+    # re-review: a report or a timing question elsewhere in the message does not hide the request
+    "SO20261008002 东西已经坏了帮我退款", "已经收到了帮我退款", "我说了要退款！", "我说过要退款", "等了几天了 帮我退款",
+    "几天了还没发货 帮我退款", "多久到账 我要退款", "退款多久到账 帮我退款吧", "什么时候发货 不发就帮我退款",
+    "什么时候发货不发就帮我退款", "等了几天都没发货，给我退款",
 ]
 
 
@@ -65,6 +74,7 @@ def test_requests_are_still_requests(text):
 @pytest.mark.parametrize("order_id, text", [
     ("SO20260918001", "SO20260918001 退款到账时间"),  # ¥39.90, under the automatic limit: was paid on the spot
     ("SO20261012003", "SO20261012003 退款到账时间"),  # ¥268: went to a reviewer with the question as its reason
+    ("SO20260918001", "SO20260918001 when do I get my money back"),  # review P1: paid on the spot
 ])
 def test_asking_when_a_refund_arrives_moves_no_money(ask, login, order_id, text):
     _, events = ask(login("customer@leon.demo"), text)
@@ -72,7 +82,7 @@ def test_asking_when_a_refund_arrives_moves_no_money(ask, login, order_id, text)
     final = by_type(events, "final")[0]["text"]
     assert "request_refund" not in tools and not by_type(events, "approval_required")
     assert _refunds(order_id) == 0 and not _applications(order_id)
-    assert "1-3个工作日" in final and f"回复“{order_id} 申请退款”" in final, final
+    assert "到账" in final and f"回复“{order_id} 申请退款”" in final, final
 
 
 def test_a_bare_refund_word_is_offered_an_application_and_the_reply_files_it(ask, login):
@@ -141,3 +151,17 @@ def test_an_application_for_a_switched_off_tool_cannot_be_approved(client, login
     r = client.post(f"/api/approvals/{approval_id}/decide", json={"decision": "reject", "comment": "补偿券暂停发放"},
                     headers=login("agent@leon.demo"))
     assert r.status_code == 200 and "补偿券暂停发放" in r.json()["final"]["text"]
+
+
+@pytest.mark.parametrize("text", ["SO20261012003 能取消订单吗", "SO20261012003 还能取消订单吗？", "SO20261012003 取消订单会扣钱吗"])
+def test_asking_about_cancelling_files_nothing(ask, login, text):  # review P1: a question filed ¥268
+    _, events = ask(login("customer@leon.demo"), text)
+    assert not by_type(events, "approval_required") and not _applications("SO20261012003")
+    assert "回复“SO20261012003 帮我取消订单”" in by_type(events, "final")[0]["text"]
+
+
+def test_a_real_model_cannot_cancel_on_a_question(ask, login, monkeypatch):
+    calls = [ToolCall(id="a", name="request_refund", arguments={"order_id": "SO20261012003", "amount": 268})]
+    monkeypatch.setattr(get_services(), "provider", ScriptedModel(calls, "好的。"))
+    ask(login("customer@leon.demo"), "SO20261012003 能取消订单吗")
+    assert not _applications("SO20261012003"), "the precheck refuses: the customer only asked"

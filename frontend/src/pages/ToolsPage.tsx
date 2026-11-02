@@ -30,7 +30,7 @@ type Builtin = { name: string; label: string; description: string; risk: Risk; r
 type Tiers = { currency: string; auto_refund_limit: number; approval_admin_threshold: number };
 type Listing = { tools: Tool[]; builtin: Builtin[]; tool_hosts: string[]; tiers: Tiers; stats_days: number };
 
-const RISK: Record<Risk, [string, string]> = { read: ["只读", "badge-info"], write: ["写入", "badge-warning"], money: ["资金", "badge-danger"] };
+const RISK: Record<Risk, [string, string]> = { read: ["只读", ""], write: ["写入", "badge-warning"], money: ["资金", "badge-danger"] };
 const APPROVER: Record<string, string> = { agent: "坐席", admin: "管理员" };
 const money = (v: number | undefined, currency: string) =>
   v == null ? "—" : `${currency === "CNY" ? "¥" : `${currency} `}${Number(v).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -39,10 +39,14 @@ function policyText(risk: Risk, a: Approval, tiers: Tiers): string {
   if (risk === "read" || a.mode === "never") return "无需审批";
   const cur = tiers.currency;
   const approver = APPROVER[a.approver ?? "agent"];
-  const admin = a.admin_above?.[cur];
+  // a money tool is held to the refund tiers when it is called, whatever is stored (N-228): show what applies
+  const stored = a.admin_above?.[cur];
+  const admin = risk === "money" ? Math.min(stored ?? tiers.approval_admin_threshold, tiers.approval_admin_threshold) : stored;
+  const auto = a.auto_limits?.[cur];
+  const limit = risk === "money" && auto != null ? Math.min(auto, tiers.auto_refund_limit) : auto;
   const top = admin != null && a.approver !== "admin" ? `；超过 ${money(admin, cur)} 仅管理员` : "";
   if (a.mode === "always") return `每笔由${approver}审批${top}`;
-  return `${money(a.auto_limits?.[cur], cur)} 以内自动办理；超过由${approver}审批${top}`;
+  return `${money(limit, cur)} 以内自动办理；超过由${approver}审批${top}`;
 }
 
 function builtinPolicy(b: Builtin, tiers: Tiers): string {
@@ -160,7 +164,12 @@ function EditDrawer({ tool, tiers, onClose, onSaved }: {
         </label>
         <div className="grid grid-2">
           <label className="field">风险等级
-            <select className="select" value={risk} onChange={(e) => setRisk(e.target.value as Risk)}>
+            <select className="select" value={risk} onChange={(e) => {
+              const next = e.target.value as Risk;
+              setRisk(next);
+              // a money tool always has a person in the loop: "never" is not one of its choices
+              if (next === "money" && mode === "never") setMode(auto.trim() !== "" ? "threshold" : "always");
+            }}>
               <option value="read">只读</option><option value="write">写入</option><option value="money">资金</option>
             </select>
           </label>

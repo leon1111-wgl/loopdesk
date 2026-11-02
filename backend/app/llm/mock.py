@@ -17,8 +17,8 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..textutil import (HANDOFF_CANCEL_RE, NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, OTHER_ORDER,
-                        REFUND_APPLY_RE, REFUND_RE,
+from ..textutil import (CANCEL_ORDER_RE, NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, OTHER_ORDER,
+                        REFUND_APPLY_RE, REFUND_RE, cancel_requested, handoff_cancelled,
                         estimate_tokens, expand_query, fix_typos, normalize_width, refund_bare_decline, refund_requested,
                         refund_withdraw_requested, stated_refund_amount, withdraw_confirmed,
                         split_sentences, strip_citations, token_set)
@@ -36,7 +36,9 @@ _SHIPMENT = re.compile(r"物流|快递|到哪|发货了吗|配送|运单|什么�
 _ETA = re.compile(r"几号|哪天|什么时候(?!.{0,3}账)|啥时候(?!.{0,3}账)|多久(?:能|才能)?(?:到|送)|几天(?:能|才能)?(?:到|送)"
                   r"|when\s+will|eta(?![A-Za-z])", re.IGNORECASE)
 # "为什么这么慢", "那你说怎么办": chasing, answered with the tracking and the way to a person (N-220).
-_CHASE = re.compile(r"慢|怎么办|咋办|咋整|催一?下|催件|催促|着急|急用|等不了|太久|还要等")
+_CHASE = re.compile(r"这么慢|太慢|好慢|真慢|慢死|怎么这么久|太久|等了?(?:好|很)?久|等不了|还要等|催一?下|催件|催促|着急|急用")
+# "那你说怎么办" right after the tracking: chasing too, when that is all it says (not "发票开错了怎么办").
+_CHASE_SHORT = re.compile(r"(?:那|那你|你)?(?:说)?(?:怎么办|咋办|咋整)(?:啊|呀|呢|吧)?")
 CHASE_TEXT = "如需催件，可以回复“转人工”，人工客服会帮您联系快递。"
 # "SO… 催发货 今天能发吗": the shipping-time rule, not the order summary alone (N-157).
 _RUSH = re.compile(r"催(?:一下)?发货|(?:今天|明天|什么时候|啥时候|几时|多久)(?:能|才能)?发(?:货)?|怎么还(?:不|没)发货|还没发货")
@@ -44,8 +46,10 @@ RUSH_TEXT = "如需催促发货，可以回复“转人工”。"
 # Things the order tools cannot do, sent to the after-sales team as a ticket (N-157, N-063).
 _NOT_RECEIVED = re.compile(r"签收了?.{0,8}(?:没|未)(?:有)?收到|没收到.{0,8}签收|丢件|(?:快递|包裹)丢了|被(?:人)?冒领")
 _CHANGE_INFO = re.compile(r"(?:改|修改|更改|换)(?:个|一下|下)?(?:收货|收件)?(?:地址|电话|手机号?|收件人)|地址(?:写错|填错)|搬家")
-_CANCEL = re.compile(r"取消(?:这个|这笔|该|我的)?订单|(?:不想要|不要)了.{0,8}取消|退(?:掉)?(?:这个)?订单")
-_REPAIR = re.compile(r"维修|修理|返修|修一下|修好|保修|换(?:个|一个)?新的?|换货")
+_CANCEL = CANCEL_ORDER_RE
+_REPAIR = re.compile(r"维修|修理|返修|修一下|修好|换(?:个|一个)?新的?|换货")
+# What is wrong with it: a repair or exchange asked as a question ("能换个新的吗") is still a report then.
+_FAULTY = re.compile(r"坏|碎|破|裂|漏|没声|不响|开线|划痕|瑕疵|质量问题|有问题|不能用|用不了|连不上|打不开|开不了|没反应|故障")
 # Damage the customer caused is not a quality problem (N-200).
 _SELF_DAMAGE = re.compile(r"自己(?:不小心)?(?:摔|弄|碰|砸|掉|拆)|(?:孩子|小孩|宠物|狗|猫)(?:给)?(?:弄|摔|咬|抓|打)|人为"
                           r"|不小心(?:摔|弄|碰|掉)|我(?:把它)?摔(?:坏|碎|了)")
@@ -143,7 +147,13 @@ def refund_question(text: str) -> str:
     """What to look up for a question about refunds: the words without the order number or the "别退" part."""
     question = _ASKING_WORDS.sub(" ", ORDER_ID_RE.sub(" ", NEGATED_REFUND_RE.sub(" ", text)))
     question = _FILLER.sub(" ", question)
-    return re.sub(r"\s+", " ", question).strip(" ，,。！!？?:：") or "退款 到账 工作日"
+    question = re.sub(r"\s+", " ", question).strip(" ，,。！!？?:：")
+    if question and not re.search(r"[\u4e00-\u9fff]", question):  # an English question about a Chinese policy
+        return "退款 到账 工作日" if _EN_TIMING.search(question) else "七天无理由退货 质量问题 退换"
+    return question or "退款 到账 工作日"
+
+
+_EN_TIMING = re.compile(r"(?<![A-Za-z])(?:when|how\s+long|how\s+soon|eta|how\s+many\s+days)(?![A-Za-z])", re.IGNORECASE)
 
 
 def about_my_order(text: str) -> bool:
@@ -174,7 +184,7 @@ def order_clauses(text: str) -> dict[str, str]:
 
 
 _LOOKUP_WORDS = re.compile(r"帮我|麻烦|请|查(?:一下|询|下)?|看(?:一下|看|下)?|订单号?|状态|的|一下|了|吧|呢|啊|这个|那个|这单|我")
-_QUESTION_MARK = re.compile(r"怎么|如何|在哪|哪里|能不能|可不可以|可以吗|能吗|吗|[？?]|多少|是否|有没有")
+_QUESTION_MARK = re.compile(r"怎么|如何|在哪|哪里|能不能|可不可以|可以吗|能吗|吗|[？?]|多少|多久|多长时间|是否|有没有")
 
 
 def order_question(text: str) -> str:
@@ -212,12 +222,19 @@ def wants_human(text: str) -> bool:
     return bool(_HANDOFF.search(_IF_COMPLAIN.sub("", _NEGATED_HANDOFF.sub("", text))))
 
 
+def chasing(text: str) -> bool:
+    """"为什么这么慢", "催一下", or nothing but "那你说怎么办" (after the order number the rewriter put in front)."""
+    rest = re.sub(r"[\s，,。.！!？?~～]+", "", ORDER_ID_RE.sub("", text))
+    return bool(_CHASE.search(text) or _CHASE_SHORT.fullmatch(rest))
+
+
 def smalltalk(text: str) -> str | None:
     """The reply to a greeting, a thank-you or a "不用人工了" that asks nothing, or None."""
     stripped = text.strip()
     if not stripped or _GREETING.fullmatch(stripped):
         return GREETING_TEXT
-    if HANDOFF_CANCEL_RE.fullmatch(stripped.strip("，,。.！!~～ ")):
+    cancelled, rest = handoff_cancelled(stripped)
+    if cancelled and not rest:
         return NO_HANDOFF_TEXT
     return THANKS_TEXT if _THANKS.fullmatch(stripped) else None
 
@@ -406,12 +423,14 @@ class MockLLM(LLMProvider):
                     return "search_knowledge", {"query": "退款 到账 工作日"}
                 return None
             if _CANCEL.search(text) and not _mentions_refund(text):  # N-063: an unshipped order is cancelled by refunding it
-                if order.get("status") == "paid" and order.get("refundable") and can("request_refund"):
+                if (cancel_requested(text) and order.get("status") == "paid" and order.get("refundable")
+                        and can("request_refund")):
                     return "request_refund", {"order_id": order_id, "amount": float(order.get("amount", 0)),
                                               "reason": f"顾客要求取消未发货订单：{text[:100]}"}
-                return None
+                return None  # a question about cancelling, or an order already on its way: answered, nothing filed
             reported = _TICKET.search(text) and (_REPORTED.search(text) or not _ASKING.search(text.strip()))
-            if (_REPAIR.search(text) or reported) and not refund_requested(text):  # N-198: a repair or an exchange is a ticket
+            repair = _REPAIR.search(text) and (_FAULTY.search(text) or not _ASKING.search(text.strip()))
+            if (repair or reported) and not refund_requested(text):  # N-198: a repair or an exchange is a ticket
                 if can("search_knowledge"):
                     return "search_knowledge", {"query": "质量问题 退货 换货"}
                 if can("create_ticket"):
@@ -450,7 +469,7 @@ class MockLLM(LLMProvider):
                 if can("create_ticket"):
                     return "create_ticket", {"title": f"{order_id} 修改收货信息", "description": text, "priority": "normal"}
                 return None
-            if (_SHIPMENT.search(text) or _CHASE.search(text)) and order.get("status") != "paid":
+            if (_SHIPMENT.search(text) or chasing(text)) and order.get("status") != "paid":
                 if can("track_shipment"):
                     return "track_shipment", {"order_id": order_id}
                 shipment = (results.get("track_shipment") or [{}])[-1]
@@ -603,10 +622,15 @@ class MockLLM(LLMProvider):
             parts.append(ticket.get("message") or f"工单创建失败：{ticket.get('error', '')}。")
         if self_damage:
             parts.append("如需协商处理，可以回复“转人工”。")
-        if shipments and _CHASE.search(text) and not any(s.get("delivered") for s in shipments):
+        if shipments and chasing(text) and not any(s.get("delivered") for s in shipments):
             parts.append(CHASE_TEXT)
         if rush:
             parts.append(RUSH_TEXT)
+        if len(orders) == 1 and not refund and _CANCEL.search(text) and not _mentions_refund(text) and not orders[0].get("error"):
+            oid = orders[0]["order_id"]
+            parts.append(f"如需取消这个订单，回复“{oid} 帮我取消订单”即可，未发货的订单按全额退款提交审核。"
+                         if orders[0].get("status") == "paid" and orders[0].get("refundable") else
+                         "如需取消：这个订单已经发货或不能在线退款，不能直接取消；签收后可以按售后政策申请退货退款，或回复“转人工”。")
         if _IF_COMPLAIN.search(text) and not handoff:
             parts.append(IF_COMPLAIN_TEXT)
 
