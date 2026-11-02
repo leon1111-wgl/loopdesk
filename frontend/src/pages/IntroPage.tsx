@@ -1,16 +1,18 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Activity, ArrowRight, BookOpen, BookOpenCheck, ClipboardCheck, Github, Headset, MessageSquareText, Pause, Play, RefreshCcw,
   ReceiptText, Search, ShieldCheck,
 } from "lucide-react";
 import { REPO_URL } from "../demo/replay";
-import { Logo } from "../components/ui";
+import { isStaff, useAuth } from "../auth";
+import { Logo, ROLE_TEXT, SKIP_INTRO_KEY } from "../components/ui";
+import type { User } from "../types";
 import LoginPage from "./LoginPage";
 
 // The public intro page: what LoopDesk is, how one request flows through it, and the demo accounts.
 // Only this page has an English version; the console itself is Chinese.
 
-export const SKIP_INTRO_KEY = "loopdesk.skip-intro";
 const LANG_KEY = "loopdesk.intro-lang";
 type Lang = "zh" | "en";
 
@@ -24,6 +26,10 @@ const T = {
     lead: "LoopDesk 把智能客服、业务处理和人工协作放进一个控制台：回答逐句核对知识库和订单数据，退款等高风险操作交给人工审批，每一次纠错都沉淀为知识补丁和回归用例。",
     how: "看运作方式",
     skip: "下次直接进入",
+    signedIn: "已登录演示账号",
+    switchAccount: "切换账号",
+    cancel: "取消",
+    signOut: "退出登录",
     chips: ["逐句证据校验", "超额退款人工审批", "离线可复现", "数据均为虚构"],
     liveTitle: "一次退款，从提问到受理",
     liveTag: "示例 · 虚构数据",
@@ -74,6 +80,10 @@ const T = {
     lead: "LoopDesk puts the AI agent, business actions and human agents in one console: each sentence is checked against the knowledge base and order data, risky actions such as refunds wait for a person, and every correction becomes a knowledge patch and a regression case.",
     how: "How it works",
     skip: "Skip this page next time",
+    signedIn: "Signed in as",
+    switchAccount: "Switch account",
+    cancel: "Cancel",
+    signOut: "Sign out",
     chips: ["Sentence-level evidence check", "Human approval for large refunds", "Reproducible offline", "All data is fictional"],
     liveTitle: "One refund, from question to filing",
     liveTag: "Example · synthetic data",
@@ -219,6 +229,9 @@ function Stepper({ t }: { t: (typeof T)[Lang] }) {
   );
 }
 
+/** Where an account's console starts: staff on the dashboard, customers in the chat. */
+const homeOf = (user: User) => (isStaff(user) ? "/dashboard" : "/chat");
+
 export default function IntroPage() {
   const [lang, setLang] = useState<Lang>(() => (stored(LANG_KEY) === "en" ? "en" : "zh"));
   const [skip, setSkip] = useState(() => stored(SKIP_INTRO_KEY) === "1");
@@ -228,7 +241,19 @@ export default function IntroPage() {
     return () => { document.documentElement.lang = "zh-CN"; };
   }, [lang]);
   const chooseLang = (l: Lang) => { setLang(l); store(LANG_KEY, l); };
-  const enter = () => go("sign-in");
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const [switching, setSwitching] = useState(false);
+  // A signed-in visitor goes straight to their console; others pick a demo account first.
+  const enter = () => (user ? navigate(homeOf(user)) : go("sign-in"));
+  // Signing in (or switching account, even to the same one) here opens that account's console, as the
+  // sign-in page does: every sign-in yields a new user object.
+  const seen = useRef(user);
+  useEffect(() => {
+    if (user && user !== seen.current) navigate(homeOf(user), { replace: true });
+    seen.current = user;
+    setSwitching(false);
+  }, [user, navigate]);
   const icon = (Icon: (typeof LIVE_ICONS)[number], key?: string): ReactNode => <span className="icon-tile" data-section={key}><Icon size={18} /></span>;
 
   return (
@@ -256,6 +281,13 @@ export default function IntroPage() {
             <button type="button" className="btn btn-primary btn-lg" onClick={enter}>{t.enter}<ArrowRight size={16} aria-hidden="true" /></button>
             <button type="button" className="btn btn-lg" onClick={() => go("how")}><Play size={15} aria-hidden="true" />{t.how}</button>
           </div>
+          {user && (
+            <button type="button" className="resume" onClick={enter} aria-label={`${t.enter}：${t.signedIn} ${user.name}，${ROLE_TEXT[user.role]}，${user.tenant.name}`}>
+              <small>{t.signedIn}</small>
+              <b>{user.name} · {ROLE_TEXT[user.role]} · {user.tenant.name}</b>
+              <ArrowRight size={18} aria-hidden="true" />
+            </button>
+          )}
           <label className="skip-intro">
             <input type="checkbox" checked={skip} onChange={(e) => { setSkip(e.target.checked); store(SKIP_INTRO_KEY, e.target.checked ? "1" : null); }} />
             {t.skip}
@@ -304,7 +336,33 @@ export default function IntroPage() {
 
       <section className="intro-section" id="sign-in">
         <header><div><span className="intro-eyebrow">03</span><h2>{t.signTitle}</h2></div><p>{t.signLead}</p></header>
-        <div className="card intro-signin"><LoginPage embedded /></div>
+        <div className="card intro-signin">
+          {user && !switching ? (
+            <section className="signed-in" aria-label={t.signedIn}>
+              <span className="avatar me" aria-hidden="true">{user.name.slice(0, 1)}</span>
+              <span className="signed-in-who">
+                <small>{t.signedIn}</small>
+                <b>{user.name}（{ROLE_TEXT[user.role]}）· {user.tenant.name}</b>
+                <span className="faint">{user.email}</span>
+              </span>
+              <span className="signed-in-actions">
+                <button type="button" className="btn btn-primary" onClick={enter}>{t.enter}<ArrowRight size={15} aria-hidden="true" /></button>
+                <button type="button" className="btn" onClick={() => setSwitching(true)}>{t.switchAccount}</button>
+                <button type="button" className="btn btn-text" onClick={logout}>{t.signOut}</button>
+              </span>
+            </section>
+          ) : (
+            <>
+              {user && (
+                <div className="switch-bar">
+                  <span className="faint">{t.signedIn} {user.name}（{user.email}）</span>
+                  <button type="button" className="btn btn-sm" onClick={() => setSwitching(false)}>{t.cancel}</button>
+                </div>
+              )}
+              <LoginPage embedded />
+            </>
+          )}
+        </div>
       </section>
 
       <section className="intro-section" id="faq">

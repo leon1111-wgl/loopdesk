@@ -32,7 +32,7 @@ async function signIn(browser: Browser, email: string, options: { fakeMicrophone
   page.on("pageerror", (err) => seen.push(`page error: ${err.message}`));
   page.on("response", (r) => { if (r.status() >= 500) seen.push(`${r.status()} ${r.url()}`); });
   await page.goto("/");
-  // The login page lists the demo accounts; clicking one signs in with the demo password.
+  // The intro page at / lists the demo accounts; clicking one signs in with the demo password.
   await page.getByRole("button", { name: new RegExp(email.replace(".", "\\.")) }).click();
   await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
   return page;
@@ -106,6 +106,34 @@ test("customer gets a cited answer; staff can open its trace", async ({ browser 
   await expect(leon.locator(".msg.assistant").last().getByTitle("逐句证据校验结果")).toHaveText(/证据充分/);
   await leon.goto("/traces");
   await expect(leon.getByText("七天无理由退货有什么条件？").first()).toBeVisible();
+});
+
+test("a returning visitor gets the intro at /, sees the signed-in account and opens the console from it", async ({ browser }) => {
+  const leon = await signIn(browser, "admin@leon.demo");
+  await expect(leon).toHaveURL(/\/dashboard/); // signing in from the intro opens the console
+  await leon.goto("/"); // the token is still stored: the intro shows who is signed in
+  const account = leon.getByRole("region", { name: "已登录演示账号" });
+  await expect(account).toContainText("admin@leon.demo");
+  await account.getByRole("button", { name: "进入控制台" }).click();
+  await expect(leon).toHaveURL(/\/dashboard/);
+  await leon.goto("/approvals"); // deep links open the page itself
+  await expect(leon.locator(".page-head h1")).toHaveText("审批队列");
+  // Switching account on the intro: cancel keeps the card; picking an account opens its start page.
+  await leon.goto("/");
+  await leon.getByRole("button", { name: "切换账号" }).click();
+  await leon.getByRole("button", { name: "取消" }).click();
+  await expect(leon.getByRole("region", { name: "已登录演示账号" })).toBeVisible();
+  await leon.getByRole("button", { name: "切换账号" }).click();
+  await leon.getByRole("button", { name: /customer@leon\.demo/ }).click();
+  await expect(leon).toHaveURL(/\/chat/);
+  // "下次直接进入" is still honoured; the account menu's 产品介绍 shows the intro again.
+  await leon.goto("/");
+  await leon.getByLabel("下次直接进入").check();
+  await leon.goto("/");
+  await expect(leon).toHaveURL(/\/chat/);
+  await leon.getByRole("button", { name: "账号菜单" }).click();
+  await leon.getByRole("link", { name: "产品介绍" }).click();
+  await expect(leon.getByRole("region", { name: "已登录演示账号" })).toBeVisible();
 });
 
 test("an answer keeps its line breaks: quoted rules and list items are not glued together (N-120)", async ({ browser }) => {

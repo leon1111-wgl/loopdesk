@@ -54,7 +54,8 @@ async function parse<T>(res: Response): Promise<T> {
   } catch {
     /* non-JSON error body */
   }
-  if (res.status === 401) {
+  // A wrong password at sign-in is not an expired session: the account already signed in stays so.
+  if (res.status === 401 && !res.url.includes("/api/auth/login")) {
     setToken(null);
     window.dispatchEvent(new Event("loopdesk:logout"));
   }

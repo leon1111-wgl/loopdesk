@@ -3,9 +3,7 @@ import { ArrowRight, BookOpenCheck, Check, Github, Headset, ShieldCheck } from "
 import { REPO_URL, isDemo, recording } from "../demo/replay";
 import { api } from "../api";
 import { useAuth } from "../auth";
-import { Logo, ROLE_TEXT } from "../components/ui";
-
-const SKIP_INTRO_KEY = "loopdesk.skip-intro"; // IntroPage's "下次直接进入"
+import { Logo, ROLE_TEXT, showIntroAgain } from "../components/ui";
 
 function demoSource(): string {
   const rec = recording();
@@ -117,7 +115,7 @@ export default function LoginPage({ embedded }: { embedded?: boolean } = {}) {
       <header className="login-top">
         <div className="login-brand"><Logo size={28} /><b>LoopDesk</b><span className="login-brand-label">智能客服工作台</span></div>
         <span className="row" style={{ gap: 16 }}>
-          <a href={import.meta.env.BASE_URL} className="login-source" onClick={() => { try { localStorage.removeItem(SKIP_INTRO_KEY); } catch { /* ignore */ } }}>产品介绍</a>
+          <a href={import.meta.env.BASE_URL} className="login-source" onClick={showIntroAgain}>产品介绍</a>
           <a href={REPO_URL} target="_blank" rel="noreferrer" className="login-source"><Github size={15} aria-hidden="true" /> 项目源码</a>
         </span>
       </header>

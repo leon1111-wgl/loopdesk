@@ -341,6 +341,18 @@ export function Logo({ size = 24 }: { size?: number }) {
   );
 }
 
+/** IntroPage's "下次直接进入": when set, / opens the console (or sign-in) directly. */
+export const SKIP_INTRO_KEY = "loopdesk.skip-intro";
+
+/** Show the intro at / again (its own links and the account menu's 产品介绍 call this). */
+export function showIntroAgain() {
+  try {
+    localStorage.removeItem(SKIP_INTRO_KEY);
+  } catch {
+    /* storage unavailable: the intro shows anyway */
+  }
+}
+
 type Theme = "system" | "light" | "dark";
 const THEME_KEY = "loopdesk.theme";
 

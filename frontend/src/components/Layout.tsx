@@ -25,7 +25,7 @@ import { api } from "../api";
 import { isStaff, useAuth } from "../auth";
 import { REPO_URL, isDemo, recording } from "../demo/replay";
 import type { Approval, Handoff, User } from "../types";
-import { Dropdown, INDUSTRY_TEXT, Logo, ROLE_TEXT, useTheme } from "./ui";
+import { Dropdown, INDUSTRY_TEXT, Logo, ROLE_TEXT, showIntroAgain, useTheme } from "./ui";
 
 interface NavItem {
   to: string;
@@ -125,7 +125,7 @@ function UserMenu({ user }: { user: User }) {
         <span className="user-name hide-compact">{user.name}</span>
         <ChevronDown size={14} className="hide-compact" aria-hidden="true" />
       </>}>
-      {() => (
+      {(close) => (
         <>
           <div className="user-card">
             <span className="avatar me" aria-hidden="true">{user.name.slice(0, 1)}</span>
@@ -135,6 +135,7 @@ function UserMenu({ user }: { user: User }) {
             </div>
           </div>
           <div className="menu-sep" />
+          <Link className="menu-item" to="/" onClick={() => { showIntroAgain(); close(); }}><Info size={14} aria-hidden="true" /> 产品介绍</Link>
           <a className="menu-item" href={REPO_URL} target="_blank" rel="noreferrer"><Github size={14} aria-hidden="true" /> 项目源码</a>
           <button className="menu-item" onClick={logout}><LogOut size={14} aria-hidden="true" /> 退出登录</button>
         </>
