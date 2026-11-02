@@ -62,7 +62,7 @@ def check_definition(tenant: Any, data: dict[str, Any], builtin_names: set[str],
             check_prompt_text(tenant, error["text"], f"errors.{code}")
     risk = str(data.get("risk") or "read")
     try:
-        approval = check_policy(risk, data.get("approval") or {}, parameters)
+        approval = check_policy(risk, data.get("approval") or {}, parameters, tenant)
     except PolicyError as exc:
         raise DefinitionError(str(exc)) from None
     roles = list(data.get("roles") or ROLES)

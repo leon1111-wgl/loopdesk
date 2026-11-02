@@ -165,6 +165,9 @@ class Settings:
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"])
     seed_demo: bool = True
     seed_demo_traffic: bool = True
+    # The demo tenants' declared tools against their synthetic back offices (tenant_packs/<slug>/tools.json):
+    # Leon优选's member points and compensation vouchers, so the tool console and "超额走审批" can be shown.
+    seed_demo_tools: bool = True
     auto_migrate: bool = True  # run Alembic migrations at startup (tests use create_all)
     # LOOPDESK_AUTO_MIGRATE=0: a release job migrates (python -m app.ops.migrate, a Kubernetes Job);
     # this process leaves the schema alone and is not ready until it is at the latest revision.
@@ -340,6 +343,7 @@ class Settings:
         # but with a real model it costs calls and a wrong key or a hanging endpoint used to hold up
         # startup for minutes. Default on only for the offline model (N-032).
         s.seed_demo_traffic = _env_bool("SEED_DEMO_TRAFFIC", s.llm_provider == "mock")
+        s.seed_demo_tools = _env_bool("SEED_DEMO_TOOLS", s.seed_demo_tools)
         s.otlp_endpoint = _env("OTLP_ENDPOINT") or None
         s.otlp_service_name = _env("OTLP_SERVICE_NAME", s.otlp_service_name)
         default_fast = s.llm_model_fast

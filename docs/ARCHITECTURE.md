@@ -237,7 +237,8 @@ AgentRuntime.start(文本)：工具注册表里所有 risk=high 的工具（退�
 
 ```
 模型的调用 ─► precheck：参数按 Schema 子集校验（不认识的关键字在保存时就拒绝），路径参数不能是 . / ..
-          ─► 审批策略：read 从不审批；money 必须有人（threshold 或 always）；按币种的自动额度；审批人角色记在审批单上
+          ─► 审批策略：read 从不审批；money 必须有人（threshold 或 always）；按币种的自动额度；审批人角色记在审批单上；
+                      money 不比租户退款分级更松（本币自动额度 ≤ auto_refund_limit，超过 approval_admin_threshold 仅管理员）
           ─► 发送：出站白名单 ─► DNS 解析，每个地址都要是公网 ─► 钉住检查过的地址（Host 和 SNI 保持域名）
                  写操作先落台账（幂等键）─► 只在对方支持幂等键时重试 ─► 结果不明：工单 + 如实告诉顾客
           ─► 输出：只留声明的字段，渲染状态句模板，限制类错误码带原因和申诉渠道
@@ -247,7 +248,9 @@ AgentRuntime.start(文本)：工具注册表里所有 risk=high 的工具（退�
 - 每次运行用 `ctx.tools`（`toolset_for`）：内置工具加这个租户启用的工具，两个租户在同一个进程里看到的工具不同；停用的工具下一轮就不再提供给模型。
 - 密钥只存引用：`auth.secret = "HARBOURLINE_API"` 对应部署里的 `LOOPDESK_SECRET_HARBOURLINE_API`，且必须由 `LOOPDESK_SECRET_<名字>_TENANT` 绑定到这个租户，否则 A 租户能按名字用 B 租户的凭据。
 - MCP：只支持 Streamable HTTP（JSON-RPC over POST，回复可以是 JSON 或 SSE）。同步的工具默认关闭；服务端给的说明和参数说明当作提示词扫描；复核过的定义存哈希，变了就停用（防 rug pull）。MCP 没有幂等键，写操作只发一次。
-- 演示和评测：`*.example` 是保留域名（RFC 2606），这些主机由进程内的虚构商家系统（`app/mockmerchant.py`）回答；评测沙箱里租户工具只能到达虚构系统，演练（dry run）的写操作从不发给真实系统。
+- 演示和评测：`*.example` 是保留域名（RFC 2606），这些主机由进程内的虚构商家系统（`app/mockmerchant.py`）回答；评测沙箱里租户工具只能到达虚构系统，演练（dry run）的写操作从不发给真实系统。演示租户 Leon优选 的工具和虚构后台在 `backend/tenant_packs/leon/`，启动时按管理员接口同样的检查写入（`seed.seed_demo_tools`）。
+- 配置类错误（缺密钥、出站策略不符）给顾客的是“暂时办理不了，请稍后再试，或回复‘转人工’”，原因（密钥名、规则）写进链路和台账；审批执行失败时审批人看到可读的原因，而不是异常类名。
+- 控制台「工具集成」（`frontend/src/pages/ToolsPage.tsx`）按链路统计近 30 天的调用和失败（不含评测运行），列出最近一次错误和待审批单数。
 
 ## 6. 数据飞轮
 

@@ -179,3 +179,15 @@
   .span-row { grid-template-columns: 64px minmax(0, 1fr) 56px; }
   .span-row .bar-track { display: none; }
 }
+
+/* ---------- tools ---------- */
+.tool-policy { min-width: 220px; max-width: 320px; }
+.tool-last-error { min-width: 160px; max-width: 260px; overflow-wrap: anywhere; }
+.tool-errors { color: var(--danger); }
+.tool-host { padding: 2px 8px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border-2); font-size: 12px; }
+.tool-binding { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border-2); }
+.tool-binding code { overflow-wrap: anywhere; }
+@media (max-width: 780px) {
+  .tool-summary { grid-template-columns: minmax(0, 1fr); }
+  .tool-form .grid-2 { grid-template-columns: minmax(0, 1fr); }
+}

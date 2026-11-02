@@ -19,6 +19,7 @@ import {
   RefreshCcw,
   ScrollText,
   Ticket,
+  Wrench,
   Sun,
 } from "lucide-react";
 import { api } from "../api";
@@ -204,6 +205,7 @@ export default function Layout() {
     ] },
     { key: "ops", label: "运维审计", short: "运维", icon: <Activity size={16} />, items: [
       { to: "/traces", label: "链路追踪", icon: <Activity size={15} /> },
+      { to: "/tools", label: "工具集成", icon: <Wrench size={15} /> },
       ...(user?.role === "admin" ? [{ to: "/audit", label: "操作审计", icon: <ScrollText size={15} /> }] : []),
     ] },
   ];

@@ -19,6 +19,7 @@ function ApprovalDrawer({ approval, onClose, onDecided }: { approval: Approval; 
   const needsAdmin = approval.required_role === "admin" && user?.role !== "admin";
   const orderId = String(approval.arguments.order_id ?? "");
   const amount = approval.arguments.amount == null ? "—" : yuan(approval.arguments.amount);
+  const refund = approval.tool_name === "request_refund";
   const closeUnlessBusy = () => { if (!busy) onClose(); }; // a decision in flight finishes in view
 
   async function decide(decision: "approve" | "reject") {
@@ -74,13 +75,14 @@ function ApprovalDrawer({ approval, onClose, onDecided }: { approval: Approval; 
               </div>
             )}
             {needsAdmin && !own && <div className="notice">这笔金额需要管理员通过；你可以驳回（需写明原因），或留给管理员处理。</div>}
+            {approval.tool_off && <div className="notice" role="note">这个工具已经停用或删除，通过也无法执行；请驳回并写明原因，顾客会收到。</div>}
             <label className="field">审批意见
               <input className="input" placeholder="审批意见（会告知顾客），驳回时必填" value={comment} onChange={(e) => setComment(e.target.value)} />
             </label>
             <div className="row decision-row" style={{ justifyContent: "flex-end" }}>
               <button className="btn btn-danger" disabled={busy || own || !comment.trim()} title={comment.trim() ? undefined : "驳回需要写明原因"}
                 onClick={() => decide("reject")}><X size={15} /> 驳回</button>
-              <button className="btn btn-primary" disabled={busy || own || needsAdmin} onClick={() => setConfirm("approve")}><Check size={15} /> 通过并执行</button>
+              <button className="btn btn-primary" disabled={busy || own || needsAdmin || approval.tool_off} onClick={() => setConfirm("approve")}><Check size={15} /> 通过并执行</button>
             </div>
           </>
         ) : (
@@ -142,14 +144,25 @@ function ApprovalDrawer({ approval, onClose, onDecided }: { approval: Approval; 
         </div>
       </Drawer>
       {confirm === "approve" && (
-        <ConfirmDialog title="确认通过并退款" confirmText={amount === "—" ? "确认退款" : `确认退款 ${amount}`} tone="danger" busy={busy}
-          onClose={() => { if (!busy) setConfirm(null); }} onConfirm={() => void decide("approve")}>
-          <div className="money-line">
-            <span className="mono">{orderId}</span>
-            <b>{amount}</b>
-          </div>
-          <p className="small muted">通过后 Agent 会重新校验订单状态，再向支付系统发起这笔退款，并把结果回复给顾客。退款发出后不能撤回。</p>
-        </ConfirmDialog>
+        refund ? (
+          <ConfirmDialog title="确认通过并退款" confirmText={amount === "—" ? "确认退款" : `确认退款 ${amount}`} tone="danger" busy={busy}
+            onClose={() => { if (!busy) setConfirm(null); }} onConfirm={() => void decide("approve")}>
+            <div className="money-line">
+              <span className="mono">{orderId}</span>
+              <b>{amount}</b>
+            </div>
+            <p className="small muted">通过后 Agent 会重新校验订单状态，再向支付系统发起这笔退款，并把结果回复给顾客。退款发出后不能撤回。</p>
+          </ConfirmDialog>
+        ) : (
+          <ConfirmDialog title="确认通过并执行" confirmText={amount === "—" ? "确认执行" : `确认执行 ${amount}`} tone="danger" busy={busy}
+            onClose={() => { if (!busy) setConfirm(null); }} onConfirm={() => void decide("approve")}>
+            <div className="money-line">
+              <span className="mono">{approval.tool_name}</span>
+              <b>{amount}</b>
+            </div>
+            <p className="small muted">通过后 Agent 会调用租户声明的这个工具，在对方系统里办理，并把结果回复给顾客。办理后不能在这里撤回。</p>
+          </ConfirmDialog>
+        )
       )}
       {confirm === "withdraw" && (
         <ConfirmDialog title={`撤回审批单 #${approval.id}`} confirmText="撤回申请" busy={busy}

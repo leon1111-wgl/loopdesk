@@ -164,6 +164,7 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.rescan_knowl
 | `DATABASE_URL` | `sqlite:///./loopdesk.db` | 也支持 `postgresql+psycopg://...` |
 | `JWT_SECRET` | 开发用默认值 | 生产环境必须修改，至少 32 字节；`SEED_DEMO=0` 时使用公开默认值或过短的密钥会拒绝启动 |
 | `SEED_DEMO` / `SEED_DEMO_TRAFFIC` | `1` / 离线模型 `1`、真实模型 `0` | 演示租户、账号和预置对话。预置对话会调用十几次模型，所以接真实模型时默认关闭；显式打开也在后台执行，不会拖住启动 |
+| `SEED_DEMO_TOOLS` | `1` | 演示租户自己的工具（`backend/tenant_packs/<租户>/tools.json`，对接虚构后台）；只在首次写入演示数据时预置 |
 | `LOG_FORMAT` / `LOG_LEVEL` | `json` / `INFO` | 结构化日志：每行一个 JSON，包含 request_id、tenant_id、user_id，可直接接入 ELK 或 Loki；本地调试可设为 `text` |
 | `AUTO_MIGRATE` | `1` | 启动时执行 Alembic 迁移；多副本部署时设为 0，由发布任务执行 `python -m app.ops.migrate`，实例不动表结构，表结构到最新版本之前不就绪（见“数据库迁移”） |
 | `LLM_PROVIDER` | `mock`；设了地址（或预设）和 Key 时为 `openai_compat` | `mock` / `openai_compat` / `anthropic` |
@@ -289,7 +290,11 @@ cd backend && LOOPDESK_DATABASE_URL=... .venv/bin/python -m app.ops.refund_recon
 
 ## 租户自定义工具（HTTP 与 MCP）
 
-租户管理员在控制台或 `/api/admin/tools`、`/api/admin/mcp-servers` 声明工具和 MCP Server；平台运营方负责三件事：
+租户管理员通过 `/api/admin/tools`、`/api/admin/mcp-servers` 声明工具和 MCP Server，在控制台的「运维审计 → 工具集成」查看每个工具的风险等级、审批策略、启用状态、近 30 天调用次数、最近错误和待审批单，修改显示名称、说明、风险等级、审批策略并启用 / 停用（地址、鉴权和返回字段只能通过接口改）。资金类工具不能比租户的退款分级更松：本币自动额度不超过 `auto_refund_limit`，超过 `approval_admin_threshold` 只有管理员能审批，其他币种的额度一律拒绝（没有汇率，无法和分级比较，这类金额由管理员审批）；调用时同样按这两条封顶，所以之前存下的宽松策略也受约束。停用工具时接口返回它的待审批单号，这些单子只能驳回；被审批单引用的工具只能停用，不能删除。
+
+演示环境（`LOOPDESK_SEED_DEMO=1`，`LOOPDESK_SEED_DEMO_TOOLS=1` 为默认）给 Leon优选 预置两个工具：积分查询（只读）和补偿券（资金类，20 元以内自动发放，超过由坐席审批，超过 200 元仅管理员），对接 `backend/tenant_packs/leon/merchant.json` 描述的虚构后台（`api.leon.example`，进程内回答，数据标为 SYNTHETIC）。
+
+平台运营方负责三件事：
 
 1. **出站白名单**（管理员接口只读）：`python -m app.ops.tool_hosts --tenant <slug> --set api.example.com,mcp.example.com`。只允许 https 443，解析出私网、回环、链路本地（169.254.169.254）、组播或保留地址的一律拒绝。
 2. **密钥**：工具里写 `"auth": {"secret": "ACME_API", "scheme": "bearer"}`，部署里设 `LOOPDESK_SECRET_ACME_API=<令牌>` 和 `LOOPDESK_SECRET_ACME_API_TENANT=<slug>`（绑定租户，缺一不可）。可选 `"signing_secret"` 按订单网关同样的方式做 HMAC 签名。

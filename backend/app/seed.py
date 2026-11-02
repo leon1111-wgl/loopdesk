@@ -273,6 +273,35 @@ DEMO_TRAFFIC = [
 ]
 
 
+PACKS_DIR = Path(__file__).resolve().parent.parent / "tenant_packs"
+
+
+def seed_demo_tools(db: Session, builtin_names: set[str]) -> int:
+    """The tools a demo tenant declares (``tenant_packs/<slug>/tools.json``) against its synthetic back office
+    (``merchant.json``, app/mockmerchant.py), checked like any definition an administrator sends, and the
+    back office's ``.example`` hosts on the tenant's egress allowlist. A tenant that already has tools is left
+    alone. Returns how many were added."""
+    from .models import TenantTool
+    from .tooling.definitions import check_definition
+
+    added = 0
+    for path in sorted(PACKS_DIR.glob("*/tools.json")):
+        tenant = db.execute(select(Tenant).where(Tenant.slug == path.parent.name)).scalar_one_or_none()
+        if tenant is None or db.execute(select(TenantTool.id).where(TenantTool.tenant_id == tenant.id)).first():
+            continue
+        merchant = path.parent / "merchant.json"
+        hosts = json.loads(merchant.read_text(encoding="utf-8")).get("hosts", []) if merchant.exists() else []
+        tenant.tool_hosts = list(dict.fromkeys([*(tenant.tool_hosts or []), *hosts]))
+        names: set[str] = set()
+        for definition in json.loads(path.read_text(encoding="utf-8")):
+            fields = check_definition(tenant, definition, builtin_names, builtin_names | names)
+            db.add(TenantTool(tenant_id=tenant.id, enabled=bool(definition.get("enabled")), **fields))
+            names.add(fields["name"])
+            added += 1
+    db.commit()
+    return added
+
+
 def seed_demo_traffic(db: Session, services) -> None:
     """A handful of real conversations so a fresh demo already has traces, a pending
     approval and a knowledge-gap answer to correct."""

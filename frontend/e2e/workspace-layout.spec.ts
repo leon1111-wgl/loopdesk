@@ -45,7 +45,7 @@ for (const variant of [
         const box = await nav.boundingBox();
         expect(box && box.y + box.height).toBeCloseTo(variant.height, 0); // pinned to the bottom of the screen
       }
-      for (const route of ["dashboard", "approvals", "handoffs", "tickets", "refunds", "knowledge", "evals", "flywheel", "traces", "audit", "chat"]) {
+      for (const route of ["dashboard", "approvals", "handoffs", "tickets", "refunds", "knowledge", "evals", "flywheel", "traces", "tools", "audit", "chat"]) {
         await page.goto(`/${route}`);
         await expect(page.locator(".topbar")).toBeVisible();
         await expect(page.locator(route === "chat" ? ".composer textarea" : ".page-head h1")).toBeVisible();

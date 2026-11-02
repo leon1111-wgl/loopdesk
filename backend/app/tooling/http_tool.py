@@ -80,7 +80,17 @@ class BindingError(ValueError):
 
 
 class NotSent(ToolUnavailable):
-    """Refused before anything left: the egress policy, a missing secret. Nothing can have been done."""
+    """Refused before anything left: the egress policy, a missing secret. Nothing can have been done.
+    The message is what the customer and the model read; ``reason`` (a secret's name, the egress rule)
+    goes to the ledger, the trace and the reviewer, never to the customer (N-229)."""
+
+    def __init__(self, message: str, reason: str = ""):
+        super().__init__(message)
+        self.reason = reason or message
+
+
+def _unavailable(label: str) -> str:
+    return f"{label}暂时办理不了，请稍后再试，或回复“转人工”"
 
 
 def check_binding(binding: dict[str, Any], parameters: dict[str, Any], hosts: list[str] | tuple[str, ...]) -> dict:
@@ -228,7 +238,7 @@ class HttpToolCaller:
             reply = self._send(args, host, key=row.idempotency_key)
         except NotSent as exc:
             if row.attempts == 0:  # never sent under this key: nothing was done, and it may be sent later
-                row.status, row.error = "not_sent", str(exc)[:255]
+                row.status, row.error = "not_sent", exc.reason[:255]
                 db.commit()
             raise
         except (ToolUnavailable, _Unknown) as exc:
@@ -269,7 +279,7 @@ class HttpToolCaller:
         try:
             return EgressPolicy(self.ctx.tenant.tool_hosts or ()).check_template(self.binding.get("url", ""))
         except EgressError as exc:
-            raise NotSent(f"{self.label}暂时不可用（出站策略：{exc}）") from None
+            raise NotSent(_unavailable(self.label), f"出站策略：{exc}") from None
 
     def _headers(self, key: str | None) -> dict[str, str]:
         ctx = self.ctx
@@ -304,7 +314,7 @@ class HttpToolCaller:
             if self.binding.get("signing_secret"):
                 self._signing = secrets.resolve(self.binding["signing_secret"], self.ctx.tenant.slug)
         except secrets.SecretError as exc:
-            raise NotSent(f"{self.label}暂时不可用（{exc}）") from None
+            raise NotSent(_unavailable(self.label), f"{exc}，请管理员在部署环境里配置") from None
 
     def _build(self, client: httpx.Client, args: dict[str, Any], key: str | None, timeout: float) -> httpx.Request:
         method = self.binding.get("method", "GET")
@@ -352,7 +362,7 @@ class HttpToolCaller:
                 entry.update(attempts=made, error=f"egress: {exc}")
                 if made > 1:  # an earlier attempt went out: its outcome is what is unknown
                     raise ToolUnavailable(f"{self.label}所需的业务系统暂时无法访问") from None
-                raise NotSent(f"{self.label}暂时不可用（出站策略：{exc}）") from None
+                raise NotSent(_unavailable(self.label), f"出站策略：{exc}") from None
             except _TooLarge:
                 entry.update(status=response.status_code, attempts=made, error="reply too large")
                 if self.writes:

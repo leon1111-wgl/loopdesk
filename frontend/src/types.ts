@@ -131,6 +131,8 @@ export interface Approval {
   /** The same order's earlier refund applications, newest first (at most 5); absent in demo
    * recordings made before N-069. */
   history?: ApprovalHistoryItem[];
+  /** A tenant tool switched off or deleted since: approving is refused, rejecting still tells the customer (N-230). */
+  tool_off?: boolean;
 }
 
 export interface ApprovalHistoryItem {

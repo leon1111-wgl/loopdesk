@@ -47,7 +47,10 @@ STAFF_EXTRA = ["一线客服最多可以发放多少钱的补偿券？", "帮我
 # a ticket with a promised response time, a customer waiting for a person.
 DEMO_ONLY = {
     "customer2@echo.demo": ["退款一直不到账，我要投诉，给我转人工！", "App一直闪退打不开，马上帮我处理"],
-    "customer@leon.demo": ["SO20261012003 我要退款", "我买的扫地机器人坏了开不了机，马上给我处理！"],
+    "customer@leon.demo": ["SO20261012003 我要退款", "我买的扫地机器人坏了开不了机，马上给我处理！",
+                           # the tenant's own tools (tenant_packs/leon): a read, a voucher under the automatic
+                           # limit, and one over it that waits for a person
+                           "我的积分还有多少？", "快递晚了三天，给我发 5 元补偿券", "快递丢了，给我发 80 元补偿券"],
     "customer2@leon.demo": ["我的蓝牙小音箱坏了，连不上", "转人工"],
 }
 AUDIT_CATEGORIES = ("", "tenant", "kb", "flywheel", "eval", "user", "approval", "export", "handoff", "ticket")
@@ -143,6 +146,11 @@ def record(model: str = "mock") -> dict[str, Any]:
             if small:
                 client.post(f"/api/approvals/{small['id']}/decide", json={"decision": "approve", "comment": "核实无误，符合退款条件"},
                             headers=agent).raise_for_status()
+            voucher = first(pending, lambda a: a["tool_name"] == "compensation_voucher",
+                            "the approval for Emma's ¥80 compensation voucher")
+            if voucher:
+                client.post(f"/api/approvals/{voucher['id']}/decide", json={"decision": "approve", "comment": "快递丢件属实，同意补偿"},
+                            headers=agent).raise_for_status()
             handoff = first(client.get("/api/handoffs", headers=agent).json(), lambda h: h["customer"] == "Jack",
                             "Jack's request for a person")
             if handoff:
@@ -221,6 +229,7 @@ def record(model: str = "mock") -> dict[str, Any]:
                     keep("/api/evals/cases")
                     keep("/api/evals/prompts")
                     keep("/api/tenant")
+                    keep("/api/admin/tools")
                 if users[email]["role"] == "admin":
                     for category in AUDIT_CATEGORIES:
                         keep(f"/api/audit?limit=200{f'&category={category}' if category else ''}")

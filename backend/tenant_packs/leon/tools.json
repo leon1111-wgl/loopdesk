@@ -1,0 +1,27 @@
+[
+  {
+    "name": "member_points", "label": "积分查询", "kind": "http", "risk": "read",
+    "description": "查询当前顾客的会员积分余额和会员等级。顾客问自己的积分还有多少、会员等级时调用。",
+    "parameters": {"type": "object", "properties": {}},
+    "binding": {"method": "GET", "url": "https://api.leon.example/v1/members/me",
+                "auth": {"secret": "SYNTHETIC_LEON_BACKOFFICE", "scheme": "bearer"},
+                "result": {"fields": ["points", "tier"], "message": "您当前有 {points} 积分，会员等级为{tier}。"}},
+    "hints": {"intents": ["积分还有多少", "我的积分", "查积分", "剩多少积分", "多少积分了"]},
+    "enabled": true
+  },
+  {
+    "name": "compensation_voucher", "label": "补偿券", "kind": "http", "risk": "money",
+    "description": "给顾客发放补偿购物券（演示用虚构业务）。顾客明确要求补偿券时调用，amount 是券面金额（元），reason 写顾客说的原因。",
+    "parameters": {"type": "object", "properties": {
+      "amount": {"type": "number", "minimum": 1, "maximum": 1000, "description": "券面金额（元）"},
+      "reason": {"type": "string", "maxLength": 120, "description": "发券原因"}}, "required": ["amount"]},
+    "binding": {"method": "POST", "url": "https://api.leon.example/v1/vouchers",
+                "auth": {"secret": "SYNTHETIC_LEON_BACKOFFICE", "scheme": "bearer"},
+                "result": {"fields": ["status", "voucher", "amount"], "message": "已为您发放 {amount:.2f} 元补偿券，券号 {voucher}。"},
+                "errors": {"amount_too_large": {"text": "单张补偿券最多 1000 元"}}},
+    "approval": {"mode": "threshold", "amount_field": "amount", "auto_limits": {"CNY": 20}, "approver": "agent",
+                 "admin_above": {"CNY": 200}, "customer_note": "超过 20 元的补偿券需要人工核实"},
+    "hints": {"intents": ["元补偿券", "块补偿券", "发补偿券", "补偿券给我", "要补偿券", "发张补偿券", "给张补偿券"]},
+    "enabled": true
+  }
+]

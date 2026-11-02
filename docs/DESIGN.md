@@ -115,6 +115,18 @@ Shadows only on floating layers (menus, dialogs, drawers); everything else is 1 
   the DOM. A drawer with a decision in flight does not close. A money action always goes through a confirmation dialog that repeats the order and the
   amount.
 
+## Tool console (运维审计 → 工具集成)
+
+Three summary cards first (the egress allowlist as mono chips, the money-tool caps restated from the
+tenant's refund tiers, the stats window), then two tables in cards: the tenant's tools (label, mono name
+and host, a risk tag 只读 / 写入 / 资金 in info / warning / danger, the approval policy as one sentence, a
+state tag, calls with failures in danger text, the latest error with its time, a link to the waiting
+approvals) and the built-in tools, read-only. Editing is a 520 px drawer: the binding as a read-only
+block on `--surface-2` (it changes only through the API), then label, description, risk, mode, limits,
+approver and the customer note; a money tool shows a note with the caps it is held to, and the server's
+422 appears as the danger banner. Switching off a tool that still has applications waiting goes through a
+danger confirmation that names how many. No new tokens or colours.
+
 ## Agent workbench (three panes)
 
 Used by 人工接待 (handoff queue) and, with the run inspector on the right, the staff 对话测试台.

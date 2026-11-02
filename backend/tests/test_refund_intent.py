@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.db import new_session
 from app.models import Approval, Order, Refund
 from app.services import get_services
+from app.llm.mock import _CANCEL as CANCEL_ORDER
 from app.textutil import refund_declined, refund_requested
 from tests.conftest import by_type
 from tests.test_refund_policy import ScriptedRefundModel
@@ -107,7 +108,9 @@ def test_every_gate_case_that_files_a_refund_is_still_a_request():
         for line in path.read_text(encoding="utf-8").splitlines():
             case = json.loads(line)
             if "request_refund" in case.get("expected_tools", []):
-                assert refund_requested(case["question"]), case["question"]
+                # cancelling an unshipped order files its refund without a refund word (N-063); the precheck lets it through
+                q = case["question"]
+                assert refund_requested(q) or (CANCEL_ORDER.search(q) and not refund_declined(q)), q
 
 
 @pytest.mark.parametrize(("email", "order_id", "text"), DECLINED)

@@ -81,7 +81,7 @@ def tool_def(row: TenantTool) -> ToolDef:
         return HttpToolCaller(ctx, row, label)(args)
 
     def policy(ctx: ToolContext, args: dict[str, Any]):
-        return None if row.risk == "read" else need_approval(ctx, label, approval, args)
+        return None if row.risk == "read" else need_approval(ctx, label, approval, args, money=row.risk == "money")
 
     def executed(db: Session, approval_id: int) -> dict[str, Any] | None:
         """What an approval's call did, as the ledger knows it (ops.stale_runs asks after a crash)."""

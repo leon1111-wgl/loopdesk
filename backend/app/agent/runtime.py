@@ -93,6 +93,17 @@ class ToolOff(ValueError):
 TOOL_OFF_TEXT = "工具 {name} 已停用或已删除，通过也无法执行，审批单保持待处理；可以驳回并告知顾客，或请管理员重新启用工具后再审批"
 
 
+def _resume_reason(exc: BaseException) -> str:
+    """Why carrying out a decision failed, for the reviewer (N-229): a business system that did not answer, or
+    a tool whose configuration is missing, is something they can act on; an exception's class name is not."""
+    reason = getattr(exc, "reason", None)
+    if reason:
+        return f"对方系统没有收到请求（{reason}）"
+    if isinstance(exc, ToolError):
+        return f"对方系统暂时不可用（{str(exc)[:120]}）"
+    return f"系统内部错误（{type(exc).__name__}），请稍后重试或联系管理员"
+
+
 class ResumeError(RuntimeError):
     """Resuming a run after a human decision failed before the decision took effect.
     The approval is back to pending, so the reviewer can simply decide again."""
@@ -506,7 +517,7 @@ class AgentRuntime:
             if executed is None:
                 self._reopen(approval, run, Principal(reviewer, tenant), decision, exc)
                 raise ResumeError(f"审批执行失败，审批单 #{approval.id} 已退回待处理，可以重新审批。"
-                                  f"错误：{type(exc).__name__}") from exc
+                                  f"原因：{_resume_reason(exc)}") from exc
             # The decision already took effect: keep it and tell the customer what happened.
             # The run stays "failed" for operators; the customer-facing outcome is complete.
             fallback = str(executed.output.get("message") or APPROVED_FALLBACK_TEXT)
@@ -807,6 +818,8 @@ class AgentRuntime:
                     if isinstance(exc, ToolUnavailable) and ctx.approval_id is not None:
                         raise  # carrying out a reviewer's decision: resume() puts the approval back
                     span.status = "rejected"
+                    if getattr(exc, "reason", None):  # for operators: a missing secret's name, the egress rule (N-229)
+                        span.set(reason=exc.reason)
                     refusal, held = scan_output(call.name, dict(getattr(exc, "output", None) or {"error": str(exc)}),
                                                 _channels(ctx))  # a refusal's code and wording are tool output too
                     if held:

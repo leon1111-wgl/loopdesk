@@ -14,6 +14,7 @@ import KnowledgePage from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import RefundsPage from "./pages/RefundsPage";
 import TicketsPage from "./pages/TicketsPage";
+import ToolsPage from "./pages/ToolsPage";
 import TracesPage from "./pages/TracesPage";
 
 export default function App() {
@@ -46,6 +47,7 @@ export default function App() {
             <Route path="/knowledge" element={<KnowledgePage />} />
             <Route path="/traces" element={<TracesPage />} />
             <Route path="/traces/:runId" element={<TracesPage />} />
+            <Route path="/tools" element={<ToolsPage />} />
             <Route path="/flywheel" element={<FlywheelPage />} />
             <Route path="/evals" element={<EvalsPage />} />
             {user.role === "admin" && <Route path="/audit" element={<AuditPage />} />}

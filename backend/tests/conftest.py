@@ -19,6 +19,7 @@ def settings(tmp_path):
     s.jwt_secret = "test-secret-with-at-least-32-bytes!!"
     s.rate_limit_per_minute = 1000
     s.seed_demo_traffic = False
+    s.seed_demo_tools = False  # tests declare the tools they need (tests/test_tenant_tools.py)
     s.auto_migrate = False  # fast schema setup; migrations have their own tests
     s.prewarm_index = False  # tests build indexes on demand; test_observability covers the prewarm
     s.log_format = "text"

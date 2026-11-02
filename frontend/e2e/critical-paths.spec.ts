@@ -239,6 +239,36 @@ test("refund over the auto limit waits for an admin, then the customer sees the 
   await expect(answers.last()).toContainText("退款");
 });
 
+test("a tenant tool: a voucher over its limit waits for an agent; the console shows the policy and refuses a looser one", async ({ browser }) => {
+  // Leon优选 declares a compensation voucher against its synthetic back office (backend/tenant_packs/leon).
+  const emma = await signIn(browser, "customer@leon.demo");
+  await ask(emma, "快递丢了，给我发 80 元补偿券");
+  await expect(emma.getByText("超过 20 元的补偿券需要人工核实")).toBeVisible();
+
+  const leon = await signIn(browser, "admin@leon.demo");
+  await leon.goto("/tools");
+  const row = leon.getByRole("row").filter({ hasText: "compensation_voucher" });
+  await expect(row).toContainText("¥20.00 以内自动办理；超过由坐席审批；超过 ¥200.00 仅管理员");
+  await expect(row).toContainText("1 张");
+  await row.getByRole("button", { name: "编辑 补偿券" }).click();
+  const sheet = leon.getByRole("dialog", { name: /编辑工具/ });
+  await sheet.getByLabel("自动办理上限（CNY）").fill("60");
+  await sheet.getByRole("button", { name: "保存" }).click();
+  await expect(sheet).toContainText("不能高于本租户的自动退款额度 ¥50.00");
+  await sheet.getByRole("button", { name: "取消" }).click();
+
+  const mia = await signIn(browser, "agent@leon.demo");
+  await mia.goto("/approvals");
+  const card = mia.getByRole("row").filter({ hasText: "¥80.00" }).filter({ hasText: "待审批" });
+  await card.getByRole("button", { name: /审核/ }).click();
+  const drawer = mia.getByRole("dialog", { name: /审批单 #\d+/ });
+  await drawer.getByPlaceholder("审批意见（会告知顾客）").fill("丢件属实");
+  await drawer.getByRole("button", { name: "通过并执行" }).click();
+  await mia.getByRole("dialog", { name: "确认通过并执行" }).getByRole("button", { name: "确认执行 ¥80.00" }).click();
+  await expect(mia.getByText(/审批单 #\d+ 已通过并执行/)).toBeVisible();
+  await expect(emma.locator(".msg.assistant").last()).toContainText("已为您发放 80.00 元补偿券", { timeout: 20_000 });
+});
+
 test("Echo音乐: an annual-card refund waits for an agent; the member sees it go through", async ({ browser }) => {
   // The main demo (a fictional music service): memberships are virtual orders, refunds count from the charge.
   const lily = await signIn(browser, "customer@echo.demo");

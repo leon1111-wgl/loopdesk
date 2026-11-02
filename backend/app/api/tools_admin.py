@@ -12,12 +12,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from ..audit import changes, record
 from ..db import get_db
-from ..models import Approval, McpServer, TenantTool, ToolExecution
+from ..models import Approval, McpServer, Run, Span, TenantTool, ToolExecution
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
 from ..tooling.definitions import DefinitionError, check_definition, residency
@@ -73,6 +75,39 @@ def _approvals(db: Session, tenant_id: int, name: str, pending_only: bool = Fals
     return list(db.execute(query.order_by(Approval.id)).scalars())
 
 
+STATS_DAYS = 30
+_FAILED = ("rejected", "error")
+
+
+def _stats(db: Session, tenant_id: int) -> dict[str, dict[str, Any]]:
+    """Each tool's calls in the last 30 days, from the trace (customer and staff conversations, not evaluation
+    runs), and its latest failure: what the console's tool list shows (N-231)."""
+    since = datetime.now(timezone.utc) - timedelta(days=STATS_DAYS)
+    live = (Span.tenant_id == tenant_id, Span.kind == "tool", Span.started_at >= since, Run.is_eval.is_(False))
+    stats: dict[str, dict[str, Any]] = {}
+    for name, calls, failed, last in db.execute(
+            select(Span.name, func.count(Span.id), func.sum(case((Span.status.in_(_FAILED), 1), else_=0)),
+                   func.max(Span.started_at))
+            .join(Run, Run.id == Span.run_id).where(*live).group_by(Span.name)).all():
+        stats[name] = {"calls": int(calls), "errors": int(failed or 0), "last_called_at": iso(last),
+                       "last_error": None, "last_error_at": None}
+    for name, output, at in db.execute(
+            select(Span.name, Span.output, Span.started_at).join(Run, Run.id == Span.run_id)
+            .where(*live, Span.status.in_(_FAILED)).order_by(Span.id.desc()).limit(500)).all():
+        entry = stats.get(name)
+        if entry is not None and entry["last_error"] is None:
+            entry["last_error"] = str(((output or {}).get("output") or {}).get("error") or (output or {}).get("exception")
+                                      or "调用失败")[:200]
+            entry["last_error_at"] = iso(at)
+    return stats
+
+
+def _tiers(principal: Principal) -> dict[str, Any]:
+    tenant = principal.tenant
+    return {"currency": tenant.currency or "CNY", "auto_refund_limit": tenant.auto_refund_limit,
+            "approval_admin_threshold": tenant.approval_admin_threshold}
+
+
 @router.get("/tools")
 def list_tools(principal: Principal = Depends(require_staff), db: Session = Depends(get_db)) -> dict:
     rows = db.execute(select(TenantTool).where(TenantTool.tenant_id == principal.tenant.id)
@@ -80,12 +115,20 @@ def list_tools(principal: Principal = Depends(require_staff), db: Session = Depe
     calls = dict(db.execute(select(ToolExecution.tool_name, func.count(ToolExecution.id))
                             .where(ToolExecution.tenant_id == principal.tenant.id)
                             .group_by(ToolExecution.tool_name)).all())
+    waiting = dict(db.execute(select(Approval.tool_name, func.count(Approval.id))
+                              .where(Approval.tenant_id == principal.tenant.id, Approval.status == "pending")
+                              .group_by(Approval.tool_name)).all())
+    stats = _stats(db, principal.tenant.id)
+    empty = {"calls": 0, "errors": 0, "last_called_at": None, "last_error": None, "last_error_at": None}
     builtin = [{"name": t.name, "label": t.label or t.name, "description": t.description, "kind": "builtin",
-                "risk": BUILTIN_RISK.get(t.risk, t.risk), "roles": list(t.roles)} for t in get_services().registry.all()]
-    return {"tools": [{**tool_out(r), "write_calls": calls.get(r.name, 0)} for r in rows], "builtin": builtin,
+                "risk": BUILTIN_RISK.get(t.risk, t.risk), "roles": list(t.roles), "stats": stats.get(t.name, empty),
+                "pending_approvals": waiting.get(t.name, 0)} for t in get_services().registry.all()]
+    return {"tools": [{**tool_out(r), "write_calls": calls.get(r.name, 0), "stats": stats.get(r.name, empty),
+                       "pending_approvals": waiting.get(r.name, 0)} for r in rows], "builtin": builtin,
             "tool_hosts": list(principal.tenant.tool_hosts or []),
             "data_residency": principal.tenant.data_residency,
-            "allowed_regions": list(principal.tenant.allowed_regions or [])}
+            "allowed_regions": list(principal.tenant.allowed_regions or []),
+            "tiers": _tiers(principal), "stats_days": STATS_DAYS}
 
 
 @router.post("/tools", status_code=status.HTTP_201_CREATED)
@@ -102,8 +145,8 @@ def create_tool(body: ToolIn, principal: Principal = Depends(require_admin), db:
     row = TenantTool(tenant_id=principal.tenant.id, enabled=body.enabled, updated_by=principal.user.id, **fields)
     db.add(row)
     db.flush()
-    record(db, principal, "tool.create", f"tool:{row.id}", name=row.name, risk=row.risk,
-           approval=row.approval.get("mode"), enabled=row.enabled)
+    record(db, principal, "tool.create", f"tool:{row.id}", name=row.name, risk=row.risk, approval=row.approval,
+           url=(row.binding or {}).get("url"), roles=row.roles, enabled=row.enabled)
     db.commit()
     return tool_out(row)
 

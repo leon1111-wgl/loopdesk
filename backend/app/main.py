@@ -31,7 +31,7 @@ from .observability import configure_logging
 from .observability import install as install_observability
 from .ops.rescan_knowledge import rescan_knowledge
 from .ops.stale_runs import fail_stale_runs
-from .seed import seed_demo, seed_demo_traffic
+from .seed import seed_demo, seed_demo_tools, seed_demo_traffic
 from .services import Services, set_services
 from . import telemetry
 from .rag.retrieval import prewarm
@@ -110,6 +110,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.seed_demo:
         with new_session() as db:
             seeded = seed_demo(db, services.embedder)
+            if seeded and settings.seed_demo_tools:
+                seed_demo_tools(db, {t.name for t in services.registry.all()})
         if seeded and settings.seed_demo_traffic:
             if services.provider.name == "mock":  # milliseconds offline, and the console has data at once
                 with new_session() as db:

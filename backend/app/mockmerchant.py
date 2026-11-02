@@ -93,6 +93,10 @@ class Merchant:
                      and all(str(r.get(k)) == str(v) for k, v in args.items() if k in (endpoint.get("filters") or []))]
             return 200, {"items": items}
         record = None
+        if endpoint.get("me"):  # the caller's own record: "/v1/members/me"
+            record = next((r for r in collection if visible(r)), None)
+            if record is None:
+                return 404, {"code": "not_found", "message": "not found"}
         if endpoint.get("key"):
             record = next((r for r in collection if str(r.get("id")) == str(args.get(endpoint["key"]))), None)
             if record is None or not visible(record):

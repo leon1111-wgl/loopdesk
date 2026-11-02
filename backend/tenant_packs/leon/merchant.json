@@ -1,0 +1,20 @@
+{
+  "_comment": "SYNTHETIC back office of the fictional merchant Leon优选 for the demo: member points and compensation vouchers. Reached only on the reserved .example host, in demo mode and in the eval sandbox (app/mockmerchant.py).",
+  "hosts": ["api.leon.example"],
+  "auth": {"secret": "SYNTHETIC_LEON_BACKOFFICE"},
+  "collections": {
+    "members": [
+      {"id": "M-1001", "owner": "customer@leon.demo", "points": 1280, "tier": "金卡"},
+      {"id": "M-1002", "owner": "customer2@leon.demo", "points": 260, "tier": "银卡"}
+    ],
+    "vouchers": []
+  },
+  "endpoints": [
+    {"name": "my_points", "method": "GET", "path": "/v1/members/me", "collection": "members", "me": true,
+     "respond": {"fields": ["points", "tier"]}},
+    {"name": "issue_voucher", "method": "POST", "path": "/v1/vouchers",
+     "rules": [{"when": {"arg": "amount", "gt": 1000}, "error": {"status": 422, "code": "amount_too_large", "message": "single voucher over 1000"}}],
+     "effect": {"append": {"collection": "vouchers", "record": {"id": "V-{seq}", "amount": "{arg.amount}", "reason": "{arg.reason}"}}},
+     "respond": {"status": 200, "body": {"status": "succeeded", "voucher": "V-{seq}", "amount": "{arg.amount}"}}}
+  ]
+}
