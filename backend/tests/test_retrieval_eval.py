@@ -28,7 +28,7 @@ def test_the_lexical_baseline_reproduces_the_documented_numbers():
     lexical = report["configs"]["lexical"]
     assert lexical["probe"]["all"]["in_scope"] == "33/33"
     assert lexical["probe"]["all"]["out_of_scope"] == "16/20"
-    assert lexical["paraphrase"]["answered"] == "27/36" and lexical["paraphrase"]["recall_at_4"] == "33/36"
+    assert lexical["paraphrase"]["answered"] == "28/36" and lexical["paraphrase"]["recall_at_4"] == "34/36"
     assert lexical["calibration"] is None, "nothing semantic to calibrate"
     assert lexical["index"]["chunks"] > 0 and lexical["index"]["build_seconds"] >= 0
     assert lexical["latency_ms"]["search"]["n"] == 20, "leon's blind questions (30 at most, tenants in turn)"
@@ -77,7 +77,7 @@ def test_every_tenant_gate_runs_under_each_config():
 def test_the_summary_is_a_table_per_metric():
     report = retrieval_eval.run(["lexical"], tenants=["leon"], suites=False)
     summary = retrieval_eval.summary(report)
-    assert "| lexical |" in summary and "33/33" in summary and "27/36" in summary
+    assert "| lexical |" in summary and "33/33" in summary and "28/36" in summary
 
 
 def test_round_two_calibrates_on_everything_seen_and_measures_a_fresh_blind_set(tmp_path):

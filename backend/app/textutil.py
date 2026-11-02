@@ -94,6 +94,10 @@ _EXPLICIT_PERSON_RE = re.compile(
 )
 
 
+# Leaving the queue for a person (N-062): "算了 不用人工了", "取消排队", "不需要转人工了".
+HANDOFF_CANCEL_RE = re.compile(r"(?:算了|那)?[，,\s]*(?:不用|不要|不需要|无需|取消)(?:转)?(?:人工|真人|排队)(?:客服)?了?|取消排队|不排(?:队)?了")
+
+
 def asks_for_person(text: str) -> bool:
     """True for an explicit request to talk to a person, which is honoured without the model
     (it cannot be talked out of it, and it still works when the model service is down)."""
@@ -103,26 +107,40 @@ def asks_for_person(text: str) -> bool:
 
 # A refund is filed only when the customer asks for one (N-091). Declines ("先别退款", "我不想退款", "不退款，我要换货",
 # "退款就算了", "No refund") are cut out first. Then an explicit request ("帮我退", "申请退款", "如果不能换货就退款",
-# "please refund") files one, unless the message says it is only asking ("就问问", "假如", "what if"); any other
-# question about refunds ("如果退款的话…", "退款是原路退回吗", "refund rules?") is answered, not filed; a bare
-# statement ("SO… 退货退款") is still a request. A conditional followed by a question is not a request
+# "please refund") files one, unless the message says it is only asking ("就问问", "假如", "what if", "看情况"); any
+# other question about refunds ("如果退款的话…", "退款是原路退回吗", "refund rules?") is answered, not filed. Nothing
+# else files one (N-232): the bare "SO… 退款" and "SO… 退款到账时间" name a topic, not a request, so they are answered
+# and offered an application ("回复“SO… 申请退款”"). A conditional followed by a question is not a request
 # (N-095, `_asks_what_if`): "如果我申请退款，优惠券会退吗" asks what would happen.
 # An amount or a share is a refund too (N-155): "退 100 块补偿就行", "退 9999 元", "退一半", "退个差价". Not a count
 # ("退 2 块屏幕膜"), a coupon ("退10元优惠券"), half of something else ("退一半运费"), or what someone else did or said
 # ("商家只退 50 元太少了", "你们说退 100 元，到现在没收到"): the unit is followed by an end, a non-Chinese character or
 # a word that keeps the demand going, and nothing in front of 退 says it is reported.
 # "只退 100 元就行" is a demand; "只退 50 元太少了" is not.
+# "另一单呢", "别的订单呢": not the order the previous question named (N-177).
+OTHER_ORDER = re.compile(r"(?:另一|别的|其他|其它|另外一?)(?:个|单|订单|笔|件)")
 _AMOUNT_OF = r"\s*(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:元|块)钱?)"
 REFUND_AMOUNT = (r"(?<!只)(?<!说)(?<!说好)(?<!答应)(?<!承诺)(?<!才)退" + _AMOUNT_OF
                  + r"(?=$|[^一-鿿]|补偿|赔偿|差价|到|就|吧|给|啊|呀|呗|行|好|谢)"
                  + r"|只退" + _AMOUNT_OF + r"(?=就行|就好|就可以|吧)")
-REFUND_RE = re.compile(r"退款|退钱|退货|退掉|退我|" + REFUND_AMOUNT + r"|退(?:一半|个?差价)(?!运费|邮费|的?运费)|refund",
-                       re.IGNORECASE)
+REFUND_RE = re.compile(r"退款|退钱|退货|退掉|退我|" + REFUND_AMOUNT + r"|退(?:一半|个?差价)(?!运费|邮费|的?运费)|refund"
+                       # N-178: "全款退", "退全款", "这个月的也退给我", "把钱退回来", "给我退了"
+                       r"|(?:全额|全款)退|退(?:全款|全额)|退给我|(?:钱|款)退回来|能(?:不能)?退(?=吗|不|[？?]|$)|可(?:不可)?以退(?=吗|不|[？?]|$)"
+                       # N-156: "money back please", "can I return this?"
+                       r"|money\s+back|(?<![A-Za-z])return(?:ing)?\s+(?:this|it|the|my)(?![A-Za-z])", re.IGNORECASE)
+# Demands without a request verb, when nothing in the message asks (N-155, N-178): an amount ("退 100 块补偿就行",
+# "退款 18 块"), a share ("退一半"), "全款退", "退钱", and a threat or a complaint about not refunding ("不退款我就投诉",
+# "为什么不退款").
+_IMPLIED_DEMAND_RE = re.compile(
+    REFUND_AMOUNT + r"|(?:退款|退钱)" + _AMOUNT_OF + r"(?=$|[^一-鿿]|就|吧|给|行|好|谢)"
+    r"|退(?:一半|个?差价)(?!运费|邮费|的?运费)|(?:全额|全款)退|退(?:全款|全额)|退钱|退给我"
+    r"|money\s+back|(?:want|need|get)\s+(?:to\s+)?return(?![A-Za-z])"
+    r"|不退(?:款|钱|货)?.{0,2}就|(?:为什么|为啥|凭什么|怎么还|还)不(?:给我)?退")
 REFUND_APPLY_RE = re.compile(
     r"我要退|申请退|帮我退|给我退|想退|要退|退一下|退掉|请(?:帮我|直接)?退|直接退|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退"
-    r"|退我(?!的)|(?:给|帮|为)(?:客户|顾客|他|她|这位顾客)退"
+    r"|退我(?!的)|(?:给|帮|为)(?:客户|顾客|他|她|这位顾客)退|(?:我|客户|顾客|他|她)要求(?:全额|全款|全部)?退"
     r"|(?:want|need|request|issue|process|like|get)\s+(?:a\s+|my\s+|the\s+)?refund|refund\s+(?:me|it|my|this|the|order)"
-    r"|please\s+refund",
+    r"|please\s+refund|(?:want|need|get)\s+(?:my\s+|the\s+)?money\s+back|money\s+back\s+please",
     re.IGNORECASE)
 NEGATED_REFUND_RE = re.compile(
     r"(?:不是要?|不是想|不想要?|不要|不需要|不用|不打算|没打算|没说要|没想|并不想|先别|别|暂时不|暂不|先不)(?:给我|帮我)?"
@@ -135,12 +153,15 @@ NEGATED_REFUND_RE = re.compile(
     r"|not\s+(?:asking\s+for|requesting|wanting|looking\s+for|a)\s+(?:a\s+)?refunds?|(?<![A-Za-z])no\s+refunds?",
     re.IGNORECASE)
 # Only asking, even next to request words ("我没说要退款，就问问", "What if I want a refund…").
-_ONLY_ASKING_RE = re.compile(r"只是问问|就问问|问问而已|随便问问|先问问|假如|假设|万一|just\s+asking|just\s+wondering|what\s+if",
-                             re.IGNORECASE)
+# A hedge is not a decision either (N-128): "我可能会退款 看情况", "也许要退 还在考虑".
+_ONLY_ASKING_RE = re.compile(r"只是问问|就问问|问问而已|随便问问|先问问|假如|假设|万一|just\s+asking|just\s+wondering|what\s+if"
+                             r"|(?:可能|也许|或许|说不定)(?:会|要|得|想)?(?:申请)?退|看情况|还在考虑|考虑一下|考虑考虑|还在犹豫"
+                             r"|还没想好|没想好|maybe|might\s+(?:want|ask|request)", re.IGNORECASE)
 # Asking about refunds, unless a request is made too ("如果不能换货就退款").
 REFUND_INQUIRY_RE = re.compile(
     _ONLY_ASKING_RE.pattern + r"|呢(?=[\s，,。.！!？?~～]*$)|哪|如果|要是|(?:退款|退货|退)的话|咨询一下|想?问一?下|规则|政策|流程|吗|[？?]|多久|多长时间|怎么|如何"
-    r"|是否|能不能|可不可以|会不会|有没有|(?<![A-Za-z])(?:if|how|what|when|does|do|is|can|will)(?![A-Za-z])",
+    r"|是否|能不能|可不可以|会不会|有没有|什么时候|啥时候|几时|几天|几个工作日|到账时间|时效|进度|状态"
+    r"|(?<![A-Za-z])(?:if|how|what|when|does|do|is|can|will|eta)(?![A-Za-z])",
     re.IGNORECASE)
 
 
@@ -196,7 +217,7 @@ _DEMAND_SEP_RE = re.compile(r"[，,。.！!？?；;、～~…\n]+|(?<=[\u4e00-\u
 # No "了 / 啦" ending: "怎么回事？都退款了" says it was refunded. "退了吧" after a question is still read as a demand.
 _BARE_DEMAND_RE = re.compile(
     r"(?:那|就|不要了|不等了|麻烦|请|赶紧|赶快|快点?|马上|立刻|直接|全额|全部)*+"
-    r"(?:(?:退款|退钱|退货|退掉)++(?:吧|啊|呀|哈|呗|好了|行了|谢谢)*+|(?:都|全)?退了吧(?:谢谢)?)"
+    r"(?:(?:退款|退钱|退货|退掉)++(?:吧|啊|呀|哈|呗|好了|行了|谢谢)*+|(?:都|全)?退了吧(?:谢谢)?|给我退了(?:吧)?)"
     r"|(?:please)?(?:full)?refund(?:now|please|me|it|asap)*+", re.IGNORECASE)
 _BARE_DEMAND_MAX = 16
 _DEMAND_FILLER_RE = re.compile(r"\s+|(?:SO\d+(?:和|跟|与|及|and)?)+|[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F]+",
@@ -205,32 +226,56 @@ _DEMAND_FILLER_RE = re.compile(r"\s+|(?:SO\d+(?:和|跟|与|及|and)?)+|[\U0001F
 _COLLOQUIAL_QUESTION_RE = re.compile(r"咋|啥|([\u4e00-\u9fff])不\1|[不没](?=[\s，,。.！!？?～~]|$)")
 
 
+# The topic word alone ("退款", "退货退款") is a demand only after a complaint ("怎么还不发货 退款") or with an
+# exclamation ("退款！"): "SO… 退款" on its own is answered and offered an application (N-232).
+_BARE_TOPIC_RE = re.compile(r"(?:退款|退货)+")
+
+
 def _demands_refund(text: str) -> bool:
     questions = [m.start() for pattern in (REFUND_INQUIRY_RE, _QUESTION_RE, _COLLOQUIAL_QUESTION_RE)
                  for m in pattern.finditer(text)]
     last_question = max(questions, default=-1)
-    start = 0
+    start, said = 0, False  # said: a clause with something besides order numbers came before
     for sep in [*_DEMAND_SEP_RE.finditer(text), None]:
         end = sep.start() if sep else len(text)
         bare = _DEMAND_FILLER_RE.sub("", ORDER_ID_RE.sub("SO0", text[start:end]))  # any format, with its "和"
         if start > last_question and 0 < len(bare) <= _BARE_DEMAND_MAX and _BARE_DEMAND_RE.fullmatch(bare):
-            return True
+            if not _BARE_TOPIC_RE.fullmatch(bare) or said or (sep and re.search(r"[！!]", sep.group())):
+                return True
+        said = said or bool(bare)
         start = sep.end() if sep else end
     return False
+
+
+_CN_AMOUNT_RE = re.compile(r"[零〇一二两三四五六七八九十百千万]+(?=\s*(?:块|元))")
+
+
+def numeral_amounts(text: str) -> str:
+    """"退三十块就行" -> "退30块就行" (N-178): a Chinese numeral in front of 块 / 元 as digits, so the amount rules
+    read it the way they read "退30块"."""
+    from .voice.itn import cn_number
+
+    def digits(m: re.Match[str]) -> str:
+        value = cn_number(m.group(0))
+        return m.group(0) if value is None else f"{value:g}"
+
+    return _CN_AMOUNT_RE.sub(digits, text)
 
 
 def refund_requested(text: str) -> bool:
     """True when the message asks for a refund, not when it asks about one or declines one."""
     if refund_withdraw_requested(text):  # "撤回退款申请" takes one back (N-127)
         return False
-    kept = NEGATED_REFUND_RE.sub("，", normalize_width(text or ""))
+    kept = NEGATED_REFUND_RE.sub("，", numeral_amounts(normalize_width(text or "")))
     if _ONLY_ASKING_RE.search(kept):
         return False
     if not REFUND_RE.search(kept):
         return _demands_refund(kept)  # "SO… 退了吧": not one of the refund words, but a bare demand
     if _asks_what_if(kept):
         return False
-    return bool(REFUND_APPLY_RE.search(kept)) or not REFUND_INQUIRY_RE.search(kept) or _demands_refund(kept)
+    if REFUND_APPLY_RE.search(kept) or _demands_refund(kept):
+        return True
+    return bool(_IMPLIED_DEMAND_RE.search(kept)) and not REFUND_INQUIRY_RE.search(kept)
 
 
 # Taking back a refund application that is still waiting for review (N-127): "我刚才的退款申请能撤回吗",
@@ -305,7 +350,7 @@ _REFUND_AMOUNT_RE = re.compile(REFUND_AMOUNT)
 def stated_refund_amount(text: str) -> float | None:
     """The amount the customer asks back in this message, if they name one (N-218): "退 100 块", "只退 50 元就行",
     "退我20就行". None for "我要退款" or "退一半"; an amount they took back ("不要退 100 了") is not stated."""
-    kept = NEGATED_REFUND_RE.sub("，", normalize_width(text or ""))
+    kept = NEGATED_REFUND_RE.sub("，", numeral_amounts(normalize_width(text or "")))
     match = _REFUND_AMOUNT_RE.search(kept)
     number = (re.search(r"\d+(?:\.\d+)?", match.group()).group() if match
               else (bare.group(1).replace(",", "") if (bare := _BARE_REFUND_AMOUNT.search(kept)) else None))
@@ -391,6 +436,18 @@ _tokenize_cached = lru_cache(maxsize=4096)(_tokenize)
 # so recall can only grow). Kept small and domain-specific on purpose: every entry should
 # be justified by an eval case ("colloquial" tag) or a real bad case from the flywheel.
 _VARIANT_CHARS = str.maketrans({"帐": "账"})
+# Common homophone typos of the key nouns (N-190, N-063): "推款", "运废险怎么陪", "发漂", "积分会不会过其".
+# Whole words only, read before the intent rules and retrieval; what the customer typed is kept as typed.
+TYPOS: dict[str, str] = {
+    "推款": "退款", "退宽": "退款", "退欵": "退款", "运废": "运费", "运肺": "运费", "发漂": "发票", "发瞟": "发票",
+    "过其": "过期", "怎么陪": "怎么赔", "咋陪": "咋赔", "到那了": "到哪了", "到那儿了": "到哪儿了", "物留": "物流",
+    "快第": "快递", "退贷": "退货", "积份": "积分",
+}
+_TYPO_RE = re.compile("|".join(sorted(map(re.escape, TYPOS), key=len, reverse=True)))
+
+
+def fix_typos(text: str) -> str:
+    return _TYPO_RE.sub(lambda m: TYPOS[m.group(0)], text or "")
 QUERY_SYNONYMS: dict[str, str] = {
     "退回来": "退款 到账",
     "退钱": "退款",
@@ -435,7 +492,7 @@ _SYNONYM_RE = re.compile("|".join(sorted(map(re.escape, QUERY_SYNONYMS), key=len
 
 def expand_query(text: str) -> str:
     """"钱啥时候能退回来？" -> "钱啥时候能退回来？ 退款 到账"."""
-    folded = text.translate(_VARIANT_CHARS)
+    folded = fix_typos(text).translate(_VARIANT_CHARS)
     extras = list(dict.fromkeys(canonical for phrase, canonical in QUERY_SYNONYMS.items() if phrase in folded))
     return f"{folded} {' '.join(extras)}" if extras else folded
 
@@ -446,7 +503,7 @@ def canonical_query(text: str) -> str:
     Used by the relevance gate. There, the colloquial words themselves ("寄到", "国外") are
     out of the knowledge base's vocabulary, get the highest IDF, and would drag coverage
     under the threshold even though the canonical words match: "能寄到国外吗" -> "能 配送 海外 吗"."""
-    return _SYNONYM_RE.sub(lambda m: f" {QUERY_SYNONYMS[m.group(0)]} ", text.translate(_VARIANT_CHARS))
+    return _SYNONYM_RE.sub(lambda m: f" {QUERY_SYNONYMS[m.group(0)]} ", fix_typos(text).translate(_VARIANT_CHARS))
 
 
 def token_set(text: str) -> set[str]:

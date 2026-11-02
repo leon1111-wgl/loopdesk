@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 
 from ..llm.base import LLMMessage, LLMProvider
-from ..textutil import ORDER_ID_RE, REFUND_AMOUNT, REFUND_RE, refund_withdraw_requested
+from ..textutil import ORDER_ID_RE, OTHER_ORDER, REFUND_AMOUNT, REFUND_RE, refund_withdraw_requested
 
 _LEADING = ("那么", "那", "还有", "另外", "这个", "那个", "它", "如果", "要是")
 _QUESTION_WORDS = re.compile(r"有什么|有哪些|是什么|是多少|怎么|如何|多久|多少|能不能|可不可以|可以吗|吗|呢|[？?。！!]+")
@@ -102,6 +102,8 @@ def _focus(text: str) -> str:
 
 def rule_rewrite(text: str, previous: str | Frame) -> str:
     frame = previous if isinstance(previous, Frame) else frame_of(previous)
+    if OTHER_ORDER.search(text):  # keep what was asked, drop the order it was asked about
+        frame = Frame(ORDER_ID_RE.sub("", frame.topic).strip(" ，,"), ORDER_ID_RE.sub("", frame.predicate).strip(" ，,"))
     kind = _kind(text)
     if kind == "new":
         return _LEADING_RE.sub("", text.strip())
@@ -176,3 +178,30 @@ def carry_order(text: str, previous_user_question: str | None) -> str | None:
     if _CARRY_WORDS.sub("", text) or text.strip().rstrip(_END_PUNCT).endswith("呢"):
         return None  # "那退款呢" stays a follow-up question, rewritten as before; refund_requested reads it as a question
     return f"{named[0]} {text.strip()}"
+
+
+# A turn that goes on about the order in hand in its own words (N-199, N-220, N-198): chasing the parcel ("为什么这么慢",
+# "那你说怎么办"), what is wrong with it ("你没听懂吗 我说碎了！！要退钱"), a repair or an exchange ("不对 我不要退款了 修一下就行").
+# The opposite of _CARRY_WORDS: anything goes except another order, another item or a policy question. Money never moves
+# on it without the customer naming the order (ToolContext.unconfirmed_order): a refund is offered, not filed.
+_LOOSE_CARRY = re.compile(
+    r"慢|怎么办|咋办|咋整|催|着急|急用|等不了|太久|还要等|还没到|怎么还没|咋还没"
+    r"|维修|修理|返修|修一下|修好|换(?:个|一个)?新|换货|退换"
+    r"|碎|坏|破|裂|漏|没声|不响|开线|划痕|瑕疵|质量|有问题|不能用|用不了")
+_POLICY_WORDS = re.compile(r"规则|政策|一般|通常|流程|条件|发票|积分|会员|运费险|优惠券")
+# "我的马克杯想退款" after "SO… 到哪了" may be another order's item: the orders are listed instead.
+_OTHER_ITEM = re.compile(r"我的(?!钱|订单|快递|包裹|单|货|东西)[\u4e00-\u9fff]{2,6}|(?:那个|这个)(?!订单|单|快递|包裹)[\u4e00-\u9fff]{2,6}")
+_LOOSE_MAX = 40
+
+
+def carry_order_loosely(text: str, previous_user_question: str | None) -> tuple[str, str] | None:
+    """(standalone question, the order carried) for a turn about the previous turn's one order, or None."""
+    if (not previous_user_question or ORDER_ID_RE.search(text) or _DISOWNED.search(previous_user_question)
+            or _DISOWNED.search(text) or OTHER_ORDER.search(text)):
+        return None
+    named = list(dict.fromkeys(m.upper() for m in ORDER_ID_RE.findall(previous_user_question)))
+    if len(named) != 1 or len(text.strip()) > _LOOSE_MAX or _POLICY_WORDS.search(text):
+        return None
+    if not _LOOSE_CARRY.search(text) or _OTHER_ITEM.search(text):
+        return None
+    return f"{named[0]} {text.strip()}", named[0]

@@ -15,7 +15,7 @@ from ..agent.business_tools import WITHDRAWN_COMMENT, end_paused_run, order_appl
 from ..agent.runtime import REQUESTER_WITHDREW, ResumeError, decided_text
 from ..channels.feishu import FeishuClient
 from ..db import get_db
-from ..models import Approval, Conversation, Refund, Run, Tenant, User
+from ..models import Approval, Conversation, Refund, Run, Tenant, TenantTool, User
 from ..security import Principal, require_staff
 from ..services import get_services
 from .common import get_owned, iso, masked
@@ -57,7 +57,17 @@ def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = N
         "created_at": iso(a.created_at), "decided_at": iso(a.decided_at),
         "refund": _refund_out(db, a, refunds),
         "history": _history_out(db, a, earlier),
+        "tool_off": _tool_off(db, a),
     }
+
+
+def _tool_off(db: Session, a: Approval) -> bool:
+    """A waiting application whose tenant tool is switched off or gone: approving it is refused (N-230)."""
+    if a.status != "pending" or a.tool_name in {t.name for t in get_services().registry.all()}:
+        return False
+    return db.execute(select(TenantTool.id).where(
+        TenantTool.tenant_id == a.tenant_id, TenantTool.name == a.tool_name, TenantTool.enabled.is_(True),
+        TenantTool.status == "active")).first() is None
 
 
 def _history_out(db: Session, a: Approval, earlier: list[Approval] | None) -> list[dict]:

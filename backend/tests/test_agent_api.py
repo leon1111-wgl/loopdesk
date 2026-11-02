@@ -346,7 +346,9 @@ def test_full_width_order_numbers_are_recognised(ask, login):
 
 def test_english_tracking_question_looks_up_the_shipment(ask, login):
     _, events = ask(login("customer@leon.demo"), "where is my order SO20261008002? when will it arrive")
-    assert [e["name"] for e in by_type(events, "tool_call")] == ["get_order", "track_shipment"]
+    # "when will it arrive" also quotes the delivery time (N-060)
+    assert [e["name"] for e in by_type(events, "tool_call")] == ["get_order", "track_shipment", "search_knowledge"]
+    assert "1-3天送达" in by_type(events, "final")[0]["text"]
 
 
 def test_colloquial_partial_refund_is_recognised(ask, login):

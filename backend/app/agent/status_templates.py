@@ -64,12 +64,15 @@ TEMPLATES: dict[str, Template] = {
     "refund.confirming": Template("退款申请已提交（退款单 #{refund_id}），支付系统暂未返回结果，我们会继续核实，请勿重复申请；"
                                   "处理结果以订单状态为准。", ("refund_id",)),
     "refund.failed": Template("退款申请未能提交：{reason}。", ("reason",)),
+    # filed again while the first waits for a person (N-180): nothing failed, nothing new was filed
+    "refund.waiting": Template("{message}。", ("message",)),  # the tool's own wording: the first one's time and amount
+    "refund.confirm": Template("{message}。", ("message",)),  # an order the customer did not name this turn: asked, not filed
     "refund.rejected": Template("退款申请未通过人工审核。审核意见：{comment}。", ("comment",)),
     "refund.rejected_bare": Template("退款申请未通过人工审核。", ()),
-    "ticket.created": Template("已为您创建工单 #{ticket_id}（优先级：{priority}），技术支持将在 {sla_hours} 小时内联系您。",
-                               ("ticket_id", "priority", "sla_hours")),
-    "ticket.drill": Template("（演练）已为您创建工单（优先级：{priority}），技术支持将在 {sla_hours} 小时内联系您。",
-                             ("priority", "sla_hours")),
+    "ticket.created": Template("已为您创建工单 #{ticket_id}（优先级：{priority}），{team}将在 {sla_hours} 小时内联系您。",
+                               ("ticket_id", "priority", "sla_hours", "team")),
+    "ticket.drill": Template("（演练）已为您创建工单（优先级：{priority}），{team}将在 {sla_hours} 小时内联系您。",
+                             ("priority", "sla_hours", "team")),
 }
 
 # ---------------------------------------------------------------- the tool state
@@ -87,10 +90,11 @@ ALLOWED: dict[str, set[str]] = {
     "not_refundable": {"not_refundable"},
     "withdrawn": {"withdrawn", "not_refundable"},  # the customer took the application back (N-127)
     "refundable": set(),  # an order the tool would accept: nothing was filed, nothing was decided
+    "confirm": set(),  # offered to the customer, nothing filed
     "none": set(),
 }
 # Where money is not coming (or not known to be), any payout wording misleads, policy or not.
-NO_PAYOUT = {"rejected", "failed", "confirming", "withdrawn"}
+NO_PAYOUT = {"rejected", "failed", "confirming", "withdrawn", "confirm"}
 
 
 @dataclass
@@ -105,6 +109,9 @@ class CaseState:
     shipments: dict[str, str] = field(default_factory=dict)
     refund_asked: bool = False  # the customer asked for a refund this turn
     quoted: list[str] = field(default_factory=list)  # tool wording the model may quote verbatim
+    # the refund and ticket tools' own wording: a sentence restating it is the status, said once by the template
+    # (a tracking message next to a ticket is not: N-157 lost "派送中" to the ticket's template)
+    status_quoted: list[str] = field(default_factory=list)
     # each order's status as the order tools worded it, by order id: "SO…（音箱，已退款）" quotes a listing (N-197)
     order_status: dict[str, str] = field(default_factory=dict)
 
@@ -131,6 +138,10 @@ _LEDGER_STATE = {"processing": "filed", "succeeded": "paid", "pending": "confirm
 
 
 def _refund_action(output: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if output.get("confirm_order"):
+        return "confirm", {"message": str(output.get("error") or "").rstrip("。")}
+    if isinstance(output.get("awaiting_review"), dict):
+        return "awaiting_review", {"message": str(output.get("error") or "").rstrip("。")}
     if output.get("error"):
         return "failed", {"reason": str(output["error"]).rstrip("。")}
     if output.get("status") == "rejected":
@@ -143,10 +154,16 @@ def _refund_action(output: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return "filed", fields
 
 
+_TOOK_EFFECT = ("filed", "paid", "confirming")
+
+
 def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
     """What the tools in this run say about the customer's case. The last refund call wins over the
-    ledger, which wins over the order's refundable flag."""
+    ledger, which wins over the order's refundable flag; but a refund that took effect for an order is
+    never undone by a later call for the same order that failed (N-201): the second one fails on "退款中"
+    because the first one paid."""
     state = CaseState(refund_asked=refund_requested(customer_text))
+    took_effect: dict[str, tuple[str, dict[str, Any]]] = {}
     for item in evidence:
         if item.kind != "tool":
             continue
@@ -154,6 +171,8 @@ def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
         for key in ("message", "error", "comment", "refund_note", "summary", "status_text"):
             if output.get(key):
                 state.quoted.append(str(output[key]))
+                if item.title in ("request_refund", "create_ticket"):
+                    state.status_quoted.append(str(output[key]))
         for order in [output, *(output.get("orders") or [])] if item.title in ("get_order", "list_my_orders") else []:
             if isinstance(order, dict) and order.get("order_id") and order.get("status_text"):
                 state.order_status[str(order["order_id"]).upper()] = str(order["status_text"])
@@ -161,7 +180,13 @@ def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
             if shipped := _shipment(item.title, output):
                 state.shipments[str(output["order_id"]).upper()] = shipped
         if item.title == "request_refund":
-            state.refund, state.refund_fields = _refund_action(output)
+            action = _refund_action(output)
+            order = str(item.meta.get("order_id") or output.get("order_id") or "").upper()
+            if action[0] == "failed" and order in took_effect:
+                action = took_effect[order]
+            elif action[0] in _TOOK_EFFECT and order:
+                took_effect[order] = action
+            state.refund, state.refund_fields = action
             state.refund_source = "action"
         elif item.title == "withdraw_refund_request" and output.get("withdrawn"):
             state.refund, state.refund_source = "withdrawn", "withdrawal"
@@ -185,6 +210,7 @@ def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
             else:
                 state.ticket = "created"
                 state.ticket_fields = {k: output.get(k) for k in ("ticket_id", "priority", "sla_hours")}
+                state.ticket_fields["team"] = output.get("team") or "技术支持"  # tickets filed before N-200 said so
         elif item.title == "handoff_to_human" and not output.get("error"):
             state.handoff = True
     return state
@@ -198,6 +224,8 @@ def _shipment(tool: str, output: dict[str, Any]) -> str:
         return _ORDER_SHIPMENT.get(str(output.get("status")), "")
     if output.get("virtual"):
         return ""
+    if output.get("delivered"):
+        return "delivered"
     if output.get("shipped") is False:
         return "unshipped"
     latest = " ".join(str(e.get("desc", "")) for e in (output.get("events") or [])[-1:])
@@ -209,7 +237,8 @@ def render_status(state: CaseState, dry_run: bool = False) -> Rendered:
     rendered = Rendered()
     if state.refund_source == "action":
         key = {"filed": "refund.drill" if dry_run else "refund.filed", "paid": "refund.paid",
-               "confirming": "refund.confirming", "failed": "refund.failed"}.get(state.refund)
+               "confirming": "refund.confirming", "failed": "refund.failed",
+               "awaiting_review": "refund.waiting", "confirm": "refund.confirm"}.get(state.refund)
         if state.refund == "rejected":
             key = "refund.rejected" if state.refund_fields.get("comment") else "refund.rejected_bare"
         _put(rendered, "refund", TEMPLATES[key], state.refund_fields)
@@ -421,7 +450,7 @@ def compose(answer: str, state: CaseState, dry_run: bool = False) -> Composed:
     templates = {d: rendered.for_domain(d) for d in ("refund", "ticket") if rendered.for_domain(d)}
     if not templates:
         return out
-    restated = [_core(t) for t in [*templates.values(), *state.quoted] if _core(t)]
+    restated = [_core(t) for t in [*templates.values(), *state.status_quoted] if _core(t)]
     kept: list[str] = []
     placed: set[str] = set()
     for piece in pieces(answer):

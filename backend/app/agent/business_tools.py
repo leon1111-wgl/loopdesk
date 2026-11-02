@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -24,12 +25,13 @@ from sqlalchemy.orm import Session
 from .. import audit
 from ..integrations import (REFUNDABLE, GatewayError, OrderInfo, RefundGateway, RefundRejected, RefundRequest,
                             customer_ref, reads)
-from ..localtime import local_date, zone_of
+from ..localtime import local_date, local_time, zone_of
 from ..models import Approval, Conversation, Message, Refund, Run, Tenant, Ticket, User
 from ..rag.conflicts import disputed
 from ..rag.retrieval import gate_options, hybrid_search
 from ..security import Principal
-from ..textutil import (ORDER_ID_RE, REFUND_RE, normalize_width, refund_bare_decline, refund_declined, refund_requested,
+from ..textutil import (ORDER_ID_RE, REFUND_RE, fix_typos, normalize_width, refund_bare_decline, refund_declined,
+                        refund_requested,
                         refund_withdraw_requested, stated_refund_amount, withdraw_confirmed)
 from . import handoff
 from .tools import ApprovalNeed, ApprovalRequired, ToolContext, ToolDef, ToolError, ToolRegistry, ToolUnavailable
@@ -167,7 +169,7 @@ def _held_by(refund: Refund | None) -> str:
 
 # ---------------------------------------------------------------- search_knowledge
 def search_knowledge(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
-    query = str(args.get("query") or "").strip()
+    query = fix_typos(str(args.get("query") or "").strip())  # "运废险怎么陪" searches 运费险 (N-190)
     if not query:
         raise ToolError("query 不能为空")
     top_k = max(1, min(int(args.get("top_k") or ctx.settings.retrieval_top_k), 8))
@@ -340,6 +342,10 @@ def track_shipment(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         names = "、".join(str(item.get("name", "")) for item in order.items)
         return {"order_id": order.order_id, "shipped": False, "virtual": True,
                 "message": f"订单 {order.order_id}（{names}）是虚拟商品，付款后即时生效，没有物流信息。"}
+    if (shipment is None or not shipment.events) and order.status == "delivered":
+        day = local_date(order.delivered_at, zone_of(ctx.tenant)) if order.delivered_at else None
+        return {"order_id": order.order_id, "shipped": True, "delivered": True, "events": [],
+                "message": f"订单 {order.order_id} 已{f'于 {day} ' if day else ''}签收，暂无物流明细。"}
     if shipment is None or not shipment.events:
         return {"order_id": order.order_id, "shipped": False, "message": f"订单 {order.order_id} 目前还未发货。"}
     latest = shipment.events[-1]
@@ -466,9 +472,29 @@ def _validated(ctx: ToolContext, args: dict[str, Any]) -> tuple[OrderInfo, float
         pending = ctx.db.execute(select(Approval).where(
             Approval.tenant_id == ctx.tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
         )).scalars()
-        if any(a.arguments.get("order_id") == order.order_id for a in pending):
-            raise ToolError("该订单已有一笔退款申请在等待人工审核，请勿重复提交")
+        waiting = next((a for a in pending if a.arguments.get("order_id") == order.order_id), None)
+        if waiting is not None:
+            raise _already_waiting(ctx, waiting, amount)
     return order, amount
+
+
+class RefundWaiting(ToolError):
+    """The order's application already waits for a person (N-180): not a failure to tell the customer
+    about, and not something to file again."""
+
+    def __init__(self, message: str, output: dict[str, Any]):
+        super().__init__(message)
+        self.output = output
+
+
+def _already_waiting(ctx: ToolContext, waiting: Approval, amount: float) -> RefundWaiting:
+    filed_at = local_time(waiting.created_at, zone_of(ctx.tenant))[:16]
+    first = round(float(waiting.arguments.get("amount") or 0), 2)
+    message = f"您在 {filed_at} 提交的 ¥{first:.2f} 退款申请正在等待人工审核，无需重复申请，审核结果会在这里通知您"
+    if abs(first - amount) > 0.005:
+        message += f"；如需改成 ¥{amount:.2f}，可以先回复“撤回退款申请”，再重新申请"
+    return RefundWaiting(message, {"error": message, "awaiting_review": {
+        "approval_id": waiting.id, "amount": f"{first:.2f}", "filed_at": filed_at}})
 
 
 def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -481,6 +507,10 @@ def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。"
                         "请回答顾客的问题；顾客明确要求退款时再申请。")
     order, amount = _validated(ctx, args)
+    if ctx.approval_id is None and ctx.unconfirmed_order and order.order_id == ctx.unconfirmed_order.upper():
+        names = "、".join(str(item.get("name", "")) for item in order.items)
+        message = (f"需要为订单 {order.order_id}（{names}）申请退款吗？回复“{order.order_id} 申请退款”即可提交")
+        raise RefundWaiting(message, {"error": message, "confirm_order": order.order_id})
     # The customer named an amount and the call files another (N-218): "退我20就行" filed as the full ¥45, or
     # "退我500" quietly capped at the ¥32 paid. A reviewer who reads only the card would pay what nobody asked for.
     # Only the customer's own words, about one order: a member of staff writes "顾客要退 50，只能退 30", and in
@@ -856,6 +886,7 @@ def create_ticket(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     if priority not in PRIORITY_TEXT:
         priority = "normal"
     sla = 4 if priority in ("high", "urgent") else ctx.tenant.ticket_sla_hours
+    team = "技术支持" if _FAULT.search(f"{title} {description}") else "售后专员"
     if ctx.dry_run:
         ticket_ref, prefix = "", "（演练）"
     else:
@@ -871,8 +902,13 @@ def create_ticket(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         "ticket_id": None if ctx.dry_run else ticket.id,
         "priority": priority,
         "sla_hours": sla,
-        "message": f"{prefix}已为您创建工单{ticket_ref}（优先级：{PRIORITY_TEXT[priority]}），技术支持将在 {sla} 小时内联系您。",
+        "team": team,
+        "message": f"{prefix}已为您创建工单{ticket_ref}（优先级：{PRIORITY_TEXT[priority]}），{team}将在 {sla} 小时内联系您。",
     }
+
+
+# A device that does not work goes to technical support; a broken mug, a lost parcel or an address to the after-sales team.
+_FAULT = re.compile(r"故障|报修|无法使用|打不开|开不了机|不工作|失灵|连不上|没反应|死机|没声音?|不响|充不进电|不充电|蓝屏")
 
 
 def _already_queued(ctx: ToolContext, ticket: Ticket) -> dict[str, Any]:

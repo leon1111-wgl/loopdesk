@@ -61,6 +61,9 @@ class ToolContext:
     dry_run: bool = False
     # The eval sandbox and demo traffic: tenant tools reach only the synthetic merchant systems.
     sandboxed: bool = False
+    # An order carried over from the previous turn that this one does not name (rewrite.carry_order_loosely):
+    # a refund on it is offered back to the customer, not filed.
+    unconfirmed_order: str | None = None
     evidence: list[Evidence] = field(default_factory=list)
     approval_id: int | None = None  # set when executing a call a human approved
     # The order and payment systems (app/integrations); the demo tables when not given.

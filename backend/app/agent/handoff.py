@@ -81,6 +81,27 @@ def earlier_orders(db: Session, conversation_id: int | None, turns: int = 6) -> 
     return orders
 
 
+CANCELLED_TEXT = "好的，已为您取消人工排队。还有其他问题可以继续问我。"
+CANCELLED_NOTE = "顾客取消了人工排队，会话交还智能客服。"
+
+
+def cancel_by_customer(db: Session, ticket: Ticket, conversation: Conversation) -> bool:
+    """The customer left the queue before anyone took the ticket (N-062): closed as theirs, the agent answers
+    again. False when a person picked it up in the meantime: then the message is theirs."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    closed = db.execute(update(Ticket).where(Ticket.id == ticket.id, Ticket.status == "open", Ticket.assignee_id.is_(None))
+                        .values(status="closed", closed_at=datetime.now(timezone.utc), resolution=CANCELLED_NOTE)
+                        .execution_options(synchronize_session="fetch")).rowcount
+    if closed != 1:
+        return False
+    conversation.status = "bot"
+    db.add(Message(tenant_id=ticket.tenant_id, conversation_id=conversation.id, role="system", content=CANCELLED_NOTE))
+    return True
+
+
 def active_ticket(db: Session, conversation_id: int) -> Ticket | None:
     return db.execute(
         select(Ticket).where(Ticket.conversation_id == conversation_id, Ticket.kind == "handoff",

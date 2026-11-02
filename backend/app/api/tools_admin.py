@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..audit import changes, record
 from ..db import get_db
-from ..models import McpServer, TenantTool, ToolExecution
+from ..models import Approval, McpServer, TenantTool, ToolExecution
 from ..security import Principal, require_admin, require_staff
 from ..services import get_services
 from ..tooling.definitions import DefinitionError, check_definition, residency
@@ -64,6 +64,13 @@ def _names(db: Session, tenant_id: int) -> set[str]:
 
 def _builtins() -> set[str]:
     return {t.name for t in get_services().registry.all()}
+
+
+def _approvals(db: Session, tenant_id: int, name: str, pending_only: bool = False) -> list[int]:
+    query = select(Approval.id).where(Approval.tenant_id == tenant_id, Approval.tool_name == name)
+    if pending_only:
+        query = query.where(Approval.status == "pending")
+    return list(db.execute(query.order_by(Approval.id)).scalars())
 
 
 @router.get("/tools")
@@ -149,7 +156,10 @@ def set_enabled(tool_id: int, body: EnabledIn, principal: Principal = Depends(re
         record(db, principal, "tool.update", f"tool:{row.id}", name=row.name, version=row.version,
                changes={"enabled": [not body.enabled, body.enabled]})
         db.commit()
-    return tool_out(row)
+    # Switching off is never refused (it is how a misbehaving tool is stopped), but its waiting applications
+    # are named: approving one now is refused, rejecting one tells the customer (N-230).
+    waiting = [] if body.enabled else _approvals(db, principal.tenant.id, row.name, pending_only=True)
+    return {**tool_out(row), "pending_approvals": waiting}
 
 
 @router.delete("/tools/{tool_id}")
@@ -158,6 +168,10 @@ def delete_tool(tool_id: int, principal: Principal = Depends(require_admin), db:
     used = db.execute(select(func.count(ToolExecution.id)).where(ToolExecution.tool_id == row.id)).scalar_one()
     if used:
         raise HTTPException(status.HTTP_409_CONFLICT, f"这个工具已有 {used} 条调用记录，只能停用，不能删除")
+    # An approval names the tool it would run: its definition stays for the reviewer and for reconciliation (N-230).
+    referenced = _approvals(db, principal.tenant.id, row.name)
+    if referenced:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"有 {len(referenced)} 张审批单引用这个工具，只能停用，不能删除")
     record(db, principal, "tool.delete", f"tool:{row.id}", name=row.name)
     db.delete(row)
     db.commit()

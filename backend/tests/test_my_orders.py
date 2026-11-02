@@ -96,7 +96,7 @@ def test_refund_without_a_number_asks_which_order(ask, login):
     assert "request_refund" in _tools(events)
 
 
-@pytest.mark.parametrize("text", ["我买的那个扫地机器人退款", "我上次买的扫地机器人不想要了，退货", "我最近买的扫地机器人退钱"])
+@pytest.mark.parametrize("text", ["我买的那个扫地机器人要退款", "我上次买的扫地机器人不想要了，退货", "我最近买的扫地机器人退钱"])
 def test_no_refund_on_an_order_the_agent_picked(ask, login, text):
     # A single match by item name is enough to track a parcel, never to move money (review finding).
     before = _refund_rows()

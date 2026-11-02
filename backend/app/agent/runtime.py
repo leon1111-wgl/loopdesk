@@ -40,11 +40,11 @@ from ..llm.breaker import CircuitBreaker
 from ..llm.router import ModelRouter
 from ..models import Approval, Conversation, Message, Run, Tenant, User
 from . import answer_cache
-from .rewrite import Frame, carry_order, frame_of, is_followup, next_frame, rewrite_followup
+from .rewrite import Frame, carry_order, carry_order_loosely, frame_of, is_followup, next_frame, rewrite_followup
 from ..observability import request_id_var
 from ..security import Principal
 from .. import telemetry
-from ..textutil import ORDER_ID_RE, asks_for_person, normalize_width
+from ..textutil import HANDOFF_CANCEL_RE, ORDER_ID_RE, asks_for_person, normalize_width
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
 from .status_templates import case_state, compose as compose_status
@@ -83,6 +83,14 @@ TOOL_LABEL = {"request_refund": "退款"}
 STATUS_TOOLS = ("request_refund", "create_ticket")
 
 logger = logging.getLogger(__name__)
+
+
+class ToolOff(ValueError):
+    """The approval's tool is switched off or deleted: approving it would carry out nothing (N-230). The
+    approval stays pending; rejecting it still works and tells the customer."""
+
+
+TOOL_OFF_TEXT = "工具 {name} 已停用或已删除，通过也无法执行，审批单保持待处理；可以驳回并告知顾客，或请管理员重新启用工具后再审批"
 
 
 class ResumeError(RuntimeError):
@@ -139,7 +147,8 @@ def rejected_result(tool: str, comment: str, label: str = "") -> dict[str, Any]:
 
 
 def _canonical(value: Any) -> Any:
-    """Argument values as a repeat check compares them: 5 and 5.0 are one amount, " SO1 " is SO1."""
+    """Argument values as a repeat check compares them: 5 and 5.0 are one amount; " so1 ", "ＳＯ1" and SO1
+    are one order."""
     if isinstance(value, bool):
         return value
     if isinstance(value, int):
@@ -147,7 +156,7 @@ def _canonical(value: Any) -> Any:
     if isinstance(value, float):
         return int(value) if value.is_integer() else value
     if isinstance(value, str):
-        return value.strip()
+        return normalize_width(value).strip().casefold()
     if isinstance(value, dict):
         return {str(k): _canonical(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -159,6 +168,13 @@ def _call_key(name: str, arguments: dict[str, Any], fields: tuple[str, ...] | No
     if fields is not None:
         arguments = {k: arguments.get(k) for k in fields}
     return name + json.dumps(_canonical(arguments), ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _order_meta(arguments: dict[str, Any]) -> dict[str, Any]:
+    """The order a tool call was about, kept on its evidence: a refusal's output does not name it, and the
+    case state goes by order (status_templates.case_state)."""
+    order_id = arguments.get("order_id") if isinstance(arguments, dict) else None
+    return {"order_id": normalize_width(order_id).strip().upper()} if isinstance(order_id, str) and order_id.strip() else {}
 
 
 def _plain(chunk: str) -> str:
@@ -262,7 +278,16 @@ class AgentRuntime:
                 conversation.title = pii.masked[:30]
             conversation.updated_at = datetime.now(timezone.utc)
             if conversation.status == "handoff":
-                if handoff.active_ticket(self.db, conversation.id) is not None:
+                ticket = handoff.active_ticket(self.db, conversation.id)
+                rest = HANDOFF_CANCEL_RE.sub("", text).strip(" ，,。.！!~～") if ticket is not None else ""
+                if (ticket is not None and HANDOFF_CANCEL_RE.search(text)
+                        and handoff.cancel_by_customer(self.db, ticket, conversation)):
+                    if len(rest) < 2:  # "算了 不用人工了": nothing else to answer
+                        yield from self._said(conversation, handoff.CANCELLED_TEXT)
+                        return
+                    text = rest  # "算了 不用人工了 退款多久到账": the question is answered now
+                    pii = mask_pii(text) if self.settings.pii_masking else PIIReport(text, [])
+                elif ticket is not None:
                     yield from self._forward_to_human(conversation)
                     return
                 conversation.status = "bot"  # no live ticket behind the flag: the agent takes over again
@@ -294,6 +319,9 @@ class AgentRuntime:
             # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
             question = pii.masked
             carried = carry_order(pii.masked, previous)
+            unconfirmed = None
+            if carried is None and (loose := carry_order_loosely(pii.masked, previous)) is not None:
+                carried, unconfirmed = loose  # "你没听懂吗 我说碎了！！要退钱": that order, but a refund is only offered
             if carried is not None:  # "嗯 退款 100 元" right after "SO… 耳机有杂音": that order (N-155)
                 with tracer.span("rewrite", "order_context", {"question": pii.masked, "previous": previous}) as span:
                     span.set(standalone=carried, method="order_context")
@@ -359,6 +387,7 @@ class AgentRuntime:
             messages = [LLMMessage(role="system", content=build_system_prompt(tenant, user, version=prompt_version)),
                         *history, LLMMessage(role="user", content=question)]
             ctx = self._context(tenant, user, run, conversation, options.dry_run, [])
+            ctx.unconfirmed_order = unconfirmed
             yield from self._loop(run, tracer, ctx, state, messages, queue=[], started=time.perf_counter())
         except (GeneratorExit, Exception) as exc:
             self._mark_failed(run, exc, tracer)
@@ -402,6 +431,10 @@ class AgentRuntime:
             raise ValueError(decided_text(approval.status, approval.comment))
         if decision not in ("approve", "reject"):
             raise ValueError("decision 必须是 approve 或 reject")
+        if decision == "approve" and toolset_for(self.db, self.db.get(Tenant, approval.tenant_id),
+                                                 self.registry).get(approval.tool_name) is None:
+            # Approved and never carried out would read "approved" on the ledger with nothing paid (N-230).
+            raise ToolOff(TOOL_OFF_TEXT.format(name=approval.tool_name))
         # Claim the approval with a conditional UPDATE: when two reviewers decide at the
         # same time, exactly one of them moves it out of "pending" and runs the tool.
         claimed = self.db.execute(
@@ -461,7 +494,8 @@ class AgentRuntime:
                 tool = self._tools(ctx).get(call.name)
                 outcome = ToolOutcome("result", rejected_result(call.name, comment, tool.label if tool else ""))
                 state["acted"] = True  # the customer must hear "rejected", not a quoted refund policy
-                ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
+                ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False),
+                                 **_order_meta(call.arguments))
             messages.append(self._tool_message(call, outcome))
             events.append({"type": "tool_result", "id": call.id, "name": call.name, "output": outcome.output,
                            "is_error": outcome.is_error})
@@ -654,15 +688,18 @@ class AgentRuntime:
     def _mark_repeats(tracer: Tracer, state: dict[str, Any], calls: list[ToolCall], tools: ToolRegistry) -> None:
         """Calls in one step with the same tool and arguments run once (parallel tool calls often
         repeat), and so does a write that already took effect earlier in the run: a model that files
-        the refund again after the approval came back would be told "退款中" (N-201). The rest get a
-        pointer to the first, kept in the run state so a resume after an approval still skips them."""
+        the refund again after the approval came back would be told "退款中" (N-201). Writes compare on
+        the tool's ``repeat_on`` fields in the step too: two refunds of one order in one step are one
+        refund, whatever their amounts say. The rest get a pointer to the first, kept in the run state
+        so a resume after an approval still skips them."""
         written: dict[str, int] = state.get("written") or {}
         first: dict[str, str] = {}
         repeats: dict[str, str | int] = {}
         for c in calls:
-            key = _call_key(c.name, c.arguments)
             tool = tools.get(c.name)
-            done = written.get(_call_key(c.name, c.arguments, tool.repeat_on)) if tool and tool.risk != "read" else None
+            write = tool is not None and tool.risk != "read"
+            key = _call_key(c.name, c.arguments, tool.repeat_on if write else None)
+            done = written.get(_call_key(c.name, c.arguments, tool.repeat_on)) if write else None
             if done is not None:  # pointed at by step: some providers number calls per step, ids come back
                 repeats[c.id] = done
             elif key in first and first[key] != c.id:
@@ -785,7 +822,8 @@ class AgentRuntime:
                 span.set(retrieval=debug)
             span.set(output=outcome.output)
         if call.name != "search_knowledge" or outcome.is_error:
-            ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False))
+            ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False),
+                             **_order_meta(call.arguments))
         return outcome
 
     def _tools(self, ctx: ToolContext) -> ToolRegistry:
@@ -1167,6 +1205,16 @@ class AgentRuntime:
             tools=toolset_for(self.db, tenant, self.registry), commerce=self.commerce,
             sandboxed=getattr(self.commerce, "sandboxed", False),
         )
+
+    def _said(self, conversation: Conversation, text: str) -> Iterator[dict[str, Any]]:
+        """A fixed reply, kept in the conversation; no run, no model call."""
+        message = Message(tenant_id=conversation.tenant_id, conversation_id=conversation.id, role="assistant",
+                          content=text, meta={"status": "completed"})
+        self.db.add(message)
+        self.db.commit()
+        yield {"type": "final", "run_id": None, "message_id": message.id, "text": text, "status": "completed",
+               "meta": message.meta}
+        yield {"type": "done", "run_id": None, "status": "completed", "latency_ms": 0}
 
     def _forward_to_human(self, conversation: Conversation) -> Iterator[dict[str, Any]]:
         """A person owns this conversation: keep the message for them and tell the customer
