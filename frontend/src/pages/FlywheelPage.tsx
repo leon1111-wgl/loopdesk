@@ -98,9 +98,9 @@ function Sparkline({ values }: { values: { pass_rate: number; total: number }[] 
   const points = values.map((v, i) => `${(i / (values.length - 1)) * w},${h - v.pass_rate * (h - 8) - 4}`).join(" ");
   return (
     <svg width={w} height={h} role="img" aria-label="评测通过率趋势">
-      <polyline points={points} fill="none" stroke="var(--primary)" strokeWidth={2} />
+      <polyline points={points} fill="none" stroke="var(--chart-1)" strokeWidth={2} />
       {values.map((v, i) => (
-        <circle key={i} cx={(i / (values.length - 1)) * w} cy={h - v.pass_rate * (h - 8) - 4} r={3} fill="var(--primary)">
+        <circle key={i} cx={(i / (values.length - 1)) * w} cy={h - v.pass_rate * (h - 8) - 4} r={3} fill="var(--chart-1)">
           <title>{`${pct(v.pass_rate)}（${v.total} 条用例）`}</title>
         </circle>
       ))}

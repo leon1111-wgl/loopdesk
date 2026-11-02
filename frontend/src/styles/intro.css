@@ -1,36 +1,45 @@
-/* Public intro page (docs/DESIGN.md "Intro"): floating top bar with a sliding pill nav, a headline with
-   a highlight block, an example run, the five-step stepper and the demo accounts. */
+/* Public intro page (docs/DESIGN.md "Intro"): a floating bar with the queue-tab nav, a headline set as
+   an evidenced phrase, an example run, the five-step stepper and the demo accounts. */
 
 .intro-page { position: relative; min-height: 100%; overflow-x: clip; background: var(--bg); }
 .intro-page::before {
   content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
-  background:
-    radial-gradient(ellipse 45% 40% at 80% 12%, rgb(30 107 255 / 18%), transparent 70%),
-    radial-gradient(ellipse 35% 35% at 96% 55%, rgb(192 132 252 / 12%), transparent 70%),
-    radial-gradient(ellipse 30% 30% at 10% 8%, rgb(45 212 191 / 8%), transparent 70%),
-    linear-gradient(90deg, color-mix(in srgb, var(--text) 4%, transparent) 1px, transparent 1px) 0 0 / 64px 64px,
-    linear-gradient(color-mix(in srgb, var(--text) 4%, transparent) 1px, transparent 1px) 0 0 / 64px 64px;
-  -webkit-mask-image: linear-gradient(#000 0, #000 640px, transparent 1000px); mask-image: linear-gradient(#000 0, #000 640px, transparent 1000px);
+  /* A quiet dotted desk mat; no glows. */
+  background: radial-gradient(color-mix(in srgb, var(--text) 11%, transparent) 1px, transparent 1.5px) 0 0 / 22px 22px;
+  -webkit-mask-image: linear-gradient(#000 0, #000 520px, transparent 900px); mask-image: linear-gradient(#000 0, #000 520px, transparent 900px);
 }
 .intro-page > * { position: relative; z-index: 1; }
 .intro-bar {
   position: fixed; z-index: 60; top: 12px; left: 16px; right: 16px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
-  height: 56px; padding: 0 10px 0 16px; border-radius: 16px; border: 1px solid var(--line-strong);
-  background: color-mix(in srgb, var(--surface) 84%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  height: 56px; padding: 0 10px 0 16px; border-radius: 14px; border: 1px solid var(--line-strong);
+  background: var(--surface); box-shadow: 0 10px 30px -18px rgb(0 0 0 / 45%);
 }
 .intro-bar .brand { color: var(--text); }
-.pill-nav { position: relative; display: flex; gap: 2px; padding: 4px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); }
-.pill-nav .slider { position: absolute; top: 4px; bottom: 4px; left: 0; border-radius: 999px; background: var(--primary-solid); transition: transform 320ms cubic-bezier(.3,.7,.2,1), width 320ms cubic-bezier(.3,.7,.2,1); }
-.pill-nav button { position: relative; z-index: 1; height: 30px; padding: 0 14px; border: none; border-radius: 999px; background: none; font-size: 13px; color: var(--text-2); cursor: pointer; transition: color 200ms; }
-.pill-nav button[aria-current="true"] { color: #fff; }
+/* Queue tabs: the section in view carries the on-duty dot and an underline in the brand colour. */
+.desk-nav { display: flex; align-self: stretch; gap: 4px; }
+.desk-nav button {
+  position: relative; display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; border: none; background: none;
+  font-size: 13px; color: var(--text-3); cursor: pointer; transition: color 150ms;
+}
+.desk-nav button::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: transparent; box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--text-3) 60%, transparent); }
+.desk-nav button:hover { color: var(--text); }
+.desk-nav button[aria-current="true"] { color: var(--text); font-weight: 600; }
+.desk-nav button[aria-current="true"]::before { background: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent); }
+.desk-nav button[aria-current="true"]::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--primary); }
 .intro-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 
 .hero { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 48px; align-items: center; max-width: 1240px; margin: 0 auto; padding: 140px 40px 64px; }
 .intro-eyebrow { display: block; margin-bottom: 12px; font-size: 12px; font-weight: 600; letter-spacing: 1px; color: var(--primary); }
 .hero h1 { font-size: clamp(38px, 5vw, 66px); line-height: 1.15; font-weight: 800; letter-spacing: 1px; }
+/* An evidenced phrase: a flat highlighter band under the words and a citation chip, as in an answer. */
 .hero h1 .hl {
-  display: inline-block; white-space: nowrap; margin-top: 10px; padding: 2px 18px 8px; border-radius: 16px; color: #fff;
-  background: var(--highlight); box-shadow: 0 18px 50px -18px rgb(109 93 252 / 55%);
+  display: inline; color: var(--primary); padding: 0 4px; -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  background: linear-gradient(transparent 58%, var(--highlight) 58%, var(--highlight) 92%, transparent 92%);
+}
+.hl-cite {
+  display: inline-grid; place-items: center; min-width: 1.45em; height: 1.45em; margin-left: 4px; padding: 0 0.3em; border-radius: 0.25em;
+  font: 700 0.28em/1 var(--num); vertical-align: 1.6em; color: var(--primary); background: var(--primary-soft);
+  border: 1px solid var(--primary-line);
 }
 .hero .lead { margin-top: 24px; max-width: 560px; font-size: 16px; line-height: 1.85; color: var(--text-2); }
 .hero .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
@@ -40,7 +49,7 @@
 .chips span { display: inline-flex; align-items: center; gap: 7px; }
 .chips svg { color: var(--acc-knowledge); }
 
-.live { overflow: hidden; box-shadow: 0 30px 80px -30px rgb(30 107 255 / 35%); }
+.live { overflow: hidden; border-top: 2px solid var(--acc-service); }
 .live-rows { list-style: none; margin: 0; padding: 0; }
 .live-row { display: grid; grid-template-columns: 24px 36px minmax(0, 1fr); gap: 12px; align-items: center; padding: 11px 18px; border-bottom: 1px solid var(--border); transition: background 150ms; }
 .live-row:hover { background: var(--surface-2); }
@@ -101,17 +110,14 @@
 .intro-foot { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; max-width: 1160px; margin: 72px auto 0; padding: 24px 40px 40px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-3); }
 .intro-foot a { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); }
 
-@media (prefers-reduced-motion: reduce) {
-  .pill-nav .slider { transition: none; }
-}
 @media (max-width: 1080px) {
   .hero { grid-template-columns: minmax(0, 1fr); padding-top: 120px; }
   .intro-bar { grid-template-columns: auto 1fr auto; }
-  .intro-bar .pill-nav { justify-self: center; }
+  .intro-bar .desk-nav { justify-self: center; }
   .intro-bar .brand-sub { display: none; }
 }
 @media (max-width: 860px) {
-  .intro-bar .pill-nav { display: none; }
+  .intro-bar .desk-nav { display: none; }
   .intro-bar { grid-template-columns: 1fr auto; }
   .how-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .intro-sections { grid-template-columns: minmax(0, 1fr); }
@@ -120,10 +126,10 @@
   .intro-stats div:nth-child(n+3) { border-top: 1px solid var(--border); }
 }
 @media (max-width: 780px) {
-  .intro-bar { left: 8px; right: 8px; top: 8px; padding: 0 8px 0 12px; backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--surface); }
+  .intro-bar { left: 8px; right: 8px; top: 8px; padding: 0 8px 0 12px; }
   .intro-bar .brand-name { display: inline; }
   .hero { padding: 96px 16px 40px; gap: 28px; }
-  .hero h1 .hl { padding: 0 12px 6px; border-radius: 12px; white-space: normal; }
+  .hero h1 .hl { padding: 0 2px; }
   .intro-section { padding: 56px 16px 0; }
   .intro-section > header { flex-direction: column; align-items: flex-start; gap: 8px; }
   .intro-section h2 { font-size: 24px; }

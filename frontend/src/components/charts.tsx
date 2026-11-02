@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 
 // Lightweight SVG charts for the dashboard (no chart library). Series colours come from the
 // --chart-* tokens, validated as a pair for colour-vision deficiency in both themes.
@@ -24,6 +24,10 @@ const niceMax = (v: number) => {
   return Math.ceil(v / step) * step;
 };
 
+/** The second series is hatched as well as coloured, so it does not depend on hue alone. */
+const swatch = (color: string, k: number) =>
+  k === 1 ? { background: `repeating-linear-gradient(135deg, ${color} 0 2px, color-mix(in srgb, ${color} 45%, transparent) 2px 4px)` } : { background: color };
+
 export interface Series {
   key: string;
   label: string;
@@ -41,6 +45,7 @@ export function ColumnChart({ rows, series, label, height = 220 }: {
   const [box, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
   const [table, setTable] = useState(false);
+  const hatchId = `hatch${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   const max = niceMax(Math.max(1, ...rows.flatMap((r) => series.map((s) => r.values[s.key] ?? 0))));
   const pad = { top: 16, right: 8, bottom: 28, left: 32 };
   const plotW = Math.max(0, width - pad.left - pad.right);
@@ -54,7 +59,7 @@ export function ColumnChart({ rows, series, label, height = 220 }: {
     <div className="column-chart">
       <div className="chart-toolbar">
         <div className="chart-legend" aria-hidden="true">
-          {series.map((s) => <span key={s.key}><i style={{ background: s.color }} />{s.label}</span>)}
+          {series.map((s, k) => <span key={s.key}><i style={swatch(s.color, k)} />{s.label}</span>)}
         </div>
         <button type="button" className="btn btn-text btn-sm" aria-pressed={table} onClick={() => setTable((v) => !v)}>
           {table ? "查看图表" : "查看数据表"}
@@ -76,6 +81,14 @@ export function ColumnChart({ rows, series, label, height = 220 }: {
         <div ref={box} className="trend-chart" style={{ height }} onMouseLeave={() => setHover(null)}>
           {width > 0 && (
             <svg width={width} height={height} role="img" aria-label={`${label}：${rows.map((r) => r.title).join("；")}`}>
+              {series[1] && (
+                <defs>
+                  <pattern id={hatchId} width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                    <rect width="4" height="4" fill={series[1].color} opacity="0.45" />
+                    <rect width="2" height="4" fill={series[1].color} />
+                  </pattern>
+                </defs>
+              )}
               {ticks.map((t) => (
                 <g key={t}>
                   <line x1={pad.left} x2={width - pad.right} y1={y(t)} y2={y(t)} stroke="var(--chart-grid)" strokeWidth={1} />
@@ -95,7 +108,7 @@ export function ColumnChart({ rows, series, label, height = 220 }: {
                       // Rounded data end, square at the baseline.
                       const rr = Math.min(4, h, barW / 2);
                       return h > 0 ? (
-                        <path key={s.key} fill={s.color}
+                        <path key={s.key} fill={k === 1 ? `url(#${hatchId})` : s.color}
                           d={`M${x},${pad.top + plotH} V${top + rr} Q${x},${top} ${x + rr},${top} H${x + barW - rr} Q${x + barW},${top} ${x + barW},${top + rr} V${pad.top + plotH} Z`} />
                       ) : null;
                     })}
@@ -118,7 +131,7 @@ export function ColumnChart({ rows, series, label, height = 220 }: {
               style={{ left: Math.min(Math.max(pad.left + hover * slot + slot / 2, 80), width - 80), top: 4 }}>
               <b>{rows[hover].label}</b>
               {series.map((s) => (
-                <div key={s.key} className="row"><i style={{ background: s.color }} />{s.label}<span className="spacer" /><b>{rows[hover].values[s.key] ?? 0}</b></div>
+                <div key={s.key} className="row"><i style={swatch(s.color, series.indexOf(s))} />{s.label}<span className="spacer" /><b>{rows[hover].values[s.key] ?? 0}</b></div>
               ))}
             </div>
           )}

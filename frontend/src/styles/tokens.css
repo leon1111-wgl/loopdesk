@@ -1,60 +1,61 @@
-/* Design tokens (docs/DESIGN.md). The default theme is the blue-black workspace below
-   (:root[data-theme="dark"], also used when nothing is chosen); the light theme keeps Semi Design's
-   palette. Every text and fill colour is tuned to WCAG AA (>= 4.5:1) on the surface it sits on, in
+/* Design tokens (docs/DESIGN.md). LoopDesk's own tone: service-desk magenta (the on-call light) and
+   evidence lime on aubergine charcoal (the "after-hours desk", the default dark theme) or a cool
+   lilac-grey "day desk" (light). Control sizes and radii follow Semi Design's system. Every text and fill colour is tuned to WCAG AA (>= 4.5:1) on the surface it sits on, in
    both themes: run `pnpm contrast` after changing a value. */
 
 :root {
-  --bg: #f5f6f7;
+  --bg: #f6f4f7;
   --surface: #ffffff;
-  --surface-2: #f7f8fa;
-  --hover: #f3f4f6;
-  --pressed: #e9ebee;
-  --border: #e4e6e9;
-  --border-2: #eef0f2;
-  --text: #1c1f23;
-  --text-2: #494c4f;
-  --text-3: #6b7075;
-  --disabled: #b8bcc1;
+  --surface-2: #faf8fb;
+  --hover: #f3f0f5;
+  --pressed: #ebe6ee;
+  --border: #e7e1ea;
+  --border-2: #f0ecf2;
+  --text: #1f1923;
+  --text-2: #4d4552;
+  --text-3: #6b6271;
+  --disabled: #bcb4c1;
 
-  --primary: #0064fa;
-  --primary-hover: #0062d6;
-  --primary-soft: #eaf5ff;
-  --primary-line: #cbe7fe;
+  --primary: #a8287a;
+  --primary-hover: #8c1f65;
+  --primary-soft: #fbeef6;
+  --primary-line: #f1c9e2;
   /* Fills that carry white text (buttons, counters); in dark mode they differ from --primary,
      which must stay light enough to read on dark surfaces. */
-  --primary-solid: #0064fa;
-  --primary-solid-hover: #0057d9;
+  --primary-solid: #a8287a;
+  --primary-solid-hover: #8c1f65;
 
-  --success: #237a2e;
-  --success-soft: #ecf7ec;
-  --success-solid: #237a2e;
-  --warning: #a65200;
-  --warning-soft: #fff8ea;
-  --warning-solid: #a65200;
-  --warning-mark: #fc8800; /* dots and bars only, never text */
-  --danger: #d52515;
-  --danger-soft: #fef2ed;
-  --danger-solid: #d52515;
-  --info: #6a3ac7;
-  --info-soft: #f3eefc;
+  --success: #23763f;
+  --success-soft: #eaf6ee;
+  --success-solid: #23763f;
+  --warning: #8a5a12;
+  --warning-soft: #fbf3e3;
+  --warning-solid: #8a5a12;
+  --warning-mark: #d99a2b; /* dots and bars only, never text */
+  --danger: #c4302b;
+  --danger-soft: #fdeeed;
+  --danger-solid: #c4302b;
+  --info: #4b5a85;
+  --info-soft: #eef1f7;
 
   /* Chart series, validated as a pair (CVD and normal-vision separation, 3:1 on the surface). */
-  --chart-1: #0064fa;
-  --chart-2: #0a8f9e;
-  --chart-grid: #eef0f2;
+  --chart-1: #a8287a;
+  --chart-2: #4f7a12;
+  --chart-grid: #f0ecf2;
   --nav-bg: #ffffff;
   --overlay: rgba(22, 22, 26, 0.45);
   --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--primary);
   --shadow-float: 0 0 1px rgba(0, 0, 0, 0.3), 0 4px 14px rgba(0, 0, 0, 0.1);
 
   /* Section accents: each part of the console has its own colour (nav, page header, KPI rule). */
-  --acc-service: #0064fa;
-  --acc-knowledge: #0f766e;
-  --acc-ops: #a65200;
+  --acc-service: #a8287a;
+  --acc-knowledge: #4f7a12;
+  --acc-ops: #8a5a12;
   --accent: var(--acc-service);
-  --accent-soft: #eaf5ff;
-  --highlight: linear-gradient(100deg, #1e6bff, #6d5dfc 55%, #8b5cf6);
-  --line-strong: #d4d8dd;
+  --accent-soft: #fbeef6;
+  /* The highlighter band behind an evidenced phrase (intro headline): flat, no gradient. */
+  --highlight: rgb(168 40 122 / 16%);
+  --line-strong: #d6cfdb;
 
   --radius-sm: 4px;
   --radius: 12px;
@@ -76,90 +77,92 @@
 
 @media (prefers-color-scheme: dark) {
   :root[data-theme="system"] {
-    --bg: #0b0d12;
-    --surface: #12151c;
-    --surface-2: #181c25;
-    --hover: #1d222c;
-    --pressed: #222733;
-    --border: #20242e;
-    --border-2: #1a1e27;
-    --line-strong: #303644;
-    --text: #eceef2;
-    --text-2: #b9bfca;
-    --text-3: #8d95a3;
-    --disabled: #4e5562;
-    --primary: #4c9bff;
-    --primary-hover: #7ab4ff;
-    --primary-soft: #142441;
-    --primary-line: #1f3a6b;
-    --primary-solid: #1e6bff;
-    --primary-solid-hover: #1757d6;
-    --success: #34d399;
-    --success-soft: #0f2a22;
-    --success-solid: #0f7a55;
-    --warning: #f5b83d;
-    --warning-soft: #2e2412;
-    --warning-solid: #a65200;
-    --warning-mark: #f5b83d;
-    --danger: #fb7185;
-    --danger-soft: #331a21;
-    --danger-solid: #d42e45;
-    --info: #a78bfa;
-    --info-soft: #221d3a;
-    --acc-service: #4c9bff;
-    --acc-knowledge: #2dd4bf;
-    --acc-ops: #f5b83d;
-    --accent-soft: #142441;
-    --chart-1: #4c9bff;
-    --chart-2: #2dd4bf;
-    --chart-grid: #20242e;
-    --nav-bg: #0b0d12;
+    --bg: #131016;
+    --surface: #1a161e;
+    --surface-2: #211c26;
+    --hover: #261f2b;
+    --pressed: #2e2634;
+    --border: #2a2330;
+    --border-2: #221c27;
+    --line-strong: #3c3343;
+    --text: #f2edf4;
+    --text-2: #c9c0ce;
+    --text-3: #9f95a6;
+    --disabled: #5a5160;
+    --primary: #f27ac8;
+    --primary-hover: #f8a3d9;
+    --primary-soft: #33192b;
+    --primary-line: #5a2a4a;
+    --primary-solid: #b8237f;
+    --primary-solid-hover: #9e1b6c;
+    --success: #6fd08c;
+    --success-soft: #16291d;
+    --success-solid: #23763f;
+    --warning: #e8c27a;
+    --warning-soft: #2e2516;
+    --warning-solid: #8a5a12;
+    --warning-mark: #e8c27a;
+    --danger: #ff7a8f;
+    --danger-soft: #3a1d22;
+    --danger-solid: #c4302b;
+    --info: #9fb0d8;
+    --info-soft: #22232d;
+    --acc-service: #f27ac8;
+    --acc-knowledge: #a8d65a;
+    --acc-ops: #e8c27a;
+    --accent-soft: #33192b;
+    --chart-1: #d65aa8;
+    --chart-2: #6f9e22;
+    --chart-grid: #2a2330;
+    --nav-bg: #131016;
+    --highlight: rgb(242 122 200 / 26%);
     --overlay: rgba(0, 0, 0, 0.62);
-    --shadow-float: 0 0 0 1px #303644, 0 18px 40px -12px rgba(0, 0, 0, 0.7);
+    --shadow-float: 0 0 0 1px #3c3343, 0 18px 40px -12px rgba(0, 0, 0, 0.7);
     color-scheme: dark;
 }
 }
 
 :root[data-theme="dark"] {
-  --bg: #0b0d12;
-  --surface: #12151c;
-  --surface-2: #181c25;
-  --hover: #1d222c;
-  --pressed: #222733;
-  --border: #20242e;
-  --border-2: #1a1e27;
-  --line-strong: #303644;
-  --text: #eceef2;
-  --text-2: #b9bfca;
-  --text-3: #8d95a3;
-  --disabled: #4e5562;
-  --primary: #4c9bff;
-  --primary-hover: #7ab4ff;
-  --primary-soft: #142441;
-  --primary-line: #1f3a6b;
-  --primary-solid: #1e6bff;
-  --primary-solid-hover: #1757d6;
-  --success: #34d399;
-  --success-soft: #0f2a22;
-  --success-solid: #0f7a55;
-  --warning: #f5b83d;
-  --warning-soft: #2e2412;
-  --warning-solid: #a65200;
-  --warning-mark: #f5b83d;
-  --danger: #fb7185;
-  --danger-soft: #331a21;
-  --danger-solid: #d42e45;
-  --info: #a78bfa;
-  --info-soft: #221d3a;
-  --acc-service: #4c9bff;
-  --acc-knowledge: #2dd4bf;
-  --acc-ops: #f5b83d;
-  --accent-soft: #142441;
-  --chart-1: #4c9bff;
-  --chart-2: #2dd4bf;
-  --chart-grid: #20242e;
-  --nav-bg: #0b0d12;
+  --bg: #131016;
+  --surface: #1a161e;
+  --surface-2: #211c26;
+  --hover: #261f2b;
+  --pressed: #2e2634;
+  --border: #2a2330;
+  --border-2: #221c27;
+  --line-strong: #3c3343;
+  --text: #f2edf4;
+  --text-2: #c9c0ce;
+  --text-3: #9f95a6;
+  --disabled: #5a5160;
+  --primary: #f27ac8;
+  --primary-hover: #f8a3d9;
+  --primary-soft: #33192b;
+  --primary-line: #5a2a4a;
+  --primary-solid: #b8237f;
+  --primary-solid-hover: #9e1b6c;
+  --success: #6fd08c;
+  --success-soft: #16291d;
+  --success-solid: #23763f;
+  --warning: #e8c27a;
+  --warning-soft: #2e2516;
+  --warning-solid: #8a5a12;
+  --warning-mark: #e8c27a;
+  --danger: #ff7a8f;
+  --danger-soft: #3a1d22;
+  --danger-solid: #c4302b;
+  --info: #9fb0d8;
+  --info-soft: #22232d;
+  --acc-service: #f27ac8;
+  --acc-knowledge: #a8d65a;
+  --acc-ops: #e8c27a;
+  --accent-soft: #33192b;
+  --chart-1: #d65aa8;
+  --chart-2: #6f9e22;
+  --chart-grid: #2a2330;
+  --nav-bg: #131016;
+  --highlight: rgb(242 122 200 / 26%);
   --overlay: rgba(0, 0, 0, 0.62);
-  --shadow-float: 0 0 0 1px #303644, 0 18px 40px -12px rgba(0, 0, 0, 0.7);
+  --shadow-float: 0 0 0 1px #3c3343, 0 18px 40px -12px rgba(0, 0, 0, 0.7);
   color-scheme: dark;
 }

@@ -39,7 +39,8 @@
 .bar-list-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
 .bar-list-value { font-weight: 600; white-space: nowrap; }
 .bar-list .bar-track { height: 8px; border-radius: 4px; margin-top: 6px; }
-.bar-list .bar-fill { background: var(--chart-1); border-radius: 4px; }
+.bar-list .bar-fill { background: color-mix(in srgb, var(--text-3) 55%, transparent); border-radius: 4px; }
+.bar-list li:first-child .bar-fill { background: var(--chart-1); }
 
 @media (max-width: 1180px) {
   .dashboard-charts { grid-template-columns: repeat(2, minmax(0, 1fr)); }

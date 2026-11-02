@@ -356,7 +356,7 @@ export function showIntroAgain() {
 type Theme = "system" | "light" | "dark";
 const THEME_KEY = "loopdesk.theme";
 
-// The blue-black workspace is the default; "system" follows the operating system.
+// The dark "after-hours desk" theme is the default; "system" follows the operating system.
 function applyTheme(theme: Theme) {
   document.documentElement.setAttribute("data-theme", theme);
 }

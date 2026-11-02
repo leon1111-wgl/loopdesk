@@ -2,8 +2,10 @@
 
 The console follows the design language of Chinese e-commerce back offices: merchant consoles, their
 customer-service workbenches and ad-platform consoles built on Semi Design and Arco Design (both MIT).
-Since 2026-11-01 it also follows the owner's "rain-or-shine" app style: an intro page with a floating
-bar, a dark blue-black workspace, section tabs with their own accent colours and a phone tab bar.
+Since 2026-11-01 it has an intro page with a floating bar, a dark workspace, section tabs with their
+own accent colours and a phone tab bar. Since 2026-11-02 it has its own tone, distinct from the
+owner's other projects (see the identity below): service-desk magenta and evidence lime on aubergine
+charcoal, with treatments taken from a support desk rather than shared components.
 We borrow layout patterns and the token system only. No third-party logos, product names, trademarks
 or images appear in the UI; the product is LoopDesk and every tenant, person and order is synthetic.
 
@@ -33,11 +35,13 @@ focus trap, Tabs, Tag, PageHeader, Dropdown). No new runtime dependency.
 
 ## Intro page
 
-`/` for a visitor who is not signed in (`src/pages/IntroPage.tsx`, `src/styles/intro.css`):
-a floating rounded bar (brand, a centred pill nav whose active pill slides to the section in view,
-中文 / EN, the primary 进入控制台), a headline whose second line sits in a highlight block
-(`--highlight`, blue to violet), the two calls to action, a 下次直接进入 checkbox (remembered; the
-sign-in page then opens directly) and trust chips. Then an example run (one refund, six steps, marked
+`/` for every visitor unless 下次直接进入 was chosen (`src/pages/IntroPage.tsx`,
+`src/styles/intro.css`): a floating solid bar (brand, centred **queue tabs** where the section in view
+carries the on-duty status dot and an underline, 中文 / EN, the primary 进入控制台) on a quiet dotted
+"desk mat" (no glows), a headline whose second line is set like an **evidenced phrase in an answer**:
+in the brand colour, on a flat highlighter band (`--highlight`), with a citation chip `1`. Then the
+two calls to action, the 下次直接进入 checkbox and trust chips; a signed-in visitor also sees which
+demo account is signed in, with 进入控制台 / 切换账号 / 退出登录. Then an example run (one refund, six steps, marked
 示例 · 虚构数据), four structural numbers (tenants, roles, tools, e2e walkthroughs; no model metrics),
 运作方式 as a five-step stepper with clickable steps and a play / pause button (3.8 s per step, off
 under reduced motion), the three console areas, the demo accounts themselves (进入控制台 scrolls
@@ -52,9 +56,9 @@ there), and a short FAQ. Only the intro has an English version; the console is C
   not see 操作审计), then the **tenant switcher** (current workspace and its industry; in demo mode
   it signs in with the same role in another demo tenant), environment tag (演示环境 · 数据均为虚构),
   source link, theme toggle (dark, light, system; dark is the default) and the **user menu**.
-- **Section accents**: service blue `--acc-service`, knowledge teal `--acc-knowledge`, ops amber
+- **Section accents**: service magenta `--acc-service`, knowledge lime `--acc-knowledge`, ops sand
   `--acc-ops`. The shell sets `--accent` from the section; the active tab underline, the active page
-  tab, the breadcrumb's last item and the first KPI rule use it. Buttons keep the brand blue.
+  tab, the breadcrumb's last item and the first KPI rule use it. Buttons keep the brand magenta.
 - **Page tabs**: pill tabs with icons; queue counts as red pills. A section tab shows the total of its
   pages' counts when another section is open.
 - **Phones (≤ 780 px)**: the section tabs become a fixed bottom tab bar; the page tabs scroll
@@ -71,15 +75,16 @@ Text and fills meet WCAG AA (4.5:1) against the surfaces they sit on, in both th
 
 | token | dark (default) | light | use |
 |---|---|---|---|
-| `--bg` | `#0B0D12` | `#F5F6F7` | page |
-| `--surface` / `--surface-2` / `--pressed` | `#12151C` / `#181C25` / `#222733` | `#FFFFFF` / `#F7F8FA` / `#E9EBEE` | panels, fills |
-| `--border` / `--line-strong` | `#20242E` / `#303644` | `#E4E6E9` / `#D4D8DD` | hairlines / controls |
-| `--text` / `--text-2` / `--text-3` | `#ECEEF2` / `#B9BFCA` / `#8D95A3` | `#1C1F23` / `#494C4F` / `#6B7075` | 3 text levels |
-| `--primary` / `--primary-solid` | `#4C9BFF` / `#1E6BFF` | `#0064FA` / `#0064FA` | links / fills behind white text |
-| `--acc-service` / `--acc-knowledge` / `--acc-ops` | `#4C9BFF` / `#2DD4BF` / `#F5B83D` | `#0064FA` / `#0F766E` / `#A65200` | section accents |
-| `--success` / `--warning` / `--danger` | `#34D399` / `#F5B83D` / `#FB7185` | `#237A2E` / `#A65200` / `#D52515` | states |
-| `--info` | `#A78BFA` | `#6A3AC7` | a person (handoff, agent) |
-| `--highlight` | `#1E6BFF → #6D5DFC → #C084FC` | same | the intro headline block only |
+| `--bg` | `#131016` aubergine charcoal | `#F6F4F7` lilac-grey | page |
+| `--surface` / `--surface-2` / `--pressed` | `#1A161E` / `#211C26` / `#2E2634` | `#FFFFFF` / `#FAF8FB` / `#EBE6EE` | panels, fills |
+| `--border` / `--line-strong` | `#2A2330` / `#3C3343` | `#E7E1EA` / `#D6CFDB` | hairlines / controls |
+| `--text` / `--text-2` / `--text-3` | `#F2EDF4` / `#C9C0CE` / `#9F95A6` | `#1F1923` / `#4D4552` / `#6B6271` | 3 text levels |
+| `--primary` / `--primary-solid` | `#F27AC8` / `#B8237F` | `#A8287A` / `#A8287A` | service-desk magenta: links / fills behind white text |
+| `--acc-service` / `--acc-knowledge` / `--acc-ops` | `#F27AC8` / `#A8D65A` / `#E8C27A` | `#A8287A` / `#4F7A12` / `#8A5A12` | section accents: magenta, evidence lime, sand |
+| `--success` / `--warning` / `--danger` | `#6FD08C` / `#E8C27A` / `#FF7A8F` | `#23763F` / `#8A5A12` / `#C4302B` | states |
+| `--info` | `#9FB0D8` | `#4B5A85` | a person (handoff, agent): cool steel, neutral |
+| `--chart-1` / `--chart-2` | `#D65AA8` / `#6F9E22` | `#A8287A` / `#4F7A12` | chart series (CVD-validated pair; series 2 also hatched); distribution bars are neutral except the top row |
+| `--highlight` | magenta at 26% | magenta at 16% | the highlighter band behind the intro's evidenced phrase |
 
 Each semantic colour has `-soft` (tag and banner fill) and `-solid` (white-text fill) variants.
 Shadows only on floating layers (menus, dialogs, drawers); everything else is 1 px hairlines.

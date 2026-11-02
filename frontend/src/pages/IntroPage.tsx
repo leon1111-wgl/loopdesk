@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Activity, ArrowRight, BookOpen, BookOpenCheck, ClipboardCheck, Github, Headset, MessageSquareText, Pause, Play, RefreshCcw,
@@ -151,15 +151,9 @@ function store(key: string, value: string | null) {
 const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const go = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: reduced() ? "auto" : "smooth", block: "start" });
 
-/** The centred segmented nav with a sliding active pill; the active item follows the scroll position. */
-function PillNav({ items, label }: { items: readonly (readonly [string, string])[]; label: string }) {
+/** The section nav, styled as the desk's queue tabs: the section in view carries the on-duty dot. */
+function DeskNav({ items, label }: { items: readonly (readonly [string, string])[]; label: string }) {
   const [active, setActive] = useState(items[0][0]);
-  const nav = useRef<HTMLElement>(null);
-  const [slider, setSlider] = useState({ left: 0, width: 0 });
-  useLayoutEffect(() => {
-    const button = nav.current?.querySelector<HTMLButtonElement>(`[data-target="${active}"]`);
-    if (button) setSlider({ left: button.offsetLeft, width: button.offsetWidth });
-  }, [active, items]);
   useEffect(() => {
     const onScroll = () => {
       let current = items[0][0];
@@ -173,10 +167,9 @@ function PillNav({ items, label }: { items: readonly (readonly [string, string])
     return () => window.removeEventListener("scroll", onScroll);
   }, [items]);
   return (
-    <nav ref={nav} className="pill-nav" aria-label={label}>
-      <span className="slider" aria-hidden="true" style={{ width: slider.width, transform: `translateX(${slider.left}px)` }} />
+    <nav className="desk-nav" aria-label={label}>
       {items.map(([id, text]) => (
-        <button key={id} type="button" data-target={id} aria-current={active === id ? "true" : undefined}
+        <button key={id} type="button" aria-current={active === id ? "true" : undefined}
           onClick={() => { setActive(id); go(id); }}>{text}</button>
       ))}
     </nav>
@@ -262,7 +255,7 @@ export default function IntroPage() {
         <a className="brand" href="#product" onClick={(e) => { e.preventDefault(); go("product"); }}>
           <Logo size={28} /><span className="brand-name">LoopDesk</span><small className="brand-sub">{t.sub}</small>
         </a>
-        <PillNav items={t.nav} label={lang === "en" ? "Page sections" : "页面导航"} />
+        <DeskNav items={t.nav} label={lang === "en" ? "Page sections" : "页面导航"} />
         <div className="intro-actions">
           <div className="segmented" role="group" aria-label="语言 / Language">
             <button type="button" className={lang === "zh" ? "active" : ""} aria-pressed={lang === "zh"} onClick={() => chooseLang("zh")}>中文</button>
@@ -275,7 +268,8 @@ export default function IntroPage() {
       <section className="hero" id="product">
         <div>
           <span className="intro-eyebrow">{t.eyebrow}</span>
-          <h1>{t.h1[0]}<br /><span className="hl">{t.h1[1]}</span></h1>
+          {/* The second line reads like an evidenced phrase in an answer: highlighted, with its citation. */}
+          <h1>{t.h1[0]}<br /><span className="hl">{t.h1[1]}</span><sup className="hl-cite" aria-hidden="true">1</sup></h1>
           <p className="lead">{t.lead}</p>
           <div className="cta">
             <button type="button" className="btn btn-primary btn-lg" onClick={enter}>{t.enter}<ArrowRight size={16} aria-hidden="true" /></button>
