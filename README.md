@@ -4,9 +4,11 @@
 
 **中文** · [English](README.en.md)
 
-**[打开在线演示 ↗](https://leon1111-wgl.github.io/loopdesk/)**（不用安装，选一个角色进入：顾客、坐席或管理员；回放真实模型或离线模型的录制，实际来源以页面标注为准）· [5 分钟用真实模型跑起来](#5-分钟用真实模型跑起来) · [案例：一位顾客的退款，从提问到钱退回去](docs/CASE_STUDY.md) · [架构](docs/ARCHITECTURE.md) · [评测](docs/EVALUATION.md) · [语音通道](#语音通道voice-agent)
+**[打开在线演示 ↗](https://leon1111-wgl.github.io/loopdesk/)**（不用安装，选一个角色进入：顾客、坐席或管理员；回放真实模型或离线模型的录制，实际来源以页面标注为准）· [代码](https://github.com/leon1111-wgl/loopdesk) · [5 分钟用真实模型跑起来](#5-分钟用真实模型跑起来) · [案例：一位顾客的退款，从提问到钱退回去](docs/CASE_STUDY.md) · [架构](docs/ARCHITECTURE.md) · [评测](docs/EVALUATION.md) · [语音通道](#语音通道voice-agent)
 
 **每一句回答都有出处，每一个高风险动作都要人复核，每一次人工纠错都会变成回归测试。**
+
+**关键词 / Keywords**：企业客服 Agent · RAG 知识库问答 · 工具调用（订单 / 物流 / 退款 / 工单）· 人工审批 human-in-the-loop · 逐句证据校验 · 数据飞轮 · 回归评测门禁 · 语音通道 Voice Agent · MCP · FastAPI + React
 
 LoopDesk 是一个面向企业客服场景的 Agent 平台：知识库问答（RAG）、订单 / 物流 / 退款 / 工单工具调用、人工审批、逐句证据校验、数据飞轮和回归评测，都放在同一个可观测的系统里。
 

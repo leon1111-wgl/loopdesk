@@ -4,9 +4,11 @@
 
 [![CI](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml)
 
-**[Open the live demo ↗](https://leon1111-wgl.github.io/loopdesk/)** (no install needed; pick a role to enter: customer, human agent or admin; replays a real-model or offline-model recording, as labelled on the page) · [Run it with a real model in 5 minutes](#run-it-with-a-real-model-in-5-minutes) · [Case study: one customer's refund, from question to money returned](docs/CASE_STUDY.md) (Chinese) · [Architecture](docs/ARCHITECTURE.md) (Chinese) · [Evaluation](docs/EVALUATION.md) (Chinese) · [Voice channel](#voice-channel-voice-agent)
+**[Open the live demo ↗](https://leon1111-wgl.github.io/loopdesk/)** (no install needed; pick a role to enter: customer, human agent or admin; replays a real-model or offline-model recording, as labelled on the page) · [Code](https://github.com/leon1111-wgl/loopdesk) · [Run it with a real model in 5 minutes](#run-it-with-a-real-model-in-5-minutes) · [Case study: one customer's refund, from question to money returned](docs/CASE_STUDY.md) (Chinese) · [Architecture](docs/ARCHITECTURE.md) (Chinese) · [Evaluation](docs/EVALUATION.md) (Chinese) · [Voice channel](#voice-channel-voice-agent)
 
 **Every sentence of an answer has a source. Every high-risk action is reviewed by a person. Every human correction becomes a regression test.**
+
+**Keywords**: customer-service AI agent · RAG knowledge-base Q&A · tool calling (orders / shipping / refunds / tickets) · human-in-the-loop approval · sentence-level evidence checks · data flywheel · regression eval gate · voice agent · MCP · FastAPI + React
 
 LoopDesk is an agent platform for enterprise customer service. Knowledge-base Q&A (RAG), tool calls for orders / shipping / refunds / tickets, human approval, sentence-by-sentence evidence checks, a data flywheel and regression evals all sit in one observable system.
 
