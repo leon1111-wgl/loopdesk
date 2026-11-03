@@ -28,6 +28,10 @@ __all__ = [
 ]
 
 
+# Imported with the module, not on the first tool call: a demo recording on GitHub Actions once failed that
+# first import mid-call ("工具执行异常" on the points lookup) and succeeded on the next one.
+from ..mockmerchant import SyntheticMerchants  # noqa: E402  (stdlib and httpx only: no cycle)
+
 class Commerce:
     """Which gateways serve which tenant. One per process: the HTTP clients (connection pools) are
     shared; the local gateways work in the caller's database session, so they are made per call.
@@ -56,8 +60,6 @@ class Commerce:
     @property
     def merchants(self):
         if self._merchants is None:
-            from ..mockmerchant import SyntheticMerchants
-
             self._merchants = SyntheticMerchants()
         return self._merchants
 
