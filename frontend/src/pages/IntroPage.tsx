@@ -269,7 +269,7 @@ export default function IntroPage() {
         <div>
           <span className="intro-eyebrow">{t.eyebrow}</span>
           {/* The second line reads like an evidenced phrase in an answer: highlighted, with its citation. */}
-          <h1>{t.h1[0]}<br /><span className="hl">{t.h1[1]}</span><sup className="hl-cite" aria-hidden="true">1</sup></h1>
+          <h1>{t.h1[0]}<br /><span className="hl">{t.h1[1]}</span>{"\u2060"}<sup className="hl-cite" aria-hidden="true">1</sup></h1>
           <p className="lead">{t.lead}</p>
           <div className="cta">
             <button type="button" className="btn btn-primary btn-lg" onClick={enter}>{t.enter}<ArrowRight size={16} aria-hidden="true" /></button>

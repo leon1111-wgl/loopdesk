@@ -9,7 +9,8 @@ const dark = { ...light, ...block(/:root\[data-theme="dark"\]\s*\{([^}]*)\}/) };
 
 // "rgb(r g b / a%)" composited over a hex background (the translucent highlighter band).
 const over = (rgba, bgHex) => {
-  const m = rgba.match(/rgb\((\d+) (\d+) (\d+) \/ (\d+)%\)/);
+  const m = rgba?.match(/rgb\((\d+) (\d+) (\d+) \/ (\d+)%\)/);
+  if (!m) throw new Error(`--highlight must be written as rgb(r g b / a%), got: ${rgba}`);
   const a = Number(m[4]) / 100;
   const bg = [1, 3, 5].map((i) => parseInt(bgHex.slice(i, i + 2), 16));
   return "#" + [1, 2, 3].map((i, k) => Math.round(Number(m[i]) * a + bg[k] * (1 - a)).toString(16).padStart(2, "0")).join("");
