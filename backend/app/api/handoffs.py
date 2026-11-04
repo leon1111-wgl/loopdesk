@@ -30,8 +30,9 @@ class ReplyIn(BaseModel):
     content: str = Field(min_length=1, max_length=2000)
 
 
-def handoff_out(db: Session, ticket: Ticket) -> dict:
+def handoff_out(db: Session, ticket: Ticket, viewer: User | None = None) -> dict:
     conversation = db.get(Conversation, ticket.conversation_id) if ticket.conversation_id else None
+    subject = db.get(User, ticket.subject_staff_id) if ticket.subject_staff_id else None
     customer = db.get(User, ticket.customer_id)
     last = db.execute(
         select(Message).where(Message.conversation_id == ticket.conversation_id, Message.role == "user")
@@ -44,6 +45,9 @@ def handoff_out(db: Session, ticket: Ticket) -> dict:
         "created_at": iso(ticket.created_at),
         "waiting_seconds": int((datetime.now(timezone.utc) - as_utc(ticket.created_at)).total_seconds()),
         "last_message": last.content[:120] if last else "",
+        # N-222: a complaint about a member of staff, and whether this viewer may act on it
+        "subject_staff": subject.name if subject else None,
+        "blocked": handoff.may_handle(db, ticket, viewer) if viewer is not None else None,
     }
 
 
@@ -75,7 +79,14 @@ def _active(db: Session, principal: Principal, ticket_id: int) -> tuple[Ticket, 
         raise HTTPException(status.HTTP_404_NOT_FOUND, "资源不存在")
     if ticket.status not in handoff.ACTIVE:
         raise HTTPException(status.HTTP_409_CONFLICT, "该转人工请求已经结束")
+    if blocked := handoff.may_handle(db, ticket, principal.user):  # N-222
+        raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
     return ticket, db.get(Conversation, ticket.conversation_id)
+
+
+def _subject(ticket: Ticket) -> dict:
+    """The audit names the member of staff a complaint is about: who handled a complaint about whom (N-222)."""
+    return {"subject_staff_id": ticket.subject_staff_id} if ticket.subject_staff_id else {}
 
 
 def _deliver(conversation: Conversation, tenant_slug: str, text: str) -> None:
@@ -95,7 +106,7 @@ def list_handoffs(principal: Principal = Depends(require_staff), db: Session = D
         select(Ticket).where(Ticket.tenant_id == principal.tenant.id, Ticket.kind == "handoff",
                              Ticket.status.in_(handoff.ACTIVE)).order_by(Ticket.id)
     ).scalars().all()
-    return [handoff_out(db, t) for t in tickets]
+    return [handoff_out(db, t, principal.user) for t in tickets]
 
 
 def _transition(db: Session, ticket: Ticket, to: str, user_id: int, **values) -> None:
@@ -124,10 +135,10 @@ def reply(ticket_id: int, body: ReplyIn, principal: Principal = Depends(require_
     db.add(message)
     db.flush()
     record(db, principal, "handoff.reply", f"handoff:{ticket.id}", conversation_id=conversation.id,
-           message_id=message.id)
+           message_id=message.id, **_subject(ticket))
     db.commit()
     _deliver(conversation, principal.tenant.slug, f"人工客服 {principal.user.name}：{message.content}")
-    return {"message": message_out(message), "handoff": handoff_out(db, ticket)}
+    return {"message": message_out(message), "handoff": handoff_out(db, ticket, principal.user)}
 
 
 @router.post("/{ticket_id}/close")
@@ -138,7 +149,7 @@ def close(ticket_id: int, principal: Principal = Depends(require_staff), db: Ses
     conversation.status = "bot"
     conversation.updated_at = datetime.now(timezone.utc)
     db.add(Message(tenant_id=ticket.tenant_id, conversation_id=conversation.id, role="system", content=HANDBACK_TEXT))
-    record(db, principal, "handoff.close", f"handoff:{ticket.id}", conversation_id=conversation.id)
+    record(db, principal, "handoff.close", f"handoff:{ticket.id}", conversation_id=conversation.id, **_subject(ticket))
     db.commit()
     _deliver(conversation, principal.tenant.slug, HANDBACK_TEXT)
     return {"ticket_id": ticket.id, "status": ticket.status, "conversation_id": conversation.id}

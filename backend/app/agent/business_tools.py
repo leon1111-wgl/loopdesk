@@ -929,6 +929,9 @@ def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             return _already_queued(ctx, existing)
     waiting = handoff.waiting_ahead(ctx.db, ctx.tenant.id)  # the new ticket is not in it yet
     title, description = handoff.brief(reason, ctx.customer_text, handoff.earlier_orders(ctx.db, ctx.conversation_id))
+    subject = handoff.complaint_subject(ctx.db, ctx.tenant, ctx.user, ctx.conversation_id, ctx.customer_text)
+    if subject is not None:  # N-222: the person complained about does not handle it
+        description += "\n" + handoff.subject_note(subject)
     if not ctx.dry_run:
         if ctx.conversation_id:
             conversation = ctx.db.get(Conversation, ctx.conversation_id)
@@ -937,6 +940,7 @@ def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         ctx.db.add(Ticket(
             tenant_id=ctx.tenant.id, conversation_id=ctx.conversation_id, customer_id=ctx.user.id,
             kind="handoff", title=title, description=description, priority="high",
+            subject_staff_id=subject.id if subject is not None else None,
         ))
         try:
             ctx.db.commit()

@@ -484,6 +484,13 @@ class Settings:
     def price_for(self, model: str) -> tuple[float, float]:
         return self.prices.get(model, (0.0, 0.0))
 
+    def unpriced(self, models) -> list[str]:
+        """Models with no entry in the price table: their tokens cost ¥0 in every total (N-225)."""
+        return sorted({m for m in models if m and m not in self.prices})
+
+    def unpriced_models(self) -> list[str]:
+        return self.unpriced((self.llm_model_fast, self.llm_model_strong))
+
 
 _settings: Settings | None = None
 

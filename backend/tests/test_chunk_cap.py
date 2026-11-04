@@ -1,6 +1,6 @@
 """N-109: a chunk has a hard length cap, whatever the punctuation of the source text."""
 
-from app.rag.chunking import chunk_markdown, chunk_pages
+from app.rag.chunking import CUT_MARK, chunk_markdown, chunk_pages
 
 # The nitpick reproduction: 9,903 characters, commas only, one full stop at the very end.
 LONG = ("本店售后规则如下" + "，".join(f"第{i}类商品的退换货按照对应品类的通用规则执行" for i in range(1, 400))
@@ -19,7 +19,9 @@ def test_a_comma_only_paragraph_is_cut_at_clauses_within_the_cap():
 def test_text_without_any_punctuation_is_cut_by_length():
     pdf_text = "页面抽取文本没有任何标点" * 100  # 1,200 characters, like OCR output
     chunks = chunk_pages([pdf_text], max_chars=300)
-    assert [len(c.text) for c in chunks] == [300, 300, 300, 300, 160]  # windows overlap by 40 (N-211)
+    # Windows overlap by up to 40 (N-211), end between two words and mark each cut edge (N-234).
+    assert len(chunks) == 5 and max(len(c.text) for c in chunks) <= 300
+    assert all(c.text.endswith(CUT_MARK) for c in chunks[:-1]) and all(c.text.startswith(CUT_MARK) for c in chunks[1:])
     assert all(c.page == 1 for c in chunks)
 
 

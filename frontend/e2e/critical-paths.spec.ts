@@ -305,6 +305,29 @@ test("customer asks for a person; the agent replies from the handoff queue", asy
   await expect(jack.getByRole("status").filter({ hasText: "人工客服 Mia 正在为您服务" })).toBeVisible();
 });
 
+test("a complaint about an agent: she can read it but not answer it; an administrator does (N-222)", async ({ browser }) => {
+  const jack = await signIn(browser, "customer2@leon.demo");
+  await ask(jack, "我要投诉你们的客服Mia 态度太差了");
+  await expect(jack.getByRole("status").filter({ hasText: "已转人工客服" })).toBeVisible();
+
+  const mia = await signIn(browser, "agent@leon.demo");
+  await mia.goto("/handoffs");
+  await mia.getByRole("listitem").filter({ hasText: "涉及员工：Mia" }).click();
+  await expect(mia.getByRole("note").filter({ hasText: "这条投诉涉及您本人，请由管理员处理" })).toBeVisible();
+  await mia.getByPlaceholder("以人工客服身份回复顾客").fill("您好");
+  await expect(mia.getByRole("button", { name: "回复顾客" })).toBeDisabled();
+  await expect(mia.getByRole("button", { name: "结束人工服务" })).toBeDisabled();
+
+  const leon = await signIn(browser, "admin@leon.demo");
+  await leon.goto("/handoffs");
+  await leon.getByRole("listitem").filter({ hasText: "涉及员工：Mia" }).click();
+  await leon.getByPlaceholder("以人工客服身份回复顾客").fill("您好，我是管理员 Leon，这就帮您处理。");
+  await leon.getByRole("button", { name: "回复顾客" }).click();
+  await expect(jack.locator(".msg.agent").getByText("您好，我是管理员 Leon，这就帮您处理。")).toBeVisible({ timeout: 20_000 });
+  await leon.getByRole("button", { name: "结束人工服务" }).click();
+  await expect(leon.getByRole("listitem").filter({ hasText: "涉及员工：Mia" })).toHaveCount(0);
+});
+
 test("the agent opens a ticket; staff claim and close it; the customer reads the outcome", async ({ browser }) => {
   const emma = await signIn(browser, "customer@leon.demo");
   await ask(emma, "我买的扫地机器人坏了开不了机，马上给我处理！");

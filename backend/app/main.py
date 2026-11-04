@@ -63,6 +63,13 @@ def check_jwt_secret(settings: Settings) -> None:
     logger.warning("%s。演示模式继续启动，部署前务必更换并设置 LOOPDESK_SEED_DEMO=0。", message)
 
 
+def check_prices(settings: Settings) -> None:
+    """A model without a price costs ¥0 in traces and on the dashboard; say so at start (N-225)."""
+    if missing := settings.unpriced_models():
+        logger.warning("模型 %s 没有配置价格（LOOPDESK_PRICES='{\"模型名\": [输入, 输出]}'，元/百万 token），"
+                       "它们的调用成本记为 0，看板上标为“未定价”。", "、".join(missing))
+
+
 def check_audit_key(settings: Settings) -> None:
     """Production keeps the audit signing key apart from the JWT secret (see app/audit.py)."""
     problem = settings.audit_key_problem()
@@ -98,6 +105,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     check_jwt_secret(settings)
     check_audit_key(settings)
+    check_prices(settings)
     set_settings(settings)
     init_engine(settings.database_url)
     admission.configure(settings.max_inflight_runs, tenant_share=settings.tenant_inflight_share,
@@ -173,6 +181,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "embedding": settings.embedding_provider,
             "evidence_mode": settings.evidence_mode,
             "database": settings.database_url.split(":", 1)[0],
+            "unpriced_models": settings.unpriced_models(),  # their cost shows as 0 (N-225)
         }
 
     if FRONTEND_DIST.exists():

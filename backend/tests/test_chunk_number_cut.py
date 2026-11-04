@@ -2,7 +2,7 @@
 
 import re
 
-from app.rag.chunking import chunk_markdown
+from app.rag.chunking import CUT_MARK, chunk_markdown
 
 # The nitpick reproduction: 290 characters of padding with no punctuation, then the price
 # sentence, so a cut at exactly 300 fell between "每台19" and "9元".
@@ -64,7 +64,7 @@ def test_a_comma_separated_number_list_is_cut_after_a_comma():
     row = "型号" + ",".join(str(12345 + i * 7) for i in range(80))  # one glued run, 478 characters
     chunks = chunk_markdown("## 型号\n" + row)
     assert max(len(c.text) for c in chunks) <= 300
-    assert all(c.text[-1] == "," for c in chunks[:-1]), [c.text[-6:] for c in chunks]
+    assert all(c.text.removesuffix(CUT_MARK)[-1] == "," for c in chunks[:-1]), [c.text[-6:] for c in chunks]
     assert set(re.findall(r"\d+", "".join(c.text for c in chunks))) == set(re.findall(r"\d+", row))
 
 

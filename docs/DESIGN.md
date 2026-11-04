@@ -135,6 +135,8 @@ Used by 人工接待 (handoff queue) and, with the run inspector on the right, t
 |---|---|---|
 | status filter (全部 / 排队中 / 接待中) with counts; search; each row: avatar, customer, channel tag, SLA timer (green < 5 min, amber < 15 min, red after), summary, last message | header (customer, status tag, 结束人工服务); AI handoff brief; transcript with the bot's citation chips and verdict tag; quick replies; the bot's last answer offered as an editable draft (参考回答); composer | customer facts (channel, waiting, priority, owner); orders named in the conversation; this conversation's approvals, refunds and tickets with status tags and actions (去审批, 查看工单, 去对账) |
 
+A complaint that names a member of staff (N-222) carries a danger tag 涉及员工：Mia in the list and a 涉及员工 line in the context panel. Whoever may not handle it (the person named; any agent when an agent is named) reads the transcript with a note above the composer saying why, and 回复顾客 / 结束人工服务 are disabled; the server refuses them too (403).
+
 Below 1180 px the context panel is hidden; below 780 px the panes stack (the queue scrolls in a 260 px box above the conversation). The transcript scrolls itself to the newest message; the page does not jump.
 
 ## States

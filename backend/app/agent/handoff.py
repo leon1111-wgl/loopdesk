@@ -81,6 +81,142 @@ def earlier_orders(db: Session, conversation_id: int | None, turns: int = 6) -> 
     return orders
 
 
+# A complaint about a member of staff (N-222): "我要投诉你们的客服Mia 态度太差了", "刚才那个客服太敷衍了". The ticket
+# names them; they cannot take it or close it, and a complaint about an agent is an administrator's.
+# Two kinds of complaint words: one names its object after it ("投诉你们的客服 Mia"), the other says what the person
+# before it did ("Mia 态度太差了", "客服Mia太敷衍"). A name counts only in that place: "Mia 我要投诉物流" and
+# "谢谢Mia 不过我要投诉快递" are not about her (second-model review).
+_ACCUSE_RE = re.compile(r"投诉|举报|(?<![A-Za-z])(?:complain(?:t|ed)?\s+(?:about\s+)?|report)", re.IGNORECASE)
+_TRAIT_RE = re.compile(r"态度(?:太|很|真|特别|非常|极其)?(?:差|恶劣|不好|烂|恶心)|骂人|骂我|辱骂|不耐烦|敷衍"
+                       r"|(?<![A-Za-z])(?:rude|impolite)", re.IGNORECASE)
+_COMPLAINT_RE = re.compile(f"{_ACCUSE_RE.pattern}|{_TRAIT_RE.pattern}", re.IGNORECASE)
+# "你态度太差了 我要投诉" while a person holds the handoff: "you" is them ("你们" is the shop).
+_YOU_RE = re.compile(r"(?:投诉|举报)(?:一下)?(?:你|您)(?!们)|(?:你|您)(?!们)(?:的)?(?:服务)?(?:态度)?.{0,6}?"
+                     r"(?:态度(?:太|很|真)?(?:差|恶劣|不好)|敷衍|不耐烦|骂人|骂我)")
+# "我不是要投诉Mia 我要投诉快递": the person a negated complaint names goes with it.
+_NOT_COMPLAINING_RE = re.compile(r"(?:不(?:是要?|想|要|用|会|再)?|没(?:有)?要?|别)投诉\s*[A-Za-z]*[^，,。！!？?\s]*")
+_EARLIER_AGENT_RE = re.compile(r"(?:刚才|刚刚|之前|上一个|上个|前面)的?(?:那个|那位|这个|这位)?(?:人工)?(?:客服|坐席)")
+_STAFF_CUE = r"(?:客服|坐席|人工|管理员|店长|经理|员工|工作人员|小二)"
+_GENERIC_NAMES = {"客服", "人工", "坐席", "管理员", "店长", "经理", "员工", "工作人员", "小二", "机器人"}
+# A clause: the name and the complaint must be in the same one ("Mia帮我处理的退款还没到 我要投诉物流" is about logistics).
+# A space between two Chinese characters ends one; "我要投诉你们的客服 Mia" and "客服Mia 态度太差了" are still one.
+_CLAUSE_SPLIT_RE = re.compile(r"[，,。；;！!？?\n]+|(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
+_AFTER_ACCUSE = 12  # "投诉你们的客服 Mia": characters between the complaint word and the name
+_BEFORE_TRAIT = 8  # "客服Mia 的态度太差了"
+# "Mia说可以在这里投诉", "Mia帮我处理的": she said or did something; the complaint is not about her.
+_NOT_THE_OBJECT_RE = re.compile(r"\s*(?:说|讲|告诉|帮|让我|叫我)")
+STAFF_ROLES = ("agent", "admin")
+
+
+def _name_matches(text: str, name: str) -> list[re.Match[str]]:
+    name = (name or "").strip()
+    if len(name) < 2 or name in _GENERIC_NAMES:
+        return []
+    if name.isascii():  # "客服Mia", "Mia's attitude"; not "Miami"
+        return list(re.finditer(rf"(?<![A-Za-z]){re.escape(name)}(?![A-Za-z])", text, re.IGNORECASE))
+    return list(re.finditer(re.escape(name), text))
+
+
+def _brand(tenant) -> tuple[re.Pattern[str] | None, set[str]]:
+    """The shop's own name, any case or spacing ("leon优选", "Leon 优选"), and its words a staff name may share."""
+    name = (getattr(tenant, "name", "") or "").strip()
+    runs = re.findall(r"[A-Za-z0-9]+|[^A-Za-z0-9\s]+", name)
+    pattern = re.compile(r"\s*".join(map(re.escape, runs)), re.IGNORECASE) if runs else None
+    words = {w.lower() for w in runs if w.isascii()} | {(getattr(tenant, "slug", "") or "").lower()}
+    return pattern, words - {""}
+
+
+def _cued(clause: str, match: re.Match[str]) -> bool:
+    return bool(re.search(_STAFF_CUE + r".{0,2}$", clause[:match.start()])
+                or re.match(r"^.{0,2}" + _STAFF_CUE, clause[match.end():]))
+
+
+def _someone_else(db: Session, tenant_id: int, subject: User) -> bool:
+    """Whether anyone could handle a complaint about ``subject``: an administrator for an agent, any other member of
+    staff for an administrator. A one-person shop's complaint is not locked away from its only administrator."""
+    roles = ("admin",) if subject.role == "agent" else STAFF_ROLES
+    return db.execute(select(User.id).where(User.tenant_id == tenant_id, User.id != subject.id, User.role.in_(roles),
+                                            User.disabled_at.is_(None)).limit(1)).first() is not None
+
+
+def complaint_subject(db: Session, tenant, customer: User, conversation_id: int | None, customer_text: str) -> User | None:
+    """The member of staff a complaint is about: named in the clause that complains, nearest to the complaint word,
+    or "刚才那个客服" when a person replied in this conversation. The shop's own name is cut first ("投诉Leon优选" is
+    not about Leon the administrator), and a staff name that is also a word of the shop's name ("你们Leon家的快递")
+    counts only next to 客服 / 管理员 / …. None when nobody else could handle it."""
+    text = NEGATED_INTENT_RE.sub("，", _NOT_COMPLAINING_RE.sub("，", normalize_width(customer_text or "")))
+    brand, brand_words = _brand(tenant)
+    if brand is not None:
+        text = brand.sub("", text)  # not a space: "投诉leon优选的客服mia" stays one clause
+    staff = [u for u in db.execute(select(User).where(User.tenant_id == tenant.id, User.role.in_(STAFF_ROLES))
+                                   .order_by(User.id)).scalars()
+             if u.id != customer.id and u.name != customer.name]
+    subject = None
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        if not _COMPLAINT_RE.search(clause):
+            continue
+        near = []
+        for user in staff:
+            for m in _name_matches(clause, user.name):
+                if ((user.name.strip().lower() in brand_words and not _cued(clause, m))
+                        or _NOT_THE_OBJECT_RE.match(clause, m.end())):
+                    continue
+                gaps = [m.start() - a.end() for a in _ACCUSE_RE.finditer(clause) if 0 <= m.start() - a.end() <= _AFTER_ACCUSE]
+                gaps += [t.start() - m.end() for t in _TRAIT_RE.finditer(clause) if 0 <= t.start() - m.end() <= _BEFORE_TRAIT]
+                if gaps:
+                    near.append((min(gaps), user.id, user))
+        if near:
+            subject = min(near)[2]
+            break
+        if subject is None and conversation_id is not None and _EARLIER_AGENT_RE.search(clause):
+            meta = db.execute(select(Message.meta).where(Message.conversation_id == conversation_id, Message.role == "agent")
+                              .order_by(Message.id.desc()).limit(1)).scalar_one_or_none()
+            agent_id = (meta or {}).get("agent_id")
+            user = db.get(User, agent_id) if agent_id else None
+            if user is not None and user.tenant_id == tenant.id and user.role in STAFF_ROLES:
+                subject = user
+                break
+    return subject if subject is not None and _someone_else(db, tenant.id, subject) else None
+
+
+def subject_note(subject: User) -> str:
+    return f"涉及员工：{subject.name}（本人不能接手或结束，{'由其他同事处理' if subject.role == 'admin' else '由管理员处理'}）"
+
+
+def name_subject(db: Session, tenant, customer: User, ticket: Ticket, customer_text: str) -> User | None:
+    """A complaint made after the handoff began ("我要投诉你 Mia" while Mia holds it): the live ticket names her from
+    now on, and goes back to the queue if she held it. Set once, in one conditional UPDATE."""
+    if ticket.subject_staff_id is not None:
+        return None
+    subject = complaint_subject(db, tenant, customer, ticket.conversation_id, customer_text)
+    if subject is None and ticket.assignee_id is not None and _YOU_RE.search(normalize_width(customer_text or "")):
+        held = db.get(User, ticket.assignee_id)  # "你态度太差了 我要投诉" to the person serving them
+        subject = held if held is not None and _someone_else(db, tenant.id, held) else None
+    if subject is None:
+        return None
+    from sqlalchemy import case, update
+
+    released = db.execute(update(Ticket).where(Ticket.id == ticket.id, Ticket.subject_staff_id.is_(None),
+                                               Ticket.status.in_(ACTIVE))
+                          .values(subject_staff_id=subject.id, description=Ticket.description + "\n" + subject_note(subject),
+                                  assignee_id=case((Ticket.assignee_id == subject.id, None), else_=Ticket.assignee_id),
+                                  status=case((Ticket.assignee_id == subject.id, "open"), else_=Ticket.status))
+                          .execution_options(synchronize_session="fetch")).rowcount
+    return subject if released == 1 else None
+
+
+def may_handle(db: Session, ticket: Ticket, user: User) -> str | None:
+    """Why ``user`` may not take, answer or close ``ticket``, or None."""
+    if ticket.subject_staff_id is None:
+        return None
+    if ticket.subject_staff_id == user.id:
+        return "这条投诉涉及您本人，请由管理员处理"
+    subject = db.get(User, ticket.subject_staff_id)
+    if user.role != "admin" and (subject is None or subject.role != "admin"):
+        return "涉及员工的投诉需要管理员处理"
+    return None
+
+
 CANCELLED_TEXT = "好的，已为您取消人工排队。还有其他问题可以继续问我。"
 CANCELLED_NOTE = "顾客取消了人工排队，会话交还智能客服。"
 

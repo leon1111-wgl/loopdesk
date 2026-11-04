@@ -202,7 +202,7 @@ _ONLY_ASKING_RE = re.compile(r"只是问问|就问问|问问而已|随便问问|
                              r"|还没想好|没想好|maybe|might\s+(?:want|ask|request)", re.IGNORECASE)
 # Asking about refunds, unless a request is made too ("如果不能换货就退款").
 REFUND_INQUIRY_RE = re.compile(
-    _ONLY_ASKING_RE.pattern + r"|呢(?=[\s，,。.！!？?~～]*$)|哪|如果|要是|(?:退款|退货|退)的话|咨询一下|想?问一?下|规则|政策|流程|吗|[？?]|多久|多长时间|怎么|如何"
+    _ONLY_ASKING_RE.pattern + r"|呢(?=[\s，,。.！!？?~～]*$)|没有?(?=[\s，,。.！!？?~～]*$)|哪|如果|要是|(?:退款|退货|退)的话|咨询一下|想?问一?下|规则|政策|流程|吗|[？?]|多久|多长时间|怎么|如何"
     r"|是否|能不能|可不可以|会不会|有没有|什么时候|啥时候|几时|几天|几个工作日|到账时间|时效|进度|状态"
     r"|(?<![A-Za-z])(?:if|how|what|when|does|do|is|can|will|eta)(?![A-Za-z])",
     re.IGNORECASE)
@@ -309,7 +309,10 @@ def refund_requested(text: str) -> bool:
     """True when the message asks for a refund, not when it asks about one or declines one."""
     if refund_withdraw_requested(text):  # "撤回退款申请" takes one back (N-127)
         return False
-    kept = NEGATED_REFUND_RE.sub("，", numeral_amounts(normalize_width(text or "")))
+    folded = numeral_amounts(normalize_width(text or ""))
+    if _retracted(folded):  # "我要退款 算了不退了": the last word on it takes the demand back
+        return False
+    kept = NEGATED_REFUND_RE.sub("，", folded)
     if _ONLY_ASKING_RE.search(kept):
         return False
     if not REFUND_RE.search(kept):
@@ -318,7 +321,64 @@ def refund_requested(text: str) -> bool:
         return False
     if _named_demand(REFUND_APPLY_RE, kept) or _demands_refund(kept):
         return True
-    return _named_demand(_IMPLIED_DEMAND_RE, kept) and not REFUND_INQUIRY_RE.search(kept)
+    return _named_demand(_IMPLIED_DEMAND_RE, kept) and not _asks_about_refund(kept)
+
+
+# A question about something else in the same message (N-179): "自动续费怎么关 我不想续了 这个月的也退给我"
+# asks how to stop the renewal and demands this month's fee back. A clause that names another subject
+# and says nothing of refunds or money does not make the refund a question; anything else still does.
+_OTHER_SUBJECT_RE = re.compile(r"自动续费|连续包月|续费|续订|订阅|会员(?!费)|积分|发票|密码|账号|subscription|renewal",
+                               re.IGNORECASE)
+_REFUND_TALK_RE = re.compile(r"退|钱|款|费|到账|refund|money", re.IGNORECASE)
+_CLAUSE_CUT_RE = re.compile(r"(?<=[，,。！!？?；;\n])|(?<=[\u4e00-\u9fff])\s+|\s+(?=[\u4e00-\u9fff])")
+
+
+# Only a real question about the other subject counts, and only in a message with no condition or "会退 / 能退" in it:
+# "如果我现在关了自动续费 这个月的会退给我" asks what would happen (second-model review), so the old rule holds.
+_REAL_QUESTION_RE = re.compile(r"怎么|如何|吗|[？?]|哪|能不能|可不可以|多久|什么时候|啥时候"
+                               r"|(?<![A-Za-z])(?:how|where|what|when)(?![A-Za-z])", re.IGNORECASE)
+_HEDGED_RE = re.compile(r"如果|要是|假如|假设|万一|的话|若是|一旦|会退|能退|可以退|会不会"
+                        r"|(?<![A-Za-z])(?:if|would)(?![A-Za-z])", re.IGNORECASE)
+
+
+def _other_question(clause: str) -> bool:
+    """"自动续费怎么关": a question, not about the refund."""
+    return (bool(_REAL_QUESTION_RE.search(clause)) and bool(_OTHER_SUBJECT_RE.search(clause))
+            and not _REFUND_TALK_RE.search(_OTHER_SUBJECT_RE.sub("", clause)))
+
+
+def _asks_about_refund(text: str) -> bool:
+    """Whether an implied demand ("退给我", "退钱") is really asked about. A condition or "会退 / 能退" anywhere makes
+    it a question ("关了自动续费的话 会退钱"); an explicit request ("就退款", "帮我退") was decided before this."""
+    if _HEDGED_RE.search(text):
+        return True
+    return any(REFUND_INQUIRY_RE.search(clause) and not _other_question(clause) for clause in _CLAUSE_CUT_RE.split(text))
+
+
+def _retracted(text: str) -> bool:
+    """A refund asked for, then declined after it ("帮我退款 不对 我不要退款了", "退给我 算了不退了"): nothing after
+    the last refusal asks again. "不是要退货，是要退款" asks again after it. Declining the *return* is not declining
+    the refund ("我要退款 不退货" asks for a refund without sending the item back), and "不退了我就投诉" threatens."""
+    last = None
+    for match in NEGATED_REFUND_RE.finditer(text):
+        if "退货" in match.group(0) or "退掉" in match.group(0):
+            continue
+        if re.match(r"\s*(?:我?就|的话|我要投诉|投诉)", text[match.end():]):
+            continue
+        last = match
+    if last is None:
+        return False
+    before, after = text[:last.start()], text[last.end():]
+    asked_before = bool(REFUND_APPLY_RE.search(before) or _IMPLIED_DEMAND_RE.search(before) or _demands_refund(before))
+    return asked_before and not (REFUND_RE.search(after) or _demands_refund(after))
+
+
+def other_question(text: str) -> str | None:
+    """The question about another subject that comes with a refund demand (N-179), to be answered too."""
+    if not refund_requested(text):
+        return None
+    clause = next((c for c in _CLAUSE_CUT_RE.split(normalize_width(text)) if _other_question(c)), None)
+    return ORDER_ID_RE.sub("", clause).strip(" ，,。？?") if clause else None
 
 
 # Taking back a refund application that is still waiting for review (N-127): "我刚才的退款申请能撤回吗",
@@ -551,10 +611,47 @@ QUERY_SYNONYMS: dict[str, str] = {
 _SYNONYM_RE = re.compile("|".join(sorted(map(re.escape, QUERY_SYNONYMS), key=len, reverse=True)))
 
 
+# A Chinese numeral with a unit (N-233): "积分十二个月就过期吗" is "积分12个月就过期吗", which the knowledge base
+# words in digits. Only before a unit, so "十分满意" and "一下" are left alone.
+_CN_COUNT_RE = re.compile(r"[零〇一二两三四五六七八九十百千万]+(?=\s*(?:个工作日|工作日|个小时|小时|个月|天|日|周|年|块|元))")
+# "退款要七天吗", "退款3天能到吗": how long a refund takes, not the seven-day return policy.
+# A deadline is not an arrival time: "退款期限是七天吗", "退款七天内可以吗", "退款超过七天还行吗" ask about the return window.
+_REFUND_DAYS_RE = re.compile(r"(?:退款|退钱|钱)(?:(?!期限|超过|申请|以内|之内|过了).){0,6}?[\d零〇一二两三四五六七八九十]+\s*(?:个工作日|工作日|天)"
+                             r"(?=\s*(?:才|就|能|会|可以)?\s*(?:到|退回|回来|吗|么|[?？]|$))")
+
+
+_RANGE_RE = re.compile(r"[一二两三四五六七八九]{2,}|[万千百]+")
+
+
+def numeral_counts(text: str) -> str:
+    """"十二个月" -> "12个月", "退款三天能到吗" -> "退款3天能到吗"."""
+    from .voice.itn import cn_number
+
+    def digits(m: re.Match[str]) -> str:
+        numeral = m.group(0)
+        # a range ("三五天", "两三天") or "万一" is not one number
+        if _RANGE_RE.fullmatch(numeral) or text[max(0, m.start() - 1):m.start() + 2].startswith("万一"):
+            return numeral
+        value = cn_number(numeral)
+        return numeral if not value else f"{value:g}"
+
+    return _CN_COUNT_RE.sub(digits, text)
+
+
+def _number_extras(text: str) -> list[str]:
+    digits = numeral_counts(text)
+    extras = [f"{m.group(0)}" for m in re.finditer(r"\d+\s*(?:个工作日|工作日|个小时|小时|个月|天|日|周|年|块|元)", digits)
+              if m.group(0) not in text]
+    if _REFUND_DAYS_RE.search(digits):
+        extras.append("退款 到账 工作日")
+    return extras
+
+
 def expand_query(text: str) -> str:
-    """"钱啥时候能退回来？" -> "钱啥时候能退回来？ 退款 到账"."""
+    """"钱啥时候能退回来？" -> "钱啥时候能退回来？ 退款 到账"; "积分十二个月就过期吗" -> "… 12个月"."""
     folded = fix_typos(text).translate(_VARIANT_CHARS)
-    extras = list(dict.fromkeys(canonical for phrase, canonical in QUERY_SYNONYMS.items() if phrase in folded))
+    extras = list(dict.fromkeys([canonical for phrase, canonical in QUERY_SYNONYMS.items() if phrase in folded]
+                                + _number_extras(folded)))
     return f"{folded} {' '.join(extras)}" if extras else folded
 
 
@@ -563,8 +660,13 @@ def canonical_query(text: str) -> str:
 
     Used by the relevance gate. There, the colloquial words themselves ("寄到", "国外") are
     out of the knowledge base's vocabulary, get the highest IDF, and would drag coverage
-    under the threshold even though the canonical words match: "能寄到国外吗" -> "能 配送 海外 吗"."""
-    return _SYNONYM_RE.sub(lambda m: f" {QUERY_SYNONYMS[m.group(0)]} ", fix_typos(text).translate(_VARIANT_CHARS))
+    under the threshold even though the canonical words match: "能寄到国外吗" -> "能 配送 海外 吗".
+    A Chinese numeral with a unit gets its digits next to it, not instead (N-233): the knowledge base
+    says "12个月" but also "七天无理由" and "二次销售", which a replaced "2次销售" would no longer match."""
+    folded = fix_typos(text).translate(_VARIANT_CHARS)
+    canonical = _SYNONYM_RE.sub(lambda m: f" {QUERY_SYNONYMS[m.group(0)]} ", folded)
+    numbers = _number_extras(folded)  # with "退款 到账 工作日" for "退款要七天吗": how long, not the 7-day policy
+    return f"{canonical} {' '.join(numbers)}" if numbers else canonical
 
 
 def token_set(text: str) -> set[str]:

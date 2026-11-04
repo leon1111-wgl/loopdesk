@@ -19,7 +19,7 @@ import json
 import re
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from .. import audit
 from ..channels.wecom import notify_approval
 from ..config import Settings
+from ..governance import script
 from ..guardrails.injection import Channels, detect_injection, unsafe_answer
 from ..guardrails.judge import judge as judge_answer, worth_judging
 from ..guardrails.pii import PIIReport, mask_pii
@@ -57,6 +58,7 @@ from .verifier import Repair, Verification, apply_fix, plan_repair, reask_messag
 
 STRICT_FALLBACK = "抱歉，我暂时无法给出有可靠依据的答复。为避免误导，建议您转人工客服确认。"
 MAX_STEPS_TEXT = "抱歉，这个问题需要的处理步骤较多。"
+NO_CITATIONS = {"citations": []}  # a handoff sentence quotes nothing: no sources under it (N-226)
 MODEL_ERROR_TEXT = "抱歉，智能客服暂时繁忙，请稍后再试或转人工客服。"
 REFUSAL_TEXT = "抱歉，这个问题我无法处理。"
 DEADLINE_TEXT = "抱歉，这个问题处理时间过长。"
@@ -230,8 +232,9 @@ class _StreamGate:
     put it on screen (found in review). The rules match within a clause, so a whole sentence can be
     checked on its own."""
 
-    def __init__(self, ctx: ToolContext):
+    def __init__(self, ctx: ToolContext, holds: Callable[[str], bool] | None = None):
         self.ctx, self.pending, self.stopped = ctx, "", False
+        self.holds = holds  # tiered: a sentence the cheap tiers would not pass is not shown (N-224)
 
     def feed(self, text: str) -> str:
         self.pending += text
@@ -246,7 +249,8 @@ class _StreamGate:
         return self._release(ready) if ready else ""
 
     def _release(self, ready: str) -> str:
-        if self.stopped or unsafe_answer(ready, _reviewed(self.ctx), _channels(self.ctx)):
+        if (self.stopped or unsafe_answer(ready, _reviewed(self.ctx), _channels(self.ctx))
+                or (self.holds is not None and self.holds(ready))):
             self.stopped = True
             return ""
         return ready
@@ -276,7 +280,8 @@ class AgentRuntime:
     def start(self, *, tenant: Tenant, user: User, text: str, conversation: Conversation | None = None,
               options: RunOptions | None = None) -> Iterator[dict[str, Any]]:
         options = options or RunOptions()
-        text = normalize_width(text)  # "ＳＯ２０２６…" is an order number too
+        # "ＳＯ２０２６…" is an order number too; "到賬" is 到账 (N-221: every channel, not only the web chat)
+        text = script.canonical(tenant, normalize_width(text))
         pii = mask_pii(text) if self.settings.pii_masking else PIIReport(text, [])
         history = self._history(conversation)
         previous, frame = self._previous_turn(conversation)
@@ -298,6 +303,7 @@ class AgentRuntime:
                     text = rest  # "算了 不用人工了 退款多久到账": the question is answered now
                     pii = mask_pii(text) if self.settings.pii_masking else PIIReport(text, [])
                 elif ticket is not None:
+                    handoff.name_subject(self.db, tenant, user, ticket, text)  # "我要投诉你 Mia" while Mia holds it (N-222)
                     yield from self._forward_to_human(conversation)
                     return
                 conversation.status = "bot"  # no live ticket behind the flag: the agent takes over again
@@ -621,7 +627,7 @@ class AgentRuntime:
                 return
             if state["steps"] >= self.settings.max_agent_steps:
                 text = MAX_STEPS_TEXT + self._fallback_handoff(tracer, ctx, "Agent 达到最大步数")
-                yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
+                yield from self._finish(run, tracer, ctx, state, text, started, status="handoff", extra_meta=NO_CITATIONS)
                 return
             state["steps"] += 1
             try:
@@ -630,7 +636,8 @@ class AgentRuntime:
                 # whole so the model's wording of it never reaches the customer.
                 status_pending = any(e.kind == "tool" and e.title in STATUS_TOOLS for e in ctx.evidence)
                 # A re-asked answer is not streamed either: it replaces a draft and may still fail.
-                gate = _StreamGate(ctx) if stream_tokens and not status_pending and not state.get("reasked") else None
+                gate = (_StreamGate(ctx, self._unchecked(ctx, state))
+                        if stream_tokens and not status_pending and not state.get("reasked") else None)
                 for event in self._call_llm(tracer, messages, specs, state):
                     if event.type == "delta":
                         if gate and (shown := gate.feed(event.text)):
@@ -659,7 +666,7 @@ class AgentRuntime:
             state["streamed"] = gate is not None and not result.tool_calls
             if result.finish_reason in ("refusal", "content_filter"):
                 text = REFUSAL_TEXT + self._fallback_handoff(tracer, ctx, "模型拒绝回答")
-                yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
+                yield from self._finish(run, tracer, ctx, state, text, started, status="handoff", extra_meta=NO_CITATIONS)
                 return
             if result.tool_calls:
                 messages.append(LLMMessage(role="assistant", content=result.content,
@@ -867,7 +874,7 @@ class AgentRuntime:
                                     extra_meta={"degraded": True})
             return
         text = DEADLINE_TEXT + self._fallback_handoff(tracer, ctx, "处理超时")
-        yield from self._finish(run, tracer, ctx, state, text, started, status="handoff")
+        yield from self._finish(run, tracer, ctx, state, text, started, status="handoff", extra_meta=NO_CITATIONS)
 
     def _explicit_handoff(self, run, tracer, tenant, user, conversation, options, user_text) -> Iterator[dict[str, Any]]:
         """"转人工" is honoured at once, without the model (N-031): there is nothing to talk the
@@ -907,7 +914,7 @@ class AgentRuntime:
             return
         text = DEGRADED_HANDOFF_TEXT + self._fallback_handoff(tracer, ctx, "智能客服暂时不可用")
         yield from self._finish(run, tracer, ctx, state, text, started, status="handoff",
-                                extra_meta={"degraded": True})
+                                extra_meta={"degraded": True, **NO_CITATIONS})
 
     def _quoted_policy(self, tracer: Tracer, ctx: ToolContext, state: dict[str, Any]) -> str | None:
         """The answer that needs no model: the best knowledge chunks, quoted and cited. None for a
@@ -944,6 +951,19 @@ class AgentRuntime:
 
     def _tiered(self) -> bool:
         return self.settings.verifier == "tiered"
+
+    def _unchecked(self, ctx: ToolContext, state: dict[str, Any]) -> Callable[[str], bool] | None:
+        """Tiered mode streams only what its rule and grounding tiers pass, sentence by sentence (N-224): a draft
+        FIX or a re-ask would take back ("当天到账", a wrong number) never reaches the screen first. No judge here:
+        a sentence only a judge could pass stops the stream, and the whole answer is shown once checked. Local
+        and cheap (no model call); the full check at the end still decides what is kept."""
+        if not self._tiered():
+            return None
+
+        def holds(text: str) -> bool:
+            checked = verify_answer(text, ctx.evidence, state["user_text"], self.settings)
+            return bool(checked.invalid_citations) or any(c.factual and not c.supported for c in checked.sentences)
+        return holds
 
     def _verifier_judge(self) -> LLMProvider | None:
         """The model that judges claims: every factual sentence (verifier=llm), or only the ones the cheap

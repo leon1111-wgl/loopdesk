@@ -82,6 +82,9 @@ export interface Handoff extends HandoffState {
   created_at: string;
   waiting_seconds: number;
   last_message: string;
+  /** A complaint naming a member of staff (N-222), and why this viewer may not act on it. */
+  subject_staff?: string | null;
+  blocked?: string | null;
 }
 
 export type AgentEvent =
@@ -96,6 +99,7 @@ export type AgentEvent =
   | { type: "approval_required"; approval_id: number | null; tool: string; arguments: Record<string, unknown>; reason: string }
   | ({ type: "verification" } & Verification)
   | { type: "answer_replaced"; text: string; reason: string }
+  | { type: "reask"; step: number; sentences?: string[] } // tiered check: the draft failed and is rewritten (staff see which sentences)
   | { type: "final"; run_id: string; message_id: number | null; text: string; status: string; meta: MessageMeta }
   | {
       type: "done";

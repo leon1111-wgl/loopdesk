@@ -243,3 +243,24 @@ def test_a_refund_the_model_decided_itself_is_reasked_to_the_tool(ask, login, mo
     assert "request_refund" in model.prompts[2][-1].content, "the re-ask tells it the tool decides"
     final = by_type(events, "final")[0]
     assert "已受理" in final["text"] and "不符合" not in final["text"]
+
+
+def test_a_draft_the_cheap_tiers_fail_is_never_streamed(ask, login, monkeypatch):
+    """N-224: the wrong draft streamed as tokens, then "reask" and "answer_replaced" took it back. The rule and
+    grounding tiers now read each sentence before it is shown; the judge never runs on the stream."""
+    model = _tiered(monkeypatch, call("search_knowledge", query="七天无理由退货条件"),
+                    "自签收之日起9天内，商品保持完好的，可申请七天无理由退货[1]。", judge=True)
+    _, events = ask(login("customer@leon.demo"), "七天无理由退货有什么条件？")
+    assert by_type(events, "reask") and not any("9天" in e["text"] for e in by_type(events, "token"))
+    assert model.judged == 0, "the stream check is local; a wrong number never reaches the judge"
+
+
+def test_a_supported_draft_still_streams_and_one_failing_sentence_stops_the_rest(ask, login, monkeypatch):
+    _tiered(monkeypatch, call("search_knowledge", query="七天无理由退货条件"), GOOD)
+    _, events = ask(login("customer@leon.demo"), "七天无理由退货有什么条件？")
+    assert "".join(e["text"] for e in by_type(events, "token")) == GOOD
+    _tiered(monkeypatch, call("search_knowledge", query="七天无理由退货条件"),
+            GOOD + "另外，会员每月可享两次免费上门取件服务。", judge=False)
+    _, events = ask(login("customer@leon.demo"), "七天无理由退货有什么条件？")
+    shown = "".join(e["text"] for e in by_type(events, "token"))
+    assert "上门取件" not in shown and by_type(events, "final")[0]["text"] == GOOD

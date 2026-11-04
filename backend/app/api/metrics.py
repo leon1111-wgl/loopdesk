@@ -16,6 +16,7 @@ from ..agent.outcome import is_refusal
 from ..agent.prompts import FIRST_PROMPT_VERSION
 from ..models import Approval, EvalRun, Feedback, KnowledgeConflict, Message, Run, Span, Ticket
 from ..security import Principal, require_staff
+from ..services import get_services
 from ..localtime import start_of_day, zone_of
 from ..llm.errors import error_kind
 from .common import as_utc
@@ -190,6 +191,7 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         select(func.count(Approval.id)).where(Approval.tenant_id == tenant_id, Approval.status == "pending")
     ).scalar_one()
     total = len(runs)
+    settings = get_services().settings
     return {
         "window_days": window,
         "timezone": principal.tenant.timezone,
@@ -207,6 +209,9 @@ def overview(days: int = 7, principal: Principal = Depends(require_staff), db: S
         "latency_p95_ms": _pct(latencies, 0.95),
         "tokens": sum(r.prompt_tokens + r.completion_tokens for r in runs),
         "cost": round(sum(r.cost for r in runs), 6),
+        # Models in use with no price: their tokens are not in "cost" (N-225); the card says 未定价, not ¥0.
+        "cost_unpriced_models": settings.unpriced(
+            {r.model for r in runs if r.prompt_tokens + r.completion_tokens} | set(settings.unpriced_models())),
         "avg_evidence_coverage": round(sum(coverages) / len(coverages), 4) if coverages else None,
         "verdicts": dict(verdicts),
         "tools": dict(tool_counts),

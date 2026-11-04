@@ -23,6 +23,7 @@ interface Overview {
   latency_p95_ms: number;
   tokens: number;
   cost: number;
+  cost_unpriced_models?: string[]; // their tokens are not in cost (N-225)
   avg_evidence_coverage: number | null;
   verdicts: Record<string, number>;
   tools: Record<string, number>;
@@ -162,7 +163,10 @@ export default function DashboardPage() {
           <div className="grid grid-4 secondary-metrics">
             <Kpi label="延迟 p50 / p95" value={`${ms(data.latency_p50_ms)} / ${ms(data.latency_p95_ms)}`}
               sub={`出错 ${pct(data.failures.rate)}（${data.failures.runs} 次）· 近 15 分钟 ${data.failures.last_15m} 次`} />
-            <Kpi label="Token / 估算成本" value={data.tokens.toLocaleString()} sub={`¥${data.cost.toFixed(4)}`} />
+            <Kpi label="Token / 估算成本" value={data.tokens.toLocaleString()}
+              sub={data.cost_unpriced_models?.length
+                ? <span title="设置 LOOPDESK_PRICES 后按单价估算">{data.cost > 0 ? `¥${data.cost.toFixed(4)} · ` : ""}未定价：{data.cost_unpriced_models.join("、")}</span>
+                : `¥${data.cost.toFixed(4)}`} />
             <Kpi label="用户反馈" value={(data.feedback.up ?? 0) + (data.feedback.down ?? 0) + (data.feedback.correction ?? 0)}
               sub={`有用 ${data.feedback.up ?? 0} · 无用 ${data.feedback.down ?? 0} · 纠错 ${data.feedback.correction ?? 0}`} />
             <Kpi label="最近一次回归评测" value={data.last_eval ? pct(data.last_eval.pass_rate, 1) : "—"}

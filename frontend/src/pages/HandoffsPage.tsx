@@ -80,6 +80,7 @@ function ContextPanel({ handoff, messages }: { handoff: Handoff; messages: ChatM
           <dt>转人工</dt><dd>{time(handoff.created_at)}</dd>
           <dt>优先级</dt><dd>{PRIORITY[handoff.priority] ?? handoff.priority}</dd>
           <dt>接待人</dt><dd>{handoff.assignee ?? <span className="faint">尚未接入</span>}</dd>
+          {handoff.subject_staff && <><dt>涉及员工</dt><dd>{handoff.subject_staff}</dd></>}
         </dl>
       </section>
       <section className="ctx-section">
@@ -217,7 +218,7 @@ function HandoffPanel({ handoff, onChanged }: { handoff: Handoff; onChanged: () 
             <div className="faint ellipsis">{handoff.summary}</div>
           </div>
           <span className="spacer" />
-          <button className="btn btn-sm" disabled={busy} onClick={() => act("close")}>
+          <button className="btn btn-sm" disabled={busy || !!handoff.blocked} onClick={() => act("close")}>
             <Undo2 size={14} /> 结束人工服务
           </button>
         </div>
@@ -250,6 +251,7 @@ function HandoffPanel({ handoff, onChanged }: { handoff: Handoff; onChanged: () 
         </div>
         <div className="wb-composer">
           <ErrorBanner error={error} />
+          {handoff.blocked && <div className="notice" role="note">{handoff.blocked}：顾客投诉的是 {handoff.subject_staff}。你可以查看对话，但不能回复或结束。</div>}
           <div className="quick-replies" role="group" aria-label="常用语">
             {QUICK_REPLIES.map((q) => {
               const phrase = q.replace("{name}", user?.name ?? "");
@@ -267,7 +269,7 @@ function HandoffPanel({ handoff, onChanged }: { handoff: Handoff; onChanged: () 
             <textarea ref={box} className="textarea" rows={3} maxLength={2000} placeholder="以人工客服身份回复顾客" value={text}
               aria-label="回复内容" onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim() && !busy) {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text.trim() && !busy && !handoff.blocked) {
                   e.preventDefault();
                   void act("reply");
                 }
@@ -276,7 +278,7 @@ function HandoffPanel({ handoff, onChanged }: { handoff: Handoff; onChanged: () 
           <div className="row">
             <span className="faint">第一个回复的同事负责跟进 · ⌘/Ctrl + Enter 发送</span>
             <span className="spacer" />
-            <button className="btn btn-primary" disabled={busy || !text.trim()} onClick={() => act("reply")}>
+            <button className="btn btn-primary" disabled={busy || !text.trim() || !!handoff.blocked} onClick={() => act("reply")}>
               <Send size={15} /> 回复顾客
             </button>
           </div>
@@ -350,6 +352,7 @@ export default function HandoffsPage() {
                         {h.position ? <span className="badge badge-warning">排队第 {h.position} 位</span> : <span className="badge badge-info">{h.assignee}</span>}
                       </span>
                       <span className="small ellipsis">{h.summary}</span>
+                      {h.subject_staff && <span className="badge badge-danger">涉及员工：{h.subject_staff}</span>}
                       {h.last_message && <span className="faint ellipsis">最新留言：{h.last_message}</span>}
                       <SlaTimer handoff={h} />
                     </span>

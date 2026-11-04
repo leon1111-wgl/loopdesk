@@ -182,6 +182,13 @@ function EventItem({ event }: { event: AgentEvent }) {
       );
     case "answer_replaced":
       return <div className="event guard"><b>回答已被替换</b><div className="faint">{event.reason}</div></div>;
+    case "reask":
+      return (
+        <div className="event guard">
+          <b>回答未通过核对，正在重写</b>
+          {(event.sentences ?? []).map((s, i) => <div key={i} className="small" style={{ color: "var(--danger)" }}>✗ {s}</div>)}
+        </div>
+      );
     case "done":
       if (event.route_tier === undefined) {
         // Customers get no model, cost or trace details.
@@ -430,6 +437,7 @@ export default function ChatPage() {
       await streamChat(id, content, { inject_hallucination: inject }, (event) => {
         if (event.type === "token") run.steps[event.step] = (run.steps[event.step] ?? "") + event.text;
         else run.events.push(event);
+        if (event.type === "reask") run.steps[event.step] = ""; // the draft failed the check: it does not stay on screen (N-224)
         if (event.type === "done" || event.type === "error") run.done = true;
         setLive({ steps: { ...run.steps }, events: [...run.events], done: run.done });
       }, undefined, () => { accepted = true; });

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from ..agent import handoff
 from ..audit import record
 from ..db import get_db
 from ..models import Conversation, Message, Tenant, Ticket, User
@@ -76,6 +77,8 @@ def _move(db: Session, principal: Principal, ticket_id: int, allowed: tuple[str,
     ticket = get_owned(db, Ticket, ticket_id, principal.tenant.id)
     if ticket.kind != "issue":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "资源不存在")
+    if blocked := handoff.may_handle(db, ticket, principal.user):  # N-222
+        raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
     hold_account(db, principal.user.id)
     moved = db.execute(update(Ticket).where(Ticket.id == ticket.id, Ticket.status.in_(allowed),
                                             account_enabled(principal.user.id)).values(**values)

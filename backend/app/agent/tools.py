@@ -86,6 +86,12 @@ class ToolContext:
         return self.user.role in ("admin", "agent")
 
     def add_evidence(self, kind: str, title: str, text: str, **meta: Any) -> Evidence:
+        # The same chunk found again (a model that searches the same words six times, N-226) keeps its first
+        # ref: one source, cited once.
+        chunk = meta.get("chunk_id") if kind == "kb" else None
+        if chunk is not None and (seen := next((e for e in self.evidence if e.kind == "kb"
+                                                and e.meta.get("chunk_id") == chunk), None)):
+            return seen
         item = Evidence(ref=len(self.evidence) + 1, kind=kind, title=title, text=text, meta=meta)
         self.evidence.append(item)
         return item

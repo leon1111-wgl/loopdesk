@@ -300,6 +300,9 @@ class Ticket(Base):
     resolution: Mapped[str] = mapped_column(Text, default="", server_default="")
     # A review request (kind "review", 申请复核): the assistant message whose decision is contested.
     message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A complaint naming a member of staff (N-222): they cannot take or close it themselves, and a complaint
+    # about an agent is an administrator's (agent/handoff.may_handle).
+    subject_staff_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
 class Feedback(Base):

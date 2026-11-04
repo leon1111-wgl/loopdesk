@@ -22,6 +22,7 @@
 .wb-item:hover { background: var(--hover); }
 .wb-item.active { background: var(--primary-soft); border-left-color: var(--primary); }
 .wb-item-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.wb-item-main > .badge { align-self: flex-start; }
 .wb-item .small { color: var(--text); }
 .wb-hidden-note { padding: 8px 12px; }
 .sla { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; width: fit-content; }

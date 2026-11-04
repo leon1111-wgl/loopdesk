@@ -262,3 +262,78 @@ def test_a_typo_rule_never_rewrites_another_word(text):
 def test_a_conditional_complaint_with_i_want_still_goes_to_a_person(ask, login):
     _, events = ask(login("customer@leon.demo"), "SO20261008002 要是今天不到我要投诉")
     assert by_type(events, "final")[0]["status"] == "handoff"
+
+
+# ---------------------------------------------------------------- 11-04 batch
+def test_stop_the_renewal_and_refund_this_month_does_both(ask, login):  # N-179
+    _, events = ask(login("customer@echo.demo"), "SO20261019101 自动续费怎么关 我不想续了 这个月的也退给我")
+    assert "request_refund" in _tools(events)
+    text = _final(events)
+    assert "已受理" in text and "¥18.00" in text and "管理自动续费" in text
+    assert "当前会员期仍然有效" not in text, "the refund ends this period; the renewal answer must not say otherwise"
+
+
+def test_the_renewal_question_with_a_refund_the_policy_refuses(ask, login):  # N-179
+    _, events = ask(login("customer@echo.demo"), "SO20261001104 自动续费怎么关 这个月的也退给我")
+    text = _final(events)
+    assert "request_refund" not in _tools(events) and "超过 7 天" in text and "管理自动续费" in text
+
+
+@pytest.mark.parametrize("text,refund", [
+    ("SO20261019101 自动续费怎么关 我不想续了 这个月的也退给我", True), ("自动续费怎么关？这个月的钱退给我", True),
+    ("自动续费怎么关 这个月的退给我吗", False), ("自动续费怎么关 退款多久到账", False), ("会员费怎么退 退给我", False),
+    ("退一半 什么时候到账", False), ("这个月的也退给我 怎么操作", False),
+    # second-model review (P0): a condition, "会退", or a demand taken back is not a request
+    ("SO20261019101 如果我现在关了自动续费 这个月的会退给我", False), ("关了自动续费的话 会退钱", False),
+    ("要是取消订阅 剩下的会退钱", False), ("自动续费怎么关 关了之后钱会退给我", False),
+    ("SO20261019101 自动续费怎么关 退给我 算了不退了", False), ("自动续费怎么关 这个月的也退给我 不对 我不要退款了", False),
+    ("会员怎么取消 退钱到账没", False), ("SO20261008010 我要退款 算了不退了", False), ("帮我退款 不对 我不要退款了", False),
+    ("不是要退货，是要退款", True), ("我不要退货 帮我退款", True),
+    # re-review P1: refund only, no return, is still a refund; "不退了我就投诉" threatens
+    ("我要退款 不要退货", True), ("帮我退款 不需要退货", True), ("给我退钱 不退货", True), ("我要退款不退货", True),
+    ("退我50块 不退货", True), ("我要退款 不退了我就投诉", True)])
+def test_a_question_about_another_subject_does_not_make_the_refund_a_question(text, refund):  # N-179
+    from app.textutil import refund_requested
+
+    assert refund_requested(text) is refund
+
+
+@pytest.mark.parametrize("text", ["嗯那个就是我上周买的那个那个音箱 没声了 咋整", "我前几天买的音箱没声了", "SO20261015009 音箱没声了 咋整"])
+def test_a_fault_without_the_order_number_finds_the_order(ask, login, text):  # N-223
+    _, events = ask(login("customer2@leon.demo"), text)
+    assert "create_ticket" in _tools(events) and "request_refund" not in _tools(events)
+    answer = _final(events)
+    assert "SO20261015009" in answer and "15天内发现质量问题" in answer and "已为您创建工单" in answer
+
+
+def test_a_fault_ticket_names_a_delivered_order_and_keeps_the_urgency(client, ask, login):  # N-223
+    _, events = ask(login("customer@leon.demo"), "我刚买的托特包有划痕 严重")
+    assert "get_order" in _tools(events) and "优先级：高" in _final(events)
+    titles = [t["title"] for t in client.get("/api/tickets", headers=login("agent@leon.demo")).json()]
+    assert any(t.startswith("SO20260918011 帆布托特包") for t in titles), titles
+
+
+@pytest.mark.parametrize("who,text", [
+    ("customer@leon.demo", "我买的扫地机器人坏了开不了机，马上给我处理！"),  # on its way, not delivered
+    ("customer@leon.demo", "我买的咖啡套装碎了"),  # not shipped yet
+    ("customer2@leon.demo", "我买的收纳盒碎了"),  # refunded already
+    ("customer2@leon.demo", "我前几天买的风扇坏了"),  # refunded already
+    ("customer2@leon.demo", "我买的扫地机器人坏了开不了机，马上给我处理！"),  # not one of Jack's orders
+])
+def test_a_fault_with_no_delivered_order_is_a_ticket_without_one(ask, login, who, text):  # N-223, review
+    _, events = ask(login(who), text)
+    assert "get_order" not in _tools(events) and "create_ticket" in _tools(events)
+    assert "已为您创建工单" in _final(events) and "最近的订单有" not in _final(events)
+
+
+def test_a_conditional_or_retracted_renewal_refund_moves_no_money(ask, login):  # N-179, second-model review P0
+    lily = login("customer@echo.demo")
+    for text in ("SO20261019101 如果我现在关了自动续费 这个月的会退给我", "SO20261019101 自动续费怎么关 退给我 算了不退了"):
+        _, events = ask(lily, text)
+        assert "request_refund" not in _tools(events) and "已受理" not in _final(events), text
+        assert "SO20261019101 申请退款" in _final(events), "offered, not filed"
+
+
+def test_refund_only_without_returning_the_item_is_filed(ask, login):  # re-review P1
+    _, events = ask(login("customer@leon.demo"), "SO20261008002 我要退款 不退货")
+    assert "request_refund" in _tools(events) and by_type(events, "approval_required")

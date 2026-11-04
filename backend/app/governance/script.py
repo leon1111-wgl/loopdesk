@@ -4,7 +4,8 @@ Knowledge, prompts, the evidence check and the stored transcript work in simplif
 tenant whose customers read traditional (zh-Hant-HK, zh-Hant-TW) gets customer-facing text converted
 at the edge (the chat stream, the message list, the voice channel's spoken and shown sentences) by
 OpenCC's phrase tables (dictionary conversion, no model; ~0.1 ms a sentence). What a customer says or
-types in traditional is read in simplified, so the knowledge base and the rules match it. Conversion is
+types in traditional is read in simplified, so the knowledge base and the rules match it, for every tenant
+(a simplified-script shop has customers who type traditional too). Conversion is
 deterministic, so the stored simplified answer and the traditional one shown are the same text.
 """
 
@@ -35,8 +36,10 @@ def display(tenant: Any, text: str) -> str:
 
 
 def canonical(tenant: Any, text: str) -> str:
-    """What the agent works with: a traditional-script tenant's input in simplified."""
-    return _converter("t2s").convert(text) if traditional(tenant) and text else text
+    """What the agent works with: Chinese input in simplified, whatever script the tenant's customers read.
+    A customer of a simplified-script shop who types "退款多久到賬" is answered like "退款多久到账" (N-221): the
+    phrase tables leave simplified text as it is (every eval question and knowledge file, checked)."""
+    return _converter("t2s").convert(text) if text else text
 
 
 def event(tenant: Any, event: dict[str, Any]) -> dict[str, Any]:

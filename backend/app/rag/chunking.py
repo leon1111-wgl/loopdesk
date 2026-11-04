@@ -11,7 +11,7 @@ import io
 import re
 from dataclasses import dataclass
 
-from ..textutil import split_sentences
+from ..textutil import jieba, split_sentences
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 SUPPORTED_SUFFIXES = (".md", ".markdown", ".txt", ".pdf")
@@ -50,16 +50,32 @@ def parse_upload(filename: str, data: bytes) -> tuple[str, list[str] | None]:
 _CLAUSE_RE = re.compile(r"(?<=[，、：])|(?<=[,:])(?!\d)")  # "1,299元" and "10:30" stay whole
 _GLUED_RE = re.compile(r"[0-9A-Za-z０-９.．,:%％¥￥$_\-/]")  # digits, Latin words, amounts, order ids
 _HARD_CUT_OVERLAP = 40
+# Where a length cut went through a clause (N-234): the window's text goes on in the next one. Readers see that the
+# fragment is not a whole sentence, a model is told so by the text itself, and the offline answer does not quote
+# "…空调安装费为每" as a fact (llm/mock.py).
+CUT_MARK = "…"
 
 
-def _safe_cut(text: str, start: int, end: int) -> int | None:
-    """The last position in (start, end] with no digit, Latin letter or amount sign on either
-    side. A cut at exactly ``end`` turned "每台199元" into "每台19" + "9元": the answer quoting
-    the first half passed the evidence check, and "9元" raised a false knowledge conflict.
-    A run of comma-separated numbers ("12345,12352,…") has no such position, so the second
-    choice is just after a separator."""
+def _word_ends(text: str) -> set[int] | None:
+    """Positions between two jieba words: "…根据自己的情况" is never cut inside 根据."""
+    return None if jieba is None else {end for _, _, end in jieba.tokenize(text)}
+
+
+def _safe_cut(text: str, start: int, end: int, words: set[int] | None = None) -> int | None:
+    """The last position in (start, end] between two words with no digit, Latin letter or amount sign
+    on either side. A cut at exactly ``end`` turned "每台199元" into "每台19" + "9元": the answer quoting
+    the first half passed the evidence check, and "9元" raised a false knowledge conflict; a cut inside
+    a word ("售|后") started the next window with half a word (N-234). Without a word boundary in reach
+    any position outside a glued run will do. A run of comma-separated numbers ("12345,12352,…") has no
+    such position, so the last choice is just after a separator."""
+    def apart(i: int) -> bool:
+        return i >= len(text) or not (_GLUED_RE.match(text[i - 1]) or _GLUED_RE.match(text[i]))
+
     for i in range(end, start, -1):
-        if i >= len(text) or not (_GLUED_RE.match(text[i - 1]) or _GLUED_RE.match(text[i])):
+        if (words is None or i in words) and apart(i):
+            return i
+    for i in range(end, start, -1):
+        if apart(i):
             return i
     for i in range(end, start, -1):
         if text[i - 1] in ",;: ":
@@ -70,21 +86,24 @@ def _safe_cut(text: str, start: int, end: int) -> int | None:
 def _hard_cut(clause: str, max_chars: int) -> list[str]:
     """Cut a clause with no clause mark into windows of at most ``max_chars``, each ending at a
     safe position; consecutive windows share up to ``_HARD_CUT_OVERLAP`` characters, so the
-    sentence the cut went through is whole in at least one of them."""
-    overlap = min(_HARD_CUT_OVERLAP, max_chars // 5)
+    sentence the cut went through is whole in at least one of them. Each edge a cut made is marked
+    with ``CUT_MARK`` (counted in the cap)."""
+    room = max_chars - 2 * len(CUT_MARK)
+    overlap = min(_HARD_CUT_OVERLAP, room // 5)
+    words = _word_ends(clause)
     windows: list[str] = []
     start = last = 0
-    while len(clause) - start > max_chars:
+    while len(clause) - start > room:
         # No safe position means one glued run longer than the cap: a length cut is all there is.
-        cut = _safe_cut(clause, start, start + max_chars) or start + max_chars
+        cut = _safe_cut(clause, start, start + room, words) or start + room
         if cut <= last:  # the overlap leads straight back to the previous cut: drop the overlap
             start = last
             continue
-        windows.append(clause[start:cut])
+        windows.append((CUT_MARK if start else "") + clause[start:cut] + CUT_MARK)
         last = cut
-        back = _safe_cut(clause, max(start, cut - 2 * overlap), cut - overlap) if cut - start > 2 * overlap else None
+        back = _safe_cut(clause, max(start, cut - 2 * overlap), cut - overlap, words) if cut - start > 2 * overlap else None
         start = back or cut
-    windows.append(clause[start:])
+    windows.append((CUT_MARK if start else "") + clause[start:])
     return windows
 
 

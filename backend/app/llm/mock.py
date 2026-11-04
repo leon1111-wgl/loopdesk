@@ -19,9 +19,10 @@ from typing import Any
 
 from ..textutil import (CANCEL_ORDER_RE, NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, OTHER_ORDER,
                         REFUND_APPLY_RE, REFUND_RE, cancel_requested, handoff_cancelled,
-                        estimate_tokens, expand_query, fix_typos, normalize_width, refund_bare_decline, refund_requested,
-                        refund_withdraw_requested, stated_refund_amount, withdraw_confirmed,
+                        estimate_tokens, expand_query, fix_typos, normalize_width, other_question, refund_bare_decline,
+                        refund_requested, refund_withdraw_requested, stated_refund_amount, withdraw_confirmed,
                         split_sentences, strip_citations, token_set)
+from ..rag.chunking import CUT_MARK
 from .base import ChatResult, LLMMessage, LLMProvider, StreamEvent, ToolCall, ToolSpec, Usage
 
 _HANDOFF = re.compile(r"人工|真人|投诉|转接")
@@ -87,10 +88,10 @@ _APPLY = REFUND_APPLY_RE
 _OWN = re.compile(r"我的(?:快递|包裹|订单|单|货|东西|退款)|我那|我最近|我刚买|我上次|我下的"
                   r"|我(?:上周|昨天|前天|前几天|上个月|上次|刚刚?|刚才|之前)?(?:买|下)的")  # "我上周买的那个音箱" (N-223)
 _MINE = re.compile(_OWN.pattern + r"|单子|到哪了|到哪儿|还没到|咋还没|怎么还没")
-_TICKET = re.compile(r"报修|故障|坏了|工单|无法使用|打不开|不工作|失灵|连不上")
+_TICKET = re.compile(r"报修|故障|坏了|工单|无法使用|打不开|不工作|失灵|连不上|没声|不响|没反应")
 # A ticket is for a problem being reported ("坏了", "打不开", "出故障了"), not for a question about how
 # problems are handled ("P1故障多久响应？", "怎么报修？"): the knowledge base answers those.
-_REPORTED = re.compile(r"坏了|无法使用|打不开|不工作|失灵|连不上|开不了|没反应|出故障|故障了")
+_REPORTED = re.compile(r"坏了|无法使用|打不开|不工作|失灵|连不上|开不了|没反应|出故障|故障了|没声|不响")
 _ASKING = re.compile(r"多久|多长时间|怎么|如何|什么|哪些|是否|能不能|可以吗|吗[？?]?$|[？?]$")
 _URGENT = re.compile(r"紧急|严重|马上|立刻")
 _AMOUNT = re.compile(r"[¥￥]\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:元|块)")
@@ -115,11 +116,29 @@ BUILTIN_TOOLS = {"search_knowledge", "get_order", "list_my_orders", "track_shipm
 REJECTED_NEXT_STEP = "如有补充凭证，可以重新提交退款申请，也可以回复“转人工”由客服进一步处理。"
 
 
+# "SO… 到哪了 退款多久到账" is two questions without an "另外" (N-221): the parcel, then refund timing in general.
+_CUT = re.compile(r"[，,。；;！!？?]+|(?<=[\u4e00-\u9fff])\s+|\s+(?=[\u4e00-\u9fff])")
+_TIMING = re.compile(r"多久|多长时间|几天|几个工作日|什么时候|啥时候|到账时间|时效")
+
+
+def _then_refund_timing(text: str) -> tuple[str, str] | None:
+    for cut in _CUT.finditer(text):
+        head, rest = text[:cut.start()], text[cut.end():]
+        if (_SHIPMENT.search(head) and not _REFUND.search(head) and _REFUND.search(rest) and _TIMING.search(rest)
+                and not ORDER_ID_RE.search(rest) and not refund_requested(text)):
+            return head.strip(), rest.strip()
+    return None
+
+
 def split_intents(text: str) -> tuple[str, str | None]:
     """(main request, an extra question or None)."""
     match = _EXTRA.search(text)
     if not match:
-        return text, None
+        # "自动续费怎么关 我不想续了 这个月的也退给我": the refund is the request, the renewal a question (N-179)
+        other = other_question(text)
+        if other and other in text:
+            return text.replace(other, " ", 1).strip(" ，,。？?！!；;\u3000"), other
+        return _then_refund_timing(text) or (text, None)
     extra = text[match.end():].strip()
     if len(extra) < 2 or ORDER_ID_RE.search(extra):
         return text, None
@@ -156,6 +175,11 @@ def refund_question(text: str) -> str:
 _EN_TIMING = re.compile(r"(?<![A-Za-z])(?:when|how\s+long|how\s+soon|eta|how\s+many\s+days)(?![A-Za-z])", re.IGNORECASE)
 
 
+def fault_report(text: str) -> bool:
+    """Something the customer bought is faulty, said without an order number ("我买的扫地机器人坏了")."""
+    return bool(_FAULTY.search(text) and _OWN.search(text) and not _SELF_DAMAGE.search(text))
+
+
 def about_my_order(text: str) -> bool:
     """A refund or delivery question about the customer's own order, asked without an order number."""
     if ORDER_ID_RE.search(text):
@@ -171,6 +195,8 @@ def about_my_order(text: str) -> bool:
         # not "不对 我不要退款了", whose 要退 is declined (N-198).
         kept = NEGATED_REFUND_RE.sub("，", text)
         return bool(_APPLY.search(kept) or (_OWN.search(text) and not _ASKING.search(text.strip())))
+    if fault_report(text):
+        return True  # "我上周买的那个音箱 没声了 咋整": which order is it (N-223)
     return bool(_SHIPMENT.search(text) and _MINE.search(text))
 
 
@@ -202,11 +228,16 @@ def _names_item(text: str, name: str) -> bool:
     return any(han[i:i + 2] in text for i in range(len(han) - 1))
 
 
+def _named_orders(text: str, listing: dict[str, Any], exclude: set[str] | frozenset = frozenset()) -> list[dict[str, Any]]:
+    return [o for o in listing.get("orders") or [] if o.get("order_id") not in exclude
+            and any(_names_item(text, n) for n in o.get("items") or [])]
+
+
 def pick_my_order(text: str, listing: dict[str, Any], exclude: set[str] | frozenset = frozenset()) -> str | None:
     """The one order a question without a number is about, or None when it has to be asked.
     Only read-only questions are followed up on a guess; a refund is never filed on one."""
     orders = [o for o in listing.get("orders") or [] if o.get("order_id") not in exclude]
-    named = [o for o in orders if any(_names_item(text, n) for n in o.get("items") or [])]
+    named = _named_orders(text, listing, exclude)
     if named:
         candidates = named
     elif asks_refund_status(text):
@@ -399,11 +430,19 @@ class MockLLM(LLMProvider):
                 return "list_my_orders", {}
             listing = (results.get("list_my_orders") or [{}])[-1]
             # Read-only questions may follow a single match; money never moves on an order we picked.
-            picked = (None if (refund_requested(text) and not asks_refund_status(text)) or refund_withdraw_requested(text)
-                      else pick_my_order(text, listing, exclude))
-            if picked is None:
+            fault = fault_report(text) and not refund_requested(text)
+            if fault:  # a repair is for something that arrived: not a refunded, unpaid or travelling order (review)
+                arrived = [o for o in _named_orders(text, listing, exclude) if o.get("status") == "delivered"]
+                picked = arrived[0]["order_id"] if len(arrived) == 1 else None
+            else:
+                picked = (None if (refund_requested(text) and not asks_refund_status(text)) or refund_withdraw_requested(text)
+                          else pick_my_order(text, listing, exclude))
+            if picked is None and fault and len(_named_orders(text, listing, exclude)) <= 1:
+                pass  # the item is on none of these orders, or not delivered: a ticket without one, as before
+            elif picked is None:
                 return None  # list the orders and ask which one
-            order_ids = [picked]
+            else:
+                order_ids = [picked]
 
         if order_ids:
             order_id = order_ids[0]
@@ -428,13 +467,17 @@ class MockLLM(LLMProvider):
                     return "request_refund", {"order_id": order_id, "amount": float(order.get("amount", 0)),
                                               "reason": f"顾客要求取消未发货订单：{text[:100]}"}
                 return None  # a question about cancelling, or an order already on its way: answered, nothing filed
-            reported = _TICKET.search(text) and (_REPORTED.search(text) or not _ASKING.search(text.strip()))
+            # "我买的收纳盒碎了": a fault on the order it found is a report, ticket words or not (N-223, review)
+            reported = ((_TICKET.search(text) and (_REPORTED.search(text) or not _ASKING.search(text.strip())))
+                        or (not ORDER_ID_RE.search(text) and fault_report(text)))
             repair = _REPAIR.search(text) and (_FAULTY.search(text) or not _ASKING.search(text.strip()))
             if (repair or reported) and not refund_requested(text):  # N-198: a repair or an exchange is a ticket
                 if can("search_knowledge"):
                     return "search_knowledge", {"query": "质量问题 退货 换货"}
                 if can("create_ticket"):
-                    return "create_ticket", {"title": f"{order_id} 换货/维修", "description": text, "priority": "normal"}
+                    items = "、".join(i.get("name", "") for i in order.get("items") or [])  # "扫地机器人 X1": who to send
+                    return "create_ticket", {"title": f"{order_id} {items} 换货/维修".replace("  ", " ")[:60],
+                                             "description": text, "priority": "high" if _URGENT.search(text) else "normal"}
                 return None
             if _SELF_DAMAGE.search(text):  # N-200
                 return ("search_knowledge", {"query": SELF_DAMAGE_QUERY}) if can("search_knowledge") else None
@@ -488,7 +531,8 @@ class MockLLM(LLMProvider):
         if _SELF_DAMAGE.search(text):  # "我昨天买的那个杯子摔坏了是我自己摔的能退吗" (N-200): not a fault ticket
             return ("search_knowledge", {"query": SELF_DAMAGE_QUERY}) if can("search_knowledge") else None
 
-        if _TICKET.search(text) and (_REPORTED.search(text) or not _ASKING.search(text.strip())):
+        if ((_TICKET.search(text) and (_REPORTED.search(text) or not _ASKING.search(text.strip())))
+                or (fault_report(text) and not refund_requested(text))):  # "我买的收纳盒碎了", no order to put it on
             if can("search_knowledge"):
                 return "search_knowledge", {"query": text}
             if can("create_ticket"):
@@ -505,6 +549,7 @@ class MockLLM(LLMProvider):
                  custom: dict[str, ToolSpec] | None = None, exclude: set[str] | None = None) -> str:
         if not any(results.values()) and (reply := smalltalk(text)):
             return reply
+        other = other_question(text)
         text, extra = split_intents(text)
         custom_parts = compose_custom(text, results, custom or {})
         searches = results.get("search_knowledge") or []
@@ -526,7 +571,7 @@ class MockLLM(LLMProvider):
                              if o.get("status") == "rejected" and o.get("message"))
 
         listing = last("list_my_orders")
-        if listing and not results.get("get_order"):
+        if listing and not results.get("get_order") and not results.get("create_ticket"):  # a ticket says what was done
             if exclude:
                 listing = {**listing, "orders": [o for o in listing.get("orders") or [] if o.get("order_id") not in exclude]}
             parts.append(self._ask_which(text, listing))
@@ -635,7 +680,9 @@ class MockLLM(LLMProvider):
             parts.append(IF_COMPLAIN_TEXT)
 
         if extra_search is not None:
-            sentences = self._extract(expand_query(extra), extra_search.get("results") or [], 2)
+            # The renewal question next to this month's refund (N-179): one sentence, "当前会员期仍然有效" would contradict it
+            sentences = self._extract(expand_query(extra), extra_search.get("results") or [],
+                                      1 if refund and extra == other else 2)
             parts.append(f"另外，{''.join(sentences)}" if sentences else f"关于“{extra}”，知识库中没有找到相关依据。")
 
         if not parts:
@@ -660,6 +707,8 @@ class MockLLM(LLMProvider):
         if asks_refund_status(text) and not any(o.get("status") == "refunding" for o in orders):  # N-092
             return (f"没有查到您账号下正在处理中的退款。最近的订单有：{lines}。"
                     "如果问的是其中一单的退款，回复订单号即可帮您查。")
+        if _FAULTY.search(text):  # "我买的东西坏了" (N-223)
+            return f"您账号下最近的订单有：{lines}。请问出问题的是哪一单？回复订单号即可帮您处理。"
         return f"您账号下最近的订单有：{lines}。请问要查询的是哪一单？回复订单号即可。"
 
     @staticmethod
@@ -693,7 +742,7 @@ class MockLLM(LLMProvider):
                 continue
             heading_tokens = token_set(hit.get("heading", ""))
             for pos, raw in enumerate(split_sentences(hit.get("text", ""))):
-                sentence = _clean(raw)
+                sentence = _clean(raw)  # a window that starts mid-clause keeps its "…": it is not a sentence start (N-234)
                 if len(sentence) < 6:
                     continue
                 sentence_tokens = token_set(sentence)
@@ -702,6 +751,10 @@ class MockLLM(LLMProvider):
                 score = direct + 0.3 * context
                 if score >= 0.34:
                     scored.append((score - rank * 0.05, hit["ref"], pos, sentence))
+        # A window a length cut ended ("…空调安装费为…") is half a sentence: quoted only when nothing whole answers.
+        if any(not s[3].endswith(CUT_MARK) for s in scored):
+            scored = [s for s in scored if not s[3].endswith(CUT_MARK)]
+        scored = [(score, ref, pos, sentence.removesuffix(CUT_MARK)) for score, ref, pos, sentence in scored]
         scored.sort(key=lambda s: -s[0])
         picked: list[tuple[int, int, str]] = []
         seen: set[str] = set()
