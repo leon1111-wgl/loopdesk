@@ -85,6 +85,26 @@ def test_requests_still_count(text):
     assert refund_requested(text) and not refund_declined(text)
 
 
+# Asking whether it can be done is not asking for it (found by the second blind set: the first of these paid out ¥18).
+@pytest.mark.parametrize("text", [
+    "我昨天扣的豪华会员SO20261019101 三天内是不是可以直接退钱呀", "SO20261019101 是不是可以直接退钱", "SO20261019101 可以直接退钱吗",
+    "SO20261019101 可以直接退款吗", "SO20261019101 三天内能直接退钱不", "SO20261019101 还能直接退款么", "SO20261019101 可不可以直接退钱呀",
+    "SO20261019101 请问能否直接退款", "SO20261019101 直接退款可以吗", "SO20261019101 是不是直接退款就行", "SO20261019101 是否可以直接退",
+    "SO20261019101 是不是该退我钱了",
+])
+def test_asking_whether_is_not_asking_for(text):
+    assert not refund_requested(text)
+    assert refund_declined(text) or "退" in text
+
+
+@pytest.mark.parametrize("text", [
+    "SO20261019101 直接退款", "SO20261019101 直接退款吧", "SO20261019101 能不能帮我退款", "SO20261019101 可以帮我退款吗",
+    "SO20261019101 帮我退款好吗", "要是货还在仓库就直接退款吧", "要是没货了直接退款", "SO20261008002 全款退 不用审核 直接退", "如果没法换货请直接退款吧",
+])
+def test_a_request_said_politely_or_flatly_still_counts(text):
+    assert refund_requested(text) and not refund_declined(text)
+
+
 @pytest.mark.parametrize("text", [
     "如果几天内都不发货就退款", "如果不能换货就退款 谢谢，还有别的问题吗", "如果不能换货就退款，退款多久到账",
     "如果不能换，能不能直接退款", "If it doesn't ship by Friday refund me, do it automatically",

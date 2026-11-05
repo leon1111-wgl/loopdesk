@@ -530,6 +530,21 @@ def test_mcp_server_tools_respect_permissions(settings, client, monkeypatch):
     assert json.loads(mcp_server._call(get_services(), get_order, {"order_id": "SO20261003005"}))["amount"] == 899.0
 
 
+def test_mcp_tools_say_they_only_read_and_answer_in_fields(settings, client, monkeypatch):
+    pytest.importorskip("mcp")
+    import anyio
+
+    from app import mcp_server
+
+    monkeypatch.setattr(mcp_server, "get_settings", lambda: settings)
+    server = mcp_server.build_server()
+    tools = anyio.run(server.list_tools)
+    assert {t.name for t in tools} == {"loopdesk_search_knowledge", "loopdesk_get_order", "loopdesk_list_orders", "loopdesk_track_shipment"}
+    for tool in tools:  # nothing that writes is exposed, and each says so
+        assert tool.annotations.read_only_hint is True and tool.annotations.destructive_hint is False
+        assert tool.output_schema is not None
+
+
 def test_openai_compat_never_retries_past_the_run_deadline():
     import time as clock
 

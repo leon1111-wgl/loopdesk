@@ -50,6 +50,9 @@ export interface MessageMeta {
   status?: string;
   approval_id?: number;
   agent?: string; // name of the person who wrote an "agent" message
+  // The static demo: what answered (recorded | browser-rules | qwen3-0.6b-webgpu; demo/replay.ts).
+  engine?: string;
+  model_choice?: { raw: string; note: string };
   // Voice channel: what was played, whether the customer cut it short, the latency breakdown.
   voice?: { kind?: string; spoken?: string; interrupted?: boolean; generated?: string; latency?: Record<string, number> };
 }
@@ -113,6 +116,7 @@ export type AgentEvent =
       model?: string;
       route_tier?: string;
     }
+  | { type: "model_choice"; raw: string; note: string; accepted: boolean } // the static demo's browser model (demo/engine/tier2.ts)
   | { type: "error"; message: string };
 
 export interface Approval {
@@ -137,6 +141,8 @@ export interface Approval {
   history?: ApprovalHistoryItem[];
   /** A tenant tool switched off or deleted since: approving is refused, rejecting still tells the customer (N-230). */
   tool_off?: boolean;
+  /** The static demo: filed in this browser tab, decided here too, nothing moves anywhere. */
+  simulated?: boolean;
 }
 
 export interface ApprovalHistoryItem {
@@ -201,6 +207,8 @@ export interface RunRow {
   error: string | null;
   created_at: string;
   user: { id: number; name: string; role: Role } | null;
+  /** The static demo: run by the browser engine in this tab. */
+  simulated?: boolean;
 }
 
 export interface SpanRow {

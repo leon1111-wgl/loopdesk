@@ -26,7 +26,7 @@ function RunDetailView({ runId }: { runId: string }) {
   const maxLatency = Math.max(1, ...data.spans.map((s) => s.latency_ms));
   return (
     <div className="stack" style={{ gap: 16 }}>
-      <PageHeader title={<>运行详情 {data.is_eval && <span className="badge badge-info" style={{ verticalAlign: 3 }}>评测运行</span>}</>}
+      <PageHeader title={<>运行详情 {data.is_eval && <span className="badge badge-info" style={{ verticalAlign: 3 }}>评测运行</span>}{data.simulated && <span className="badge badge-warning" style={{ verticalAlign: 3 }} title="由浏览器内的规则引擎在本页运行，没有调用模型">模拟</span>}</>}
         description={<span className="mono">trace {data.id}</span>}
         actions={<button className="btn" onClick={() => navigate("/traces")}><ArrowLeft size={14} /> 返回列表</button>} />
       <div className="grid grid-4">
@@ -117,7 +117,7 @@ export default function TracesPage() {
               <tr key={r.id} className="clickable" {...pressable(() => navigate(`/traces/${r.id}`))}>
                 <td className="faint nowrap">{time(r.created_at)}</td>
                 <td className="nowrap">{r.user?.name}</td>
-                <td style={{ maxWidth: 380 }}><div className="ellipsis">{r.input_text}</div></td>
+                <td style={{ maxWidth: 380 }}><div className="ellipsis">{r.simulated && <span className="badge badge-warning" style={{ marginRight: 6 }}>模拟</span>}{r.input_text}</div></td>
                 <td><StatusBadge status={r.status} /></td>
                 <td className="nowrap"><span className={`badge ${r.route_tier === "strong" ? "badge-info" : r.route_tier === "cache" ? "badge-success" : ""}`}>{r.route_tier === "strong" ? "强" : r.route_tier === "cache" ? "缓存" : r.route_tier === "rule" ? "规则" : "快"}</span> <span className="faint">{r.model}</span></td>
                 <td className="mono">{ms(r.latency_ms)}</td>

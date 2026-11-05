@@ -171,11 +171,31 @@ def _in_timing_question(before: str) -> bool:
     return len(rest) <= _TIMING_REACH and not _TIMING_ENDS.search(rest)
 
 
+# Whether it can be done, not a request to do it (second blind set): "三天内是不是可以直接退钱呀" paid out. 是不是 / 是否 / 能否 in
+# front of the words asks. So does a bare 直接退 / 就退 followed by a question ("直接退款可以吗") or, after 能 / 可以, by a
+# colloquial ending ("能直接退钱不"). 帮我 / 给我 name who gets it: "能不能帮我退款" and "可以给我退款吗" are how people ask politely.
+_ASKED_WHETHER = re.compile(r"(?:是不是|是否|能否|可否)[^，,。！!？?；;\n]*$")
+_DIRECT_END = re.compile(r"(?:直接|就)$")
+_CAN_END = re.compile(r"(?:能|可以)[^，,。！!？?；;\n]{0,3}$")
+_REST_OF_CLAUSE = re.compile(r"[^，,。！!；;\n]*")
+_ASKS_AFTER = re.compile(r"吗|么|[？?]")
+_ASKS_AT_END = re.compile(r"(?:不|呀|没|呢)\s*$")
+
+
+def _asked_whether(before: str, match: re.Match[str], text: str) -> bool:
+    if _ASKED_WHETHER.search(before):
+        return True
+    if not (match.group().startswith(("直接", "就")) or _DIRECT_END.search(before)):
+        return False
+    rest = _REST_OF_CLAUSE.match(text, match.end()).group()
+    return bool(_ASKS_AFTER.search(rest) or (_CAN_END.search(_DIRECT_END.sub("", before)) and _ASKS_AT_END.search(rest)))
+
+
 def _named_demand(pattern: re.Pattern, text: str) -> bool:
-    """A match of ``pattern`` that is neither reported nor inside a timing question in front of it."""
+    """A match of ``pattern`` that is neither reported nor inside a question in front of it or around it."""
     for match in pattern.finditer(text):
         before = text[:match.start()]
-        if _REPORTED_BEFORE.search(before) or _in_timing_question(before):
+        if _REPORTED_BEFORE.search(before) or _in_timing_question(before) or _asked_whether(before, match, text):
             continue
         return True
     return False

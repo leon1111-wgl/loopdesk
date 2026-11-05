@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { DemoEngineBar, EngineTag } from "../components/DemoEngine";
 import { demoQuestions, isDemo } from "../demo/replay";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Activity, FlaskConical, Grid3x3, History, Mic, MicOff, PencilLine, Plus, Search, Send, ShieldAlert, Square, ThumbsDown, ThumbsUp, X } from "lucide-react";
@@ -178,6 +179,14 @@ function EventItem({ event }: { event: AgentEvent }) {
               {s.contradicts === "request_refund" && "（与退款结果矛盾：退款未通过或未提交）"}
             </div>
           ))}
+        </div>
+      );
+    case "model_choice":
+      return (
+        <div className="event tool">
+          <b>浏览器模型的选择</b> <span className={`badge ${event.accepted ? "badge-success" : "badge-warning"}`}>{event.accepted ? "已校验" : "未采用"}</span>
+          <div className="faint">{event.note}</div>
+          {event.raw && <pre className="mono faint">{event.raw}</pre>}
         </div>
       );
     case "answer_replaced":
@@ -677,6 +686,7 @@ export default function ChatPage() {
             <Plus size={14} /> 新建对话
           </button>
         </div>
+        {isDemo && <DemoEngineBar />}
         <div className="messages">
           {messages.length === 0 && !pendingUser && (
             <div className="welcome">
@@ -716,6 +726,7 @@ export default function ChatPage() {
                 )}
                 {m.role === "assistant" && (
                   <div className="bubble-meta">
+                    {isDemo && <EngineTag engine={m.meta.engine} />}
                     {staff && m.meta.verification && <VerdictBadge verdict={m.meta.verification.verdict} coverage={m.meta.verification.coverage} />}
                     {m.meta.status && m.meta.status !== "completed" && <StatusBadge status={m.meta.status} />}
                     {m.meta.voice?.interrupted && <span className="badge" title="顾客打断了播报，对话里只保留已播放的部分">播报被打断</span>}

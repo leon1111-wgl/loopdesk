@@ -104,7 +104,7 @@ export default function LoginPage({ embedded }: { embedded?: boolean } = {}) {
         ))}
       </div>
     )}
-    {isDemo && <div className="login-disclosure"><ShieldCheck size={15} aria-hidden="true" /><p>{demoSource()}。可浏览与回放示例，提交类操作不会保存。</p></div>}
+    {isDemo && <div className="login-disclosure"><ShieldCheck size={15} aria-hidden="true" /><p>{demoSource()}。没有录制的问题由浏览器内的规则引擎回答，不是模型；改动只在本页模拟，不会保存。</p></div>}
     {(isDemo || (demo?.accounts.length ?? 0) > 0) && <details className="login-other"><summary>使用邮箱登录</summary>{loginForm}</details>}
   </section>
   );

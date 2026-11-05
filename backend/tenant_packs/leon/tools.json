@@ -6,7 +6,7 @@
     "binding": {"method": "GET", "url": "https://api.leon.example/v1/members/me",
                 "auth": {"secret": "SYNTHETIC_LEON_BACKOFFICE", "scheme": "bearer"},
                 "result": {"fields": ["points", "tier"], "message": "您当前有 {points} 积分，会员等级为{tier}。"}},
-    "hints": {"intents": ["积分还有多少", "我的积分", "查积分", "剩多少积分", "多少积分了"]},
+    "hints": {"intents": ["积分还有多少", "积分还剩", "积分余额", "积分一共", "积分有多少", "积分够不够", "有多少积分", "我的积分", "查积分", "剩多少积分", "多少积分了", "我积分"]},
     "enabled": true
   },
   {
@@ -21,7 +21,7 @@
                 "errors": {"amount_too_large": {"text": "单张补偿券最多 1000 元"}}},
     "approval": {"mode": "threshold", "amount_field": "amount", "auto_limits": {"CNY": 20}, "approver": "agent",
                  "admin_above": {"CNY": 200}, "customer_note": "超过 20 元的补偿券需要人工核实"},
-    "hints": {"intents": ["元补偿券", "块补偿券", "发补偿券", "补偿券给我", "要补偿券", "发张补偿券", "给张补偿券"]},
+    "hints": {"intents": ["元补偿券", "块补偿券", "元的补偿券", "块的补偿券", "发补偿券", "补偿券给我", "要补偿券", "发张补偿券", "给张补偿券"]},
     "enabled": true
   }
 ]

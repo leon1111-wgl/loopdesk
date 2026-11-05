@@ -1,0 +1,127 @@
+name: Browser model evaluation
+
+# The static demo's second tier: Qwen3-0.6B choosing intent, order and evidence under a JSON schema. Real inference runs only
+# here, never on a laptop, and nothing here costs an API fee.
+# - selection: how well the model does the job, natively (llama.cpp, a GGUF of the same weights), on the blind sets and gate
+#   cases, scored by the same validation and tools as the browser. A model that files money on a non-request fails the job.
+# - webgpu: the published demo in Chromium on a software GPU (SwiftShader), to see whether the click-to-load path works end to
+#   end from the shared weights. A runner has no real GPU: if the adapter lacks what the model needs, the job says so.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Cases to run (0: all)"
+        default: "0"
+      gguf_repo:
+        description: "Hugging Face repository of the GGUF"
+        default: "Qwen/Qwen3-0.6B-GGUF"
+      gguf_file:
+        description: "File in that repository"
+        default: "Qwen3-0.6B-Q8_0.gguf"
+      template:
+        description: "Chat template: qwen or gemma"
+        default: "qwen"
+      demo_url:
+        description: "Site the WebGPU job opens"
+        default: "https://leon1111-wgl.github.io/loopdesk/"
+
+permissions:
+  contents: read
+
+jobs:
+  selection:
+    name: Choosing intent, order and evidence (native)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: The prompts, from the browser engine
+        working-directory: frontend
+        env:
+          TIER2_PROMPTS: ${{ github.workspace }}/prompts.json
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec vitest run src/demo/engine/tier2.eval.test.ts
+      - run: pip install "llama-cpp-python==0.3.16" huggingface_hub
+      - name: The weights
+        run: |
+          python - <<'PY'
+          from huggingface_hub import hf_hub_download
+          print(hf_hub_download("${{ inputs.gguf_repo }}", "${{ inputs.gguf_file }}", local_dir="weights"))
+          PY
+      - name: Run the model
+        working-directory: backend
+        run: python -m app.evals.tier2_run ../prompts.json ../outputs.json --model "../weights/${{ inputs.gguf_file }}" --limit "${{ inputs.limit }}" --template "${{ inputs.template }}"
+      - name: Score with the same validation and tools as the browser
+        working-directory: frontend
+        env:
+          TIER2_OUTPUTS: ${{ github.workspace }}/outputs.json
+        run: pnpm exec vitest run src/demo/engine/tier2.eval.test.ts
+      - name: Summary
+        if: always()
+        run: |
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          path = pathlib.Path("outputs.json.report.json")
+          print("```json")
+          print(json.dumps(json.loads(path.read_text())["summary"], indent=1) if path.exists() else "no report")
+          print("```")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tier2-selection
+          path: |
+            outputs.json
+            outputs.json.report.json
+          retention-days: 30
+
+  webgpu:
+    name: Click to load on the published demo (SwiftShader)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+      - name: Open the demo, click, load, ask
+        continue-on-error: true
+        env:
+          REAL_WEBGPU: "1"
+          DEMO_URL: ${{ inputs.demo_url }}
+        run: pnpm exec playwright test -c playwright.demo.config.ts e2e-demo/webgpu-real.spec.ts --timeout 3600000
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tier2-webgpu
+          path: |
+            frontend/webgpu-report.json
+            frontend/test-results
+          retention-days: 30
+      - name: What it found
+        if: always()
+        run: cat webgpu-report.json | tee -a "$GITHUB_STEP_SUMMARY" || echo "no report" | tee -a "$GITHUB_STEP_SUMMARY"

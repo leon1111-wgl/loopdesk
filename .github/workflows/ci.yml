@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: backend/requirements.txt
-      - run: pip install -r requirements.txt
+      - run: pip install -r requirements.txt "mcp>=2.0"
       - run: pytest -q
       - name: Tests again with buffered trace writes (the PostgreSQL default)
         run: pytest -q
@@ -82,6 +82,46 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: The demo's browser engine against the backend's rules and gate cases
+        run: pnpm test
+
+  demo:
+    name: Static demo walkthroughs (Playwright, no backend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+      - name: Build as GitHub Pages serves it
+        env:
+          VITE_DEMO: "1"
+          VITE_BASE: /loopdesk/
+        run: |
+          pnpm build
+          mkdir -p dist/demo
+          cp ../demo/real-model/fixtures.json dist/demo/fixtures.json
+      - name: A visitor types what nobody recorded
+        run: pnpm e2e:demo
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-demo-report
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+          retention-days: 7
 
   e2e:
     name: End-to-end walkthroughs (Playwright)
