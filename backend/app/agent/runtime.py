@@ -280,18 +280,21 @@ class AgentRuntime:
     def start(self, *, tenant: Tenant, user: User, text: str, conversation: Conversation | None = None,
               options: RunOptions | None = None) -> Iterator[dict[str, Any]]:
         options = options or RunOptions()
-        # "ＳＯ２０２６…" is an order number too; "到賬" is 到账 (N-221: every channel, not only the web chat)
-        text = script.canonical(tenant, normalize_width(text))
+        # "ＳＯ２０２６…" is an order number too; "到賬" is 到账 (N-221: every channel, not only the web chat). The
+        # transcript keeps the customer's own script; everything that reads it to match folds it again.
+        said = normalize_width(text)
+        text = script.canonical(tenant, said)
         pii = mask_pii(text) if self.settings.pii_masking else PIIReport(text, [])
+        said = mask_pii(said).masked if self.settings.pii_masking else said
         history = self._history(conversation)
         previous, frame = self._previous_turn(conversation)
         user_message = None
         if conversation is not None:  # dry runs pass a conversation only inside the eval sandbox
             user_message = Message(tenant_id=tenant.id, conversation_id=conversation.id, role="user",
-                                   content=pii.masked, meta={})
+                                   content=said, meta={})
             self.db.add(user_message)
             if conversation.title == "新对话":
-                conversation.title = pii.masked[:30]
+                conversation.title = said[:30]
             conversation.updated_at = datetime.now(timezone.utc)
             if conversation.status == "handoff":
                 ticket = handoff.active_ticket(self.db, conversation.id)
@@ -1270,7 +1273,7 @@ class AgentRuntime:
         if last is None:
             return None, None
         meta = last.meta or {}
-        question = meta.get("standalone") or last.content
+        question = meta.get("standalone") or script.canonical(None, last.content)
         frame = Frame(**meta["frame"]) if meta.get("frame") else frame_of(question)
         return question, frame
 
@@ -1284,7 +1287,7 @@ class AgentRuntime:
         history = []
         for m in reversed(rows):  # model APIs know only user and assistant turns
             if m.role in ("user", "assistant"):
-                history.append(LLMMessage(role=m.role, content=m.content))
+                history.append(LLMMessage(role=m.role, content=script.canonical(None, m.content) if m.role == "user" else m.content))
             elif m.role == "agent":  # what a person told the customer is context the agent needs after hand-back
                 history.append(LLMMessage(role="assistant", content=f"（人工客服）{m.content}"))
         return history

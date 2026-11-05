@@ -928,7 +928,8 @@ def handoff_to_human(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             # with a person; this covers the agent being called anyway.)
             return _already_queued(ctx, existing)
     waiting = handoff.waiting_ahead(ctx.db, ctx.tenant.id)  # the new ticket is not in it yet
-    title, description = handoff.brief(reason, ctx.customer_text, handoff.earlier_orders(ctx.db, ctx.conversation_id))
+    title, description = handoff.brief(reason, ctx.customer_text, handoff.earlier_orders(ctx.db, ctx.conversation_id),
+                                       said=handoff.last_said(ctx.db, ctx.conversation_id, ctx.customer_text))
     subject = handoff.complaint_subject(ctx.db, ctx.tenant, ctx.user, ctx.conversation_id, ctx.customer_text)
     if subject is not None:  # N-222: the person complained about does not handle it
         description += "\n" + handoff.subject_note(subject)
@@ -1032,7 +1033,7 @@ def build_registry() -> ToolRegistry:
     ))
     registry.register(ToolDef(
         name="create_ticket",
-        description="为无法在线解决的问题（故障、报修、复杂售后）创建工单，由技术支持跟进。",
+        description="为无法在线解决的问题（故障、报修、复杂售后）创建工单，由技术支持跟进。一条消息报了几件东西的问题时，每件各建一张。",
         parameters={
             "type": "object",
             "properties": {

@@ -56,8 +56,9 @@ def _authorize(first: dict) -> tuple[Principal, Conversation]:
     with new_session() as db:
         principal = principal_from_token(db, str(first.get("token") or ""))
         conversation = db.get(Conversation, int(first.get("conversation_id") or 0))
+        # Speaking is writing: only the conversation's owner (chat._own_conversation).
         if conversation is None or conversation.tenant_id != principal.tenant.id or \
-                (conversation.user_id != principal.user.id and not principal.is_staff):
+                conversation.user_id != principal.user.id:
             raise LookupError("conversation")
         db.expunge_all()
         return principal, conversation

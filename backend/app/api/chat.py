@@ -73,6 +73,16 @@ def _load_conversation(db: Session, principal: Principal, conversation_id: int) 
     return conversation
 
 
+def _own_conversation(db: Session, principal: Principal, conversation_id: int) -> Conversation:
+    """Only the customer writes in their conversation: what is posted here is stored and answered as their words, and
+    "算了 不用人工了" ends their handoff. Staff read it (_load_conversation) and reply from the handoff queue, where
+    a reply is theirs by name and a complaint about them is refused (N-222)."""
+    conversation = _load_conversation(db, principal, conversation_id)
+    if conversation.user_id != principal.user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "这是顾客的会话，不能以顾客的身份发言；请在转人工队列回复")
+    return conversation
+
+
 def _options(principal: Principal, body: ChatIn) -> RunOptions:
     # Hallucination injection is a demo switch for the evidence verifier: admins only.
     inject = body.options.inject_hallucination and principal.user.role == "admin"
@@ -124,7 +134,7 @@ def stream_message(conversation_id: int, body: ChatIn, principal: Principal = De
     run_started, guardrail, token, step_done, tool_call, tool_result, approval_required,
     verification, answer_replaced, final, done, error."""
     rate_limiter.check(f"chat:{principal.user.id}", get_settings().rate_limit_per_minute)
-    _load_conversation(db, principal, conversation_id)
+    _own_conversation(db, principal, conversation_id)
     options = _options(principal, body)
     user_id, tenant_id = principal.user.id, principal.tenant.id
     reader = type("Reader", (), {"locale": principal.tenant.locale})()  # the script, without the session
@@ -143,7 +153,7 @@ def stream_message(conversation_id: int, body: ChatIn, principal: Principal = De
                 runtime = get_services().runtime(session)
                 yield from runtime.start(
                     tenant=session.get(Tenant, tenant_id), user=session.get(User, user_id),
-                    text=script.canonical(reader, body.content), conversation=session.get(Conversation, conversation_id),
+                    text=body.content, conversation=session.get(Conversation, conversation_id),
                     options=options,
                 )
             except Exception as exc:  # report instead of silently cutting the stream
@@ -205,7 +215,7 @@ def chat(body: QuickChatIn, principal: Principal = Depends(get_principal), db: S
     """Non-streaming variant for API integrations and scripts."""
     rate_limiter.check(f"chat:{principal.user.id}", get_settings().rate_limit_per_minute)
     if body.conversation_id:
-        conversation = _load_conversation(db, principal, body.conversation_id)
+        conversation = _own_conversation(db, principal, body.conversation_id)
     admission = get_admission()
     # Before a new conversation is created: a turned-away request leaves nothing behind.
     slot = admission.enter(principal.tenant.id, None if principal.is_staff else principal.user.id)
@@ -215,7 +225,7 @@ def chat(body: QuickChatIn, principal: Principal = Depends(get_principal), db: S
             db.add(conversation)
             db.commit()
         summary = collect(get_services().runtime(db).start(
-            tenant=principal.tenant, user=principal.user, text=script.canonical(principal.tenant, body.content),
+            tenant=principal.tenant, user=principal.user, text=body.content,
             conversation=conversation, options=_options(principal, body),
         ))
     finally:

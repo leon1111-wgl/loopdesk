@@ -104,6 +104,7 @@ class CaseState:
     refund_fields: dict[str, Any] = field(default_factory=dict)
     ticket: str = "none"  # created | failed | none
     ticket_fields: dict[str, Any] = field(default_factory=dict)
+    tickets: list[dict[str, Any]] = field(default_factory=list)  # every ticket of the run: two faults, two numbers
     handoff: bool = False
     # Each order's delivery as the order and tracking tools report it: unshipped | shipped | delivered.
     shipments: dict[str, str] = field(default_factory=dict)
@@ -206,11 +207,14 @@ def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
                 state.refund_source = "order"
         elif item.title == "create_ticket":
             if output.get("error"):
-                state.ticket, state.ticket_fields = "failed", {"reason": str(output["error"])}
+                if state.ticket != "created":  # the one that was made still stands
+                    state.ticket, state.ticket_fields = "failed", {"reason": str(output["error"])}
             else:
                 state.ticket = "created"
                 state.ticket_fields = {k: output.get(k) for k in ("ticket_id", "priority", "sla_hours")}
                 state.ticket_fields["team"] = output.get("team") or "技术支持"  # tickets filed before N-200 said so
+                if state.ticket_fields not in state.tickets:
+                    state.tickets.append(state.ticket_fields)
         elif item.title == "handoff_to_human" and not output.get("error"):
             state.handoff = True
     return state
@@ -243,9 +247,9 @@ def render_status(state: CaseState, dry_run: bool = False) -> Rendered:
             key = "refund.rejected" if state.refund_fields.get("comment") else "refund.rejected_bare"
         _put(rendered, "refund", TEMPLATES[key], state.refund_fields)
     if state.ticket == "created":
-        fields = state.ticket_fields
-        _put(rendered, "ticket", TEMPLATES["ticket.drill" if dry_run and fields.get("ticket_id") is None
-                                            else "ticket.created"], fields)
+        for fields in state.tickets or [state.ticket_fields]:
+            _put(rendered, "ticket", TEMPLATES["ticket.drill" if dry_run and fields.get("ticket_id") is None
+                                                else "ticket.created"], fields)
     return rendered
 
 
@@ -254,7 +258,7 @@ def _put(rendered: Rendered, domain: str, template: Template, fields: dict[str, 
     if text is None:
         rendered.unusable[domain] = template.missing(fields)
     else:
-        setattr(rendered, domain, text)
+        setattr(rendered, domain, (getattr(rendered, domain) or "") + text)
 
 
 # ---------------------------------------------------------------- what a sentence claims

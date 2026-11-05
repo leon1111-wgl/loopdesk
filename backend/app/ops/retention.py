@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
+from ..governance import script
 from ..models import AnswerCache, Approval, Message, Refund, Run, Span, Ticket
 
 REDACTED = "[已过保留期，内容已清除]"
@@ -176,9 +177,10 @@ def erase_user(db: Session, user_id: int, principal=None) -> dict[str, int]:
     # A cached answer is keyed by the question's text and not by who asked: the entries their questions
     # made go (another customer asking the same thing just misses the cache once).
     from ..agent.answer_cache import normalize_question
-    asked = sorted({normalize_question(text) for (text,) in db.execute(
+    asked = sorted({normalize_question(form) for (text,) in db.execute(
         select(Run.input_text).where(Run.user_id == user_id).union(
-            select(Message.content).where(Message.conversation_id.in_(conversation_ids), Message.role == "user"))).all()})
+            select(Message.content).where(Message.conversation_id.in_(conversation_ids), Message.role == "user"))).all()
+        for form in (text, script.canonical(None, text))})  # the transcript has their script, the key the folded one
     cached = 0
     for i in range(0, len(asked), 500):  # bounded bind parameters, however talkative the customer was
         cached += db.execute(delete(AnswerCache).where(AnswerCache.tenant_id == user.tenant_id,

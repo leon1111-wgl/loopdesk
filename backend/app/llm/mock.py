@@ -180,6 +180,66 @@ def fault_report(text: str) -> bool:
     return bool(_FAULTY.search(text) and _OWN.search(text) and not _SELF_DAMAGE.search(text))
 
 
+# Several things reported at once ("我买的音箱没声了 杯子也碎了"): a ticket for each, or the second one is lost.
+_FAULT_SEP = re.compile(r"[，,。；;！!]+|(?<=[\u4e00-\u9fff])\s+|另外|还有|以及")  # not after "SO…": it starts its clause
+_FAULT_QUESTION = re.compile(r"多久|多长时间|哪些|是否|什么时候|啥时候|容易|会不会|如果|要是|假如|万一|的话|吗\s*$|[?？]")
+_NOT_FAULTY = re.compile(r"没有?(?:坏|碎|破|裂|漏)|不是(?:坏|碎|破)|不(?:坏|破)")
+# Words before a fault that name nothing of their own: "音箱没声了 是不是坏了", "而且也打不开".
+_NOT_A_THING = re.compile(r"是不是|不过|但是|其实|好像|可能|感觉|而且|并且|然后|现在|今天|昨天|前天|上周|已经|完全|根本|一直|总是|老是|经常|不知道|为什么|怎么"
+                          r"|\d+|[一二两三四五六七八九十几]+(?:天|周|个月|年|次|小时|分钟)"
+                          r"|是|还|也|都|又|就|才|刚|它|这个|那个|这|那|了|的|我|买|一")
+# A part of the thing, what was tried on it, or no thing at all: "屏幕也碎了", "按电源键也开不了机", "订单有问题".
+_A_PART = re.compile(r"(?:屏幕|声音|喇叭|电池|充电|键|按钮|开关|外壳|包装|盖子|把手|手柄|插头|电源|音量|蓝牙|遥控|拉链|线头|里面|外面|底部|顶部"
+                     r"|订单|物流|快递)$|^(?:按|点|插|连|开机|重启|试|换|用|拿|放|摇|拍|摸|碰)")
+_FAULTS_AT_ONCE = 3  # what fits in the steps of a run; the rest goes on the last ticket
+
+
+def _thing(words: str) -> str:
+    return re.sub(r"\W", "", _NOT_A_THING.sub("", ORDER_ID_RE.sub("", words)))
+
+
+def several_faults(text: str) -> list[str]:
+    """The clauses of a message that report different things faulty, when there are two or more. Another clause about
+    the same thing ("音箱没声了 是不是坏了") stays one report, and a question or a refund goes the usual way. What the
+    customer damaged is not reported: "音箱坏了 耳机也坏了 不过耳机是我自己摔的" is the speaker alone, and "音箱坏了 是我自己摔的"
+    names nothing else, so it goes the usual way too."""
+    if not (_OWN.search(text) or _REPORTED.search(text) or ORDER_ID_RE.search(text)) or _mentions_refund(text) or wants_human(text):
+        return []
+    clauses = _FAULT_SEP.split(text)
+    damaged = [clause for clause in clauses if _SELF_DAMAGE.search(clause)]
+    if any(len(_thing(clause[:_SELF_DAMAGE.search(clause).start()])) < 2 for clause in damaged):
+        return []
+    faults, before = [], ""
+    for clause in clauses:
+        fault = _FAULTY.search(clause)
+        if not fault:
+            before = clause  # "音箱 没声了": the thing, then what is wrong with it
+            continue
+        thing = _thing(clause[:fault.start()])
+        if len(thing) < 2 and before:
+            clause, thing = f"{before} {clause}", _thing(before)
+        before = ""
+        if _NOT_FAULTY.search(clause) or _FAULT_QUESTION.search(clause) or _SELF_DAMAGE.search(clause):
+            continue
+        if ((ORDER_ID_RE.search(clause) or (len(thing) >= 2 and not _A_PART.search(thing)))
+                and not any(_names_item(other, thing) for other in damaged)):
+            faults.append(clause)
+    if len(faults) < (1 if damaged else 2):
+        return []
+    return [*faults[:_FAULTS_AT_ONCE - 1], "；".join(faults[_FAULTS_AT_ONCE - 1:])] if len(faults) > _FAULTS_AT_ONCE else faults
+
+
+def fault_intents(text: str) -> tuple[list[str], str, str | None]:
+    """(the faults, the main request, an extra question): "音箱没声了 杯子也碎了 另外发票怎么开" keeps its question, while
+    "音箱没声了，还有那个耳机也坏了" is not a question after 还有."""
+    main, extra = split_intents(text)
+    if faults := several_faults(main):
+        return faults, main, extra
+    if faults := several_faults(text):
+        return faults, text, None
+    return [], main, extra
+
+
 def about_my_order(text: str) -> bool:
     """A refund or delivery question about the customer's own order, asked without an order number."""
     if ORDER_ID_RE.search(text):
@@ -231,6 +291,34 @@ def _names_item(text: str, name: str) -> bool:
 def _named_orders(text: str, listing: dict[str, Any], exclude: set[str] | frozenset = frozenset()) -> list[dict[str, Any]]:
     return [o for o in listing.get("orders") or [] if o.get("order_id") not in exclude
             and any(_names_item(text, n) for n in o.get("items") or [])]
+
+
+def fault_tickets(text: str, faults: list[str], listing: dict[str, Any], looked_up: list[dict[str, Any]],
+                  exclude: set[str] | frozenset = frozenset()) -> list[dict[str, Any]]:
+    """One ticket for each thing reported: on its order when the clause gives the number or names the one delivered order
+    it can be, else without one. A number that is not the customer's gets none: the answer says so."""
+    known = {o.get("order_id"): o for o in [*(listing.get("orders") or []), *looked_up]}
+    tickets, by_order = [], {}
+    for clause in faults:
+        number = ORDER_ID_RE.search(clause)
+        if number:
+            order = known.get(number.group().upper())
+            if order is None or order.get("error"):
+                continue
+        else:
+            arrived = [o for o in _named_orders(clause, listing, exclude) if o.get("status") == "delivered"]
+            order = arrived[0] if len(arrived) == 1 else None
+        title = clause[:30]
+        if order is not None:
+            if order["order_id"] in by_order:  # a second thing wrong with the same order: on its ticket
+                by_order[order["order_id"]]["description"] += f"；{clause}"
+                continue
+            items = "、".join(i.get("name", "") if isinstance(i, dict) else i for i in order.get("items") or [])
+            title = f"{order['order_id']} {items} 换货/维修".replace("  ", " ")[:60]
+        tickets.append({"title": title, "description": clause, "priority": "high" if _URGENT.search(text) else "normal"})
+        if order is not None:
+            by_order[order["order_id"]] = tickets[-1]
+    return tickets
 
 
 def pick_my_order(text: str, listing: dict[str, Any], exclude: set[str] | frozenset = frozenset()) -> str | None:
@@ -381,19 +469,36 @@ class MockLLM(LLMProvider):
                    custom: dict[str, ToolSpec] | None = None, exclude: set[str] | None = None):
         if smalltalk(text):
             return None
-        main, extra = split_intents(text)
+        faults, main, extra = fault_intents(text) if "create_ticket" in available else ([], *split_intents(text))
         if wants_human(main) and "handoff_to_human" in available and "handoff_to_human" not in called:
             return "handoff_to_human", {"reason": main[:120]}
         plan = plan_custom(main, custom or {}, called, results)
         if plan is not None:
             return plan.call
-        call = self._main_call(main, called, results, available, exclude or set())
+        call = (self._fault_call(main, faults, called, results, available, exclude or set(), not extra) if faults
+                else self._main_call(main, called, results, available, exclude or set()))
         if call is not None:
             return call
         searched = {r.get("query") for r in results.get("search_knowledge") or []}
         if extra and "search_knowledge" in available and extra not in searched:
             return "search_knowledge", {"query": extra}
         return None
+
+    def _fault_call(self, text: str, faults: list[str], called: list[str], results: dict, available: set[str], exclude: set[str],
+                    policy: bool):
+        if "list_my_orders" in available and "list_my_orders" not in called:
+            return "list_my_orders", {}
+        listing = (results.get("list_my_orders") or [{}])[-1]
+        listed = {o.get("order_id") for o in listing.get("orders") or []}
+        unlisted = [m.group().upper() for clause in faults if (m := ORDER_ID_RE.search(clause)) and m.group().upper() not in listed]
+        looked_up = results.get("get_order") or []
+        if len(looked_up) < len(unlisted) and "get_order" in available:
+            return "get_order", {"order_id": unlisted[len(looked_up)]}
+        if policy and "search_knowledge" in available and "search_knowledge" not in called:  # or the extra question's search
+            return "search_knowledge", {"query": SELF_DAMAGE_QUERY if _SELF_DAMAGE.search(text) else "质量问题 退货 换货"}
+        tickets = fault_tickets(text, faults, listing, looked_up, exclude)
+        made = len(results.get("create_ticket") or [])
+        return ("create_ticket", tickets[made]) if made < len(tickets) else None
 
     def _main_call(self, text: str, called: list[str], results: dict, available: set[str], exclude: set[str]):
         def can(name: str) -> bool:
@@ -550,7 +655,7 @@ class MockLLM(LLMProvider):
         if not any(results.values()) and (reply := smalltalk(text)):
             return reply
         other = other_question(text)
-        text, extra = split_intents(text)
+        faults, text, extra = fault_intents(text) if results.get("create_ticket") else ([], *split_intents(text))
         custom_parts = compose_custom(text, results, custom or {})
         searches = results.get("search_knowledge") or []
         extra_search = next((r for r in searches if extra and r.get("query") == extra), None)
@@ -663,8 +768,16 @@ class MockLLM(LLMProvider):
                 parts.append(f"如需退款，可以直接回复“{oid} 申请退款”，这次只解答问题、不会为您发起退款。")
             else:
                 parts.append(f"如需现在申请退款，回复“{oid} 申请退款”即可，我马上为您提交。")
-        if ticket:
-            parts.append(ticket.get("message") or f"工单创建失败：{ticket.get('error', '')}。")
+        if faults:  # which is which: the tickets' own sentences say only their numbers
+            things = fault_tickets(text, faults, last("list_my_orders") or {}, results.get("get_order") or [], exclude or set())
+            found = [t["title"].removesuffix(" 换货/维修") for t in things if t["title"].endswith(" 换货/维修")]
+            loose = [t["description"] for t in things if not t["title"].endswith(" 换货/维修")]
+            if len(found) > 1 or (found and loose):
+                parts.append(f"这几件分开处理：{'、'.join(found)}。")
+            if loose:
+                parts.append(f"如有{'、'.join(f'“{c}”' for c in loose)}对应的订单号，可以回复给我，方便同事核对。")
+        for made in results.get("create_ticket") or []:
+            parts.append(made.get("message") or f"工单创建失败：{made.get('error', '')}。")
         if self_damage:
             parts.append("如需协商处理，可以回复“转人工”。")
         if shipments and chasing(text) and not any(s.get("delivered") for s in shipments):

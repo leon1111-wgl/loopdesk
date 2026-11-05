@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from ..agent import answer_cache
 from ..agent.prompts import KB_PATCH_PROMPT
+from ..governance import script
 from ..llm.base import Embedder, LLMMessage, LLMProvider
 from ..models import Chunk, Document, EvalCase, EvalRun, Feedback, KBPatch, Message, Run, Span, Tenant, User
 from ..rag.conflicts import claims_in_text, conflicting_dimensions, extract_claims, record_published_anyway
@@ -104,12 +105,12 @@ def submit_feedback(
     if reason_category and reason_category not in REASONS:
         raise FlywheelError("未知的原因分类")
 
-    question = db.execute(
+    question = script.canonical(None, db.execute(
         select(Message.content)
         .where(Message.conversation_id == message.conversation_id, Message.role == "user", Message.id < message.id)
         .order_by(Message.id.desc())
         .limit(1)
-    ).scalar_one_or_none() or ""
+    ).scalar_one_or_none() or "")  # it becomes an eval case and a knowledge patch: the form the rules read
     run = db.get(Run, message.run_id) if message.run_id else None
     meta = message.meta or {}
     # A replayed answer has no retrieval of its own: the run that produced it explains it (N-097).

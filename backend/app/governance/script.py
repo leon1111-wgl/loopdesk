@@ -1,11 +1,12 @@
 """Simplified or traditional Chinese for what customers read, per tenant (``tenants.locale``).
 
-Knowledge, prompts, the evidence check and the stored transcript work in simplified Chinese; a
+Knowledge, prompts, the evidence check and stored answers work in simplified Chinese; a
 tenant whose customers read traditional (zh-Hant-HK, zh-Hant-TW) gets customer-facing text converted
 at the edge (the chat stream, the message list, the voice channel's spoken and shown sentences) by
-OpenCC's phrase tables (dictionary conversion, no model; ~0.1 ms a sentence). What a customer says or
-types in traditional is read in simplified, so the knowledge base and the rules match it, for every tenant
-(a simplified-script shop has customers who type traditional too). Conversion is
+OpenCC's phrase tables (dictionary conversion, no model; ~0.1 ms a sentence). What a customer types in
+traditional is read in simplified, so the knowledge base and the rules match it, for every tenant
+(a simplified-script shop has customers who type traditional too), and is kept in the transcript as they
+wrote it: whatever reads a customer's message to match it folds it with ``canonical``. Conversion is
 deterministic, so the stored simplified answer and the traditional one shown are the same text.
 """
 

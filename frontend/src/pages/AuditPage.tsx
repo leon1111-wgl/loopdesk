@@ -51,6 +51,8 @@ const LABEL: Record<string, string> = {
   days: "天数",
   rows: "行数",
   conversation_id: "会话",
+  subject_staff_id: "涉及员工（编号）",
+  from_staff_id: "原涉及员工（编号）",
   message_id: "消息",
   overdue: "超过承诺时限",
   outcome: "结果",

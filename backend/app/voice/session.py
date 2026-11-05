@@ -381,7 +381,8 @@ class VoiceSession:
             query = select(Message).where(Message.conversation_id == self.conversation_id, Message.id > request.before)
             question_found = False
             for message in db.execute(query.order_by(Message.id)).scalars().all():
-                if message.role == "user" and not question_found and message.content in asked:
+                if (message.role == "user" and not question_found
+                        and {message.content, script.canonical(None, message.content)} & asked):
                     db.delete(message)
                     question_found = True
                 elif message.role == "assistant" and run is not None and message.run_id == run.id:

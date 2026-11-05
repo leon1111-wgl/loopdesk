@@ -61,6 +61,7 @@ ACTIONS = {
     "export.download": "导出数据",
     "handoff.reply": "人工接待回复",
     "handoff.close": "结束人工服务",
+    "handoff.subject": "投诉对象变更",
     "ticket.claim": "接手工单",
     "ticket.close": "处理完成工单",
     # A customer's spoken consent to a money action (voice channel): what was read back, whether it was heard.
