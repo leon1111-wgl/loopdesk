@@ -66,7 +66,7 @@ test("click to load, then a question answered by the model", async ({ page, cont
     if (await page.getByRole("button", { name: "重试" }).isVisible()) return;
     const asked = Date.now();
     const box = page.locator("textarea").first();
-    await box.fill("寄错地址的话改起来麻烦吗"); // nothing the rules can answer, so the model is asked
+    await box.fill("拍下之后大概多久会发货呀"); // the rules would refuse this, so the model is asked
     await box.press("Enter");
     const answer = page.locator(".msg.assistant").last();
     await expect(answer.locator(".engine-tag")).toBeVisible({ timeout: 1_500_000 });

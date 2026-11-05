@@ -100,14 +100,7 @@ test("a refund request goes to review, and an agent's decision reaches the custo
 
 test("when the engine cannot load, the visitor is told and the recordings still play", async ({ page }) => {
   await noWebGpu(page);
-  await page.route("**/assets/retrieval-*.js", (route) => route.abort());
-  await page.route("**/assets/index-*.js", async (route) => {
-    // The engine's chunk is the one that carries the pack: fail any chunk with it, the app's own entry passes.
-    const response = await route.fetch();
-    const text = await response.text();
-    if (text.includes("SYNTHETIC")) await route.abort();
-    else await route.fulfill({ response, body: text });
-  });
+  await page.route("**/assets/retrieval-*.js", (route) => route.abort()); // the chunk that carries the rules and data
   await page.goto("./");
   await page.getByRole("button", { name: /customer@leon\.demo/ }).first().click();
   await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
@@ -181,7 +174,7 @@ test.describe("the browser model, with a stand-in for the weights", () => {
     await expect(page.locator(".demo-engine")).toContainText("点击后才下载");
     await page.getByRole("button", { name: "加载模型" }).click();
     await expect(page.locator(".demo-engine")).toContainText("已加载");
-    await ask(page, "寄错地址的话改起来麻烦吗"); // nothing the rules can answer: the model picks a chunk, the program quotes it
+    await ask(page, "拍下之后大概多久会发货呀"); // the rules would refuse this: the model picks a chunk, the program quotes it
     await expect(lastAnswer(page).locator(".engine-tag")).toHaveText(/Qwen3-0\.6B/, { timeout: 20_000 });
     await expect(lastAnswer(page).locator(".cite").first()).toBeVisible();
     await ask(page, "退款多久能到账呀"); // the rules have this one: the model is not asked
