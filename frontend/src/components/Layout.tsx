@@ -45,17 +45,16 @@ function DemoNotice() {
   const rec = recording();
   const source = rec && !rec.model.offline ? (
     <>
-      回答由真实模型 <b>{rec.model.strong}</b> 生成，{rec.date} 录制自真实后端
-      {rec.commit && <>（提交 <a href={`${REPO_URL}/commit/${rec.commit}`} target="_blank" rel="noreferrer" style={{ marginLeft: 0 }}>{rec.commit}</a>）</>}
-      ，数据均为虚构
+      示例问题回放真实模型 <b>{rec.model.strong}</b> 的录制（{rec.date}
+      {rec.commit && <>，提交 <a href={`${REPO_URL}/commit/${rec.commit}`} target="_blank" rel="noreferrer" style={{ marginLeft: 0 }}>{rec.commit}</a></>}）
     </>
   ) : (
-    <>页面数据录制自真实后端（离线模型、虚构数据）</>
+    <>示例问题回放离线模型的录制，录制自真实后端</>
   );
   return (
     <div className="demo-notice" role="note" data-model={rec?.model.strong}>
       <Info size={14} aria-hidden="true" />
-      <div><strong>演示工作区</strong><span className="demo-source">示例问题：{source}。其他问题：由浏览器内的规则引擎当场回答，不是模型，不代表真实模型的质量；每条回答都标明来源。</span>
+      <div><strong>演示工作区</strong><span className="demo-source">{source}；其他问题由浏览器内的规则引擎回答，不是模型，不代表真实模型的质量。数据均为虚构。</span>
         <details><summary>使用说明与运行方式</summary><p>可以切换角色浏览，回放示例问题，也可以直接问自己的问题。退款、工单等改动只作用于本页的模拟副本，标注“模拟”，刷新后还原；其他提交类操作不会生效。
           <a href={REPO_URL} target="_blank" rel="noreferrer">在本地运行完整版本 ↗</a></p></details>
       </div>

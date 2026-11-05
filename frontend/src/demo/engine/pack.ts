@@ -73,7 +73,6 @@ export interface TenantTool {
   risk: "read" | "write" | "money";
   description: string;
   parameters: { properties?: Record<string, { type?: string; description?: string; pattern?: string; enum?: unknown[]; default?: unknown }>; required?: string[] };
-  binding: { result?: { message?: string } };
   approval?: { mode?: string; amount_field?: string; auto_limits?: Record<string, number>; admin_above?: Record<string, number>; approver?: string; customer_note?: string };
   hints?: { intents?: string[]; requires?: string[] };
   enabled: boolean;

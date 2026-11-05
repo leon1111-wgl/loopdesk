@@ -1,5 +1,7 @@
 # LoopDesk · Evidence-first customer-service agent platform
 
+By [Leon Wang](https://leon1111-wgl.github.io/)
+
 [中文](README.md) · **English**
 
 [![CI](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml)

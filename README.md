@@ -1,5 +1,7 @@
 # LoopDesk · 证据优先的企业客服 Agent 平台
 
+By [Leon Wang](https://leon1111-wgl.github.io/)
+
 [![CI](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml)
 
 **中文** · [English](README.en.md)

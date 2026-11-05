@@ -68,7 +68,9 @@
   background: var(--bg); border-bottom: 1px solid var(--border);
 }
 .subnav::-webkit-scrollbar { display: none; }
+/* position: its sr-only count stays inside the scrolling tab row, or the whole page scrolls sideways on a phone. */
 .sub-item {
+  position: relative;
   display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 999px; white-space: nowrap;
   font-size: 13px; color: var(--text-3); transition: background 150ms, color 150ms;
 }

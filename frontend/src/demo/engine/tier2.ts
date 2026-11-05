@@ -137,7 +137,11 @@ const CONFIG = {
 const LOAD_TIMEOUT = 900_000;
 const GENERATE_TIMEOUT = 120_000;
 
+/** Released separately from the rules: a build offers the model only with VITE_DEMO_TIER2=1. */
+export const TIER2_RELEASED = import.meta.env.VITE_DEMO_TIER2 === "1";
+
 export async function webgpuAvailable(): Promise<boolean> {
+  if (!TIER2_RELEASED) return false;
   const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
   if (!globalThis.isSecureContext || !gpu) return false;
   if (window.matchMedia?.("(pointer: coarse)").matches || window.innerWidth < 720) return false; // phones mostly cannot run it

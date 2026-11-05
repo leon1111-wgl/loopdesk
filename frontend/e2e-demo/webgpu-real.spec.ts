@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
-// The real thing, on GitHub Actions only (.github/workflows/tier2-eval.yml): the published demo, a real download of the shared
+// The real thing, on GitHub Actions only (.github/workflows/tier2-eval.yml): a production build, a real download of the shared
 // weights, real inference on whatever adapter the browser has. A runner has only a software GPU, so this says what happened
 // rather than pretending: the report is the result, whether it got as far as an answer or not.
 const REPORT = "webgpu-report.json";
@@ -13,12 +13,12 @@ test.use({
 test.skip(!process.env.REAL_WEBGPU, "real inference runs on GitHub Actions only");
 
 test("click to load, then a question answered by the model", async ({ page }) => {
-  const report: Record<string, unknown> = { url: process.env.DEMO_URL, started: new Date().toISOString() };
+  const report: Record<string, unknown> = { url: process.env.DEMO_URL || "this commit's build", started: new Date().toISOString() };
   const save = () => writeFileSync(REPORT, JSON.stringify(report, null, 1));
   const messages: string[] = [];
   page.on("console", (m) => { if (m.type() === "error") messages.push(m.text().slice(0, 300)); });
   try {
-    await page.goto(process.env.DEMO_URL!);
+    await page.goto("./");
     report.adapter = await page.evaluate(async () => {
       const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<{ features: Set<string>; info?: Record<string, string> } | null> } }).gpu;
       if (!gpu) return { available: false };
@@ -28,7 +28,7 @@ test("click to load, then a question answered by the model", async ({ page }) =>
     save();
     await page.getByRole("button", { name: /customer@leon\.demo/ }).first().click();
     await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
-    await page.goto(`${process.env.DEMO_URL}chat`);
+    await page.goto("./chat");
     const load = page.getByRole("button", { name: "加载模型" });
     report.offered = await load.isVisible({ timeout: 15_000 }).catch(() => false);
     save();

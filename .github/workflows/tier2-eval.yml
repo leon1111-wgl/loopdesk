@@ -4,10 +4,16 @@ name: Browser model evaluation
 # here, never on a laptop, and nothing here costs an API fee.
 # - selection: how well the model does the job, natively (llama.cpp, a GGUF of the same weights), on the blind sets and gate
 #   cases, scored by the same validation and tools as the browser. A model that files money on a non-request fails the job.
-# - webgpu: the published demo in Chromium on a software GPU (SwiftShader), to see whether the click-to-load path works end to
-#   end from the shared weights. A runner has no real GPU: if the adapter lacks what the model needs, the job says so.
+# - webgpu: this commit's demo build in Chromium on a software GPU (SwiftShader), to see whether the click-to-load path works end
+#   to end from the shared weights. A runner has no real GPU: if the adapter lacks what the model needs, the job says so.
+# The model is released separately from the rules (VITE_DEMO_TIER2 in pages.yml): this is what decides whether it can be.
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/tier2-eval.yml
+      - frontend/src/demo/engine/tier2.ts
+      - frontend/public/model-worker.js
   workflow_dispatch:
     inputs:
       limit:
@@ -23,8 +29,8 @@ on:
         description: "Chat template: qwen or gemma"
         default: "qwen"
       demo_url:
-        description: "Site the WebGPU job opens"
-        default: "https://leon1111-wgl.github.io/loopdesk/"
+        description: "Open this published site in the WebGPU job (empty: build this commit)"
+        default: ""
 
 permissions:
   contents: read
@@ -59,11 +65,11 @@ jobs:
         run: |
           python - <<'PY'
           from huggingface_hub import hf_hub_download
-          print(hf_hub_download("${{ inputs.gguf_repo }}", "${{ inputs.gguf_file }}", local_dir="weights"))
+          print(hf_hub_download("${{ inputs.gguf_repo || 'Qwen/Qwen3-0.6B-GGUF' }}", "${{ inputs.gguf_file || 'Qwen3-0.6B-Q8_0.gguf' }}", local_dir="weights"))
           PY
       - name: Run the model
         working-directory: backend
-        run: python -m app.evals.tier2_run ../prompts.json ../outputs.json --model "../weights/${{ inputs.gguf_file }}" --limit "${{ inputs.limit }}" --template "${{ inputs.template }}"
+        run: python -m app.evals.tier2_run ../prompts.json ../outputs.json --model "../weights/${{ inputs.gguf_file || 'Qwen3-0.6B-Q8_0.gguf' }}" --limit "${{ inputs.limit || '0' }}" --template "${{ inputs.template || 'qwen' }}"
       - name: Score with the same validation and tools as the browser
         working-directory: frontend
         env:
@@ -89,7 +95,7 @@ jobs:
           retention-days: 30
 
   webgpu:
-    name: Click to load on the published demo (SwiftShader)
+    name: Click to load, then ask (SwiftShader)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     defaults:
@@ -108,6 +114,16 @@ jobs:
       - run: |
           pnpm install --frozen-lockfile
           pnpm exec playwright install --with-deps chromium
+      - name: Build the demo with the model offered
+        if: ${{ !inputs.demo_url }}
+        env:
+          VITE_DEMO: "1"
+          VITE_DEMO_TIER2: "1"
+          VITE_BASE: /loopdesk/
+        run: |
+          pnpm build
+          mkdir -p dist/demo
+          cp ../demo/real-model/fixtures.json dist/demo/fixtures.json
       - name: Open the demo, click, load, ask
         continue-on-error: true
         env:

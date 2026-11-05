@@ -210,7 +210,9 @@ def build() -> dict[str, Any]:
                 chunks_text += [f"{c.heading}\n{c.text}" for c, _, _ in rows]
                 pack_dir = Path(__file__).resolve().parents[2] / "tenant_packs" / slug
                 if pack_dir.exists():
-                    out["tools"][slug] = json.loads((pack_dir / "tools.json").read_text(encoding="utf-8"))
+                    # What the planner reads; where a tool's calls go and the name of their secret stay out.
+                    out["tools"][slug] = [{k: v for k, v in tool.items() if k != "binding"}
+                                          for tool in json.loads((pack_dir / "tools.json").read_text(encoding="utf-8"))]
                     merchant = json.loads((pack_dir / "merchant.json").read_text(encoding="utf-8"))
                     out["members"][slug] = merchant["collections"]["members"]
     out["settings"] = {"min_relevance": settings.min_relevance, "retrieval_top_k": settings.retrieval_top_k,
