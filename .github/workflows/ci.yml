@@ -107,14 +107,24 @@ jobs:
       - name: Build as GitHub Pages serves it
         env:
           VITE_DEMO: "1"
+          VITE_BASE: /loopdesk/
+        run: |
+          pnpm build
+          mkdir -p dist/demo
+          cp ../demo/real-model/fixtures.json dist/demo/fixtures.json
+      - name: The whole flow, as a visitor, with what is released
+        run: pnpm e2e:demo walkthrough
+      - name: Build again with the browser model offered
+        env:
+          VITE_DEMO: "1"
           VITE_DEMO_TIER2: "1"
           VITE_BASE: /loopdesk/
         run: |
           pnpm build
           mkdir -p dist/demo
           cp ../demo/real-model/fixtures.json dist/demo/fixtures.json
-      - name: A visitor types what nobody recorded
-        run: pnpm e2e:demo
+      - name: A visitor types what nobody recorded, and the model's path with a stand-in for the weights
+        run: pnpm e2e:demo live-answers
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

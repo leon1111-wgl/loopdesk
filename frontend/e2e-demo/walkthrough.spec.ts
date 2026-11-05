@@ -161,13 +161,15 @@ test.describe("questions nobody recorded", () => {
     expect(problems).toEqual([]);
   });
 
-  test("the model is not offered in a build that has not released it", async ({ page }) => {
-    test.skip(process.env.VITE_DEMO_TIER2 === "1", "this build offers it");
+  test("the model is not offered in a build that has not released it, even with WebGPU", async ({ page }) => {
+    await page.addInitScript(() => Object.defineProperty(navigator, "gpu", { value: { requestAdapter: async () => ({ features: new Set(["shader-f16"]) }) }, configurable: true }));
     await page.goto("./");
     await page.getByRole("button", { name: /customer@leon\.demo/ }).first().click();
     await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
     await page.goto("./chat");
     await page.waitForTimeout(500);
     await expect(page.locator(".demo-engine")).toHaveCount(0);
+    await page.goto("./chat?tier2=1"); // for whoever checks it on a real GPU: nothing links here
+    await expect(page.getByRole("button", { name: "加载模型" })).toBeVisible();
   });
 });

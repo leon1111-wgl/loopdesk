@@ -1,8 +1,9 @@
 import { defineConfig } from "@playwright/test";
 
 // The static demo as GitHub Pages serves it: replay mode, under /loopdesk/, no backend behind it. Build it first:
-//   VITE_DEMO=1 VITE_DEMO_TIER2=1 VITE_BASE=/loopdesk/ pnpm build && mkdir -p dist/demo && cp ../demo/real-model/fixtures.json dist/demo/fixtures.json
-//   pnpm e2e:demo
+//   VITE_DEMO=1 VITE_BASE=/loopdesk/ pnpm build && mkdir -p dist/demo && cp ../demo/real-model/fixtures.json dist/demo/fixtures.json
+//   pnpm e2e:demo walkthrough     # what is released
+// With VITE_DEMO_TIER2=1 in the build: pnpm e2e:demo live-answers   # the browser model's path, with a stand-in for the weights
 //   DEMO_URL opens a published site instead, and nothing is started here.
 const PORT = 8766;
 const DEMO_URL = process.env.DEMO_URL;

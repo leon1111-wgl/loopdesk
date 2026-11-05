@@ -8,7 +8,7 @@
 
 | # | 候选 | 决定 | 理由 | 怎么验证 |
 |---|---|---|---|---|
-| 1 | 模型只做选择、程序陈述事实（Action-Selector）用在免费演示 | **采纳，已做** | 没有 API 费用的小模型不可能写出可信答案；这个模式正好把它限制在选择题里 | `frontend/src/demo/engine/engine.test.ts`「the model tier only chooses」；`tier2-eval.yml` |
+| 1 | 模型只做选择、程序陈述事实（Action-Selector）用在免费演示 | **规则引擎已发布；模型部分已做未发布** | 没有 API 费用的小模型不可能写出可信答案；这个模式把它限制在选择题里。测量后进一步收窄，真实 GPU 验证之前不上线 | `engine.test.ts`「the model tier only picks what to quote」；`tier2-eval.yml` |
 | 2 | 按结果评分的完整对话（end-state） | **采纳，已做** | 现有门禁评一轮、不落库；错的终态才是错的退款 | `backend/evals/journeys.json`，后端 `tests/test_journeys.py` 和浏览器 `journeys.test.ts` 跑同一份 |
 | 3 | MCP 2026-07-28：工具注解、结构化结果 | **部分采纳，已做** | 只读服务器几行就能对齐；OAuth 和有状态部分用不上 | `tests/test_providers_and_channels.py` |
 | 4 | OWASP Agentic Top 10 / Agents Rule of Two 对照 | **采纳，文档** | 面向企业读者的通用语言；控制点都已有，对照表指向可运行的测试 | 下面的对照表 |
@@ -25,15 +25,17 @@
 
 约束解码方面，WebLLM 通过 XGrammar 支持 JSON Schema（[发布记录](https://github.com/mlc-ai/web-llm/releases)，[XGrammar](https://github.com/mlc-ai/xgrammar)）。它只保证语法和枚举合法，不保证选得对。
 
-**做法。** 演示第 2 档里，Qwen3-0.6B 在 JSON Schema 下只能选意图、顾客自己的订单、程序列出的知识片段编号。程序逐项校验：订单必须是顾客自己的或这句话里写了的；片段必须是程序给出的候选；退款、撤回这类写操作一律回到规则，按顾客原话判断。模型说“要退款”而原话是“我可能会退款 看情况”，什么都不提交。事实由工具和原文陈述，模型一个字都不写进答案。
+**做法和测量。** 第一版让 Qwen3-0.6B 在 JSON Schema 下选意图、顾客的订单和知识片段，程序校验后由规则和工具陈述事实。在 Actions 上量下来比规则更差，还会选错订单，所以去掉了。现在的第二版只在规则要拒答时才问模型，让它从程序列出的片段里选要引用的编号，或者说没有答案；程序校验编号后引用原文。模型碰不到任何工具，写操作和动钱完全由规则按顾客原话判断。两份盲测集上加上它只多答对 1 条，也没有引错（`docs/EVALUATION.md`）。
 
-**局限。** 模型可以选错片段，顾客会读到一段不对题的原文。这比编造好，但不是答对。
+**这一版线上用的是规则引擎。** 模型部分放在构建开关后面：Actions 的软件 GPU 没有 16 位浮点，跑不了站内的 q4f16 权重，真实 GPU 上的完整流程还没有验证。
+
+**局限。** 规则引擎和模型都不能生成新句子，答不了的问题就是答不了。
 
 ## 2. 按结果评分的完整对话（已做）
 
 **现状。** Anthropic 的评测指南（[Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)，2026-01-09）主张优先用确定性评分、评结果多于评路径，并用 pass^k 衡量一致性。tau-bench 系列（[τ²-bench](https://arxiv.org/abs/2506.07982)，2025-06；[仓库](https://github.com/sierra-research/tau2-bench)）用模拟用户、模拟后端和终态检查。Sierra（[Agent Development Life Cycle](https://sierra.ai/blog/agent-development-life-cycle)，2024-06）和 Decagon（Simulations，2025-09）公开的做法也是把对话回放成发布前的回归门禁。四家厂商都没有公布经审计的准确率。
 
-**LoopDesk 之前。** 门禁 159 条用例评的是一轮对话的工具和文字，沙箱里演练、不写库；pass^k 已经有（`app.evals.summarize`）。
+**LoopDesk 之前。** 门禁的 159 条用例评的是一轮对话的工具和文字，沙箱里演练、不写库；pass^k 已经有（`app.evals.summarize`）。
 
 **做法。** `backend/evals/journeys.json` 写了 15 段完整对话：提交、审批、驳回、管理员分级、两步撤回、先问后申请、沿用上一轮订单只提议、频率限制、一句话两件故障、别人的订单、注入、虚拟订单、转人工和退出。每段真实写库，人的决定也在其中，最后比较订单状态、退款台账、审批队列、工单和转人工状态。比较是严格的：“没有多发生什么”也算在内。
 
@@ -83,12 +85,12 @@ OpenAI Realtime 和 Pipecat、LiveKit 都在快速迭代（语义断句、Smart 
 
 ## 9. 换模型（只测量）
 
-- **Gemma 3 1B**：[一篇物流客服意图分类论文](https://arxiv.org/abs/2603.23172)（2026-03）里中文准确率比 Qwen3-0.6B 高约 2 个百分点（94.81 对 92.58），一个数据集，没有显著性检验。WebLLM 配置里它的显存需求是 711 MB，Qwen3-0.6B 是 1403 MB（[src/config.ts](https://github.com/mlc-ai/web-llm)）。许可不是 Apache-2.0，还要另外托管权重。
+- **Gemma 3 1B**：[一篇物流客服意图分类论文](https://arxiv.org/abs/2603.23172)（2026-03）里中文准确率比 Qwen3-0.6B 高约 2 个百分点（机器翻译查询 94.81 对 92.58，原生中文查询 93.32 对 91.69），一个数据集，没有显著性检验。WebLLM 配置里它的显存需求是 711 MB，Qwen3-0.6B 是 1403 MB（[src/config.ts](https://github.com/mlc-ai/web-llm)）。许可不是 Apache-2.0，还要另外托管权重。
 - **Qwen3.5-0.8B**：显存 1629 MB，比现在还大。
 - **Chrome 内置 Prompt API**：不支持中文，且要求 22 GB 空闲磁盘（[文档](https://developer.chrome.com/docs/ai/built-in-apis)）。
 - **WebNN**：还在候选推荐阶段（[W3C](https://www.w3.org/TR/webnn/)，2026-10-21）。
 
-结论：先用这份工作自己的用例量（`tier2-eval.yml`，模型可换），只有测量显示明显更好才换。结果见 `docs/EVALUATION.md`。
+结论：`tier2-eval.yml` 的模型可换，只有这份工作自己的用例显示明显更好才换。目前只量了 Qwen3-0.6B（`docs/EVALUATION.md`）：规则之上它能补的本来就很少，换模型的上限也不高，所以没有继续做对比。
 
 ## 10. “已解决”的定义（已有）
 
