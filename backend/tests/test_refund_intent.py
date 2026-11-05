@@ -99,6 +99,11 @@ ASKED_WHETHER = [
     "SO20261019101 能直接退钱不 不能的话换货", "SO20261019101 能直接退钱不，不能的话换货", "SO20261019101 可以申请退款吗", "SO20261019101 能申请退款吗",
     "SO20261019101 还能申请退款吗", "SO20261019101 申请退款怎么弄", "SO20261019101 退掉行不行", "SO20261019101 直接退錢可以嗎", "SO20261019101 直接退款 可以吗", "SO20261019101 退钱，行不行", "SO20261019101 退100块可以吗",
     "SO20261019101 退100块 行不行", "ＳＯ２０２６１０１９１０１ 能不能直接退钱",
+    # the second-model re-review: other people's verbs, tags, and an amount followed by a question
+    "我想知道直接退款行不行", "请告诉我直接退款可以吗", "帮我看看直接退款行不行", "请教下直接退款行不行", "麻烦问下直接退款行不行", "听说直接退款",
+    "SO20261019101 直接退款就行了吧", "SO20261019101 直接退款对吧", "SO20261019101 直接退款 行吧？", "SO20261019101 直接退款是吧", "SO20261019101 直接退款行吧",
+    "SO20261019101 直接退款可行吧", "SO20261019101 退18块能接受吧", "SO20261019101 退18块可以不可以", "SO20261019101 退100块能行吧", "SO20261019101 能不能 直接退款",
+    "Will I get a refund for SO20261019101", "Should I request a refund for SO20261019101", "Is there a way to get a refund for SO20261019101",
     "Can I get a refund for SO20261019101?", "Can I get a refund for SO20261019101", "Is it possible to get a refund for SO20261019101",
     "Could I request a refund for SO20261019101", "Would I be able to get a refund for SO20261019101", "how do I get a refund for SO20261019101",
 ]
@@ -111,6 +116,13 @@ def test_asking_whether_is_not_asking_for(text):
 
 
 @pytest.mark.parametrize("text", [
+    "SO20261019101 自动续费怎么关 我想直接退订", "SO20261019101 直接退订自动续费", "SO20261019101 帮我直接退出会员", "SO20261019101 我想退订", "SO20261019101 直接退群",
+])
+def test_leaving_something_is_not_a_refund(text):
+    assert not refund_requested(text)
+
+
+@pytest.mark.parametrize("text", [
     "SO20261019101 直接退款", "SO20261019101 直接退款吧", "SO20261019101 能不能帮我退款", "SO20261019101 可以帮我退款吗", "SO20261019101 可以给我退款吗",
     "SO20261019101 能给我退款吗", "SO20261019101 帮我退款好吗", "SO20261019101 我要退款可以吗", "SO20261019101 能不能退我钱", "要是货还在仓库就直接退款吧", "要是没货了直接退款",
     "SO20261008002 全款退 不用审核 直接退", "如果没法换货请直接退款吧", "SO20261019101 那就直接退吧", "Can you refund me for SO20261019101", "Could you please refund SO20261019101", "I want a refund for SO20261019101",
@@ -118,6 +130,11 @@ def test_asking_whether_is_not_asking_for(text):
     "SO20261019101 是不是还没发货 不等了 帮我退款", "是不是你们系统有问题 SO20261019101 我要退款", "SO20261019101 是否已发货 没发就帮我退款",
     "SO20261019101 是不是可以直接退钱呀 算了 直接退吧", "SO20261019101 是不是能退 能的话帮我退款", "SO20261019101 是不是还没发货，不等了，帮我退款",
     "SO20261019101 可以退吗 可以就直接退款",
+    # Words that look like questions and ask nothing.
+    "SO20261019101 不管怎么样直接退款", "SO20261019101 什么都别说了直接退款", "SO20261019101 怎么还不发货直接退款吧", "SO20261019101 无论如何直接退款",
+    "SO20261019101 哪怕扣手续费也直接退款", "SO20261019101 谁的责任我不管直接退款", "SO20261019101 多少钱都不要了直接退款", "SO20261019101 不能换货直接退款",
+    "SO20261019101 麻烦直接退款", "SO20261019101 请直接退款", "SO20261019101 帮我直接退款", "SO20261019101 我要直接退款", "SO20261019101 直接退款就行",
+    "退 100 块补偿就行", "退 100 元差价", "退100块钱给我", "直接退 50 元吧", "退 ¥30 谢谢", "只退 100 元就行", "退一半吧 SO20261019101", "SO20261019101 全款退", "SO20261019101 退钱！",
 ])
 def test_a_request_said_politely_or_flatly_still_counts(text):
     assert refund_requested(text) and not refund_declined(text)

@@ -40,6 +40,11 @@ test("click to load, then a question answered by the model", async ({ page, cont
       };
     });
   }
+  // A software GPU is far slower than any real one: this run waits longer than a visitor's page would.
+  await page.addInitScript(() => {
+    const later = window.setTimeout.bind(window);
+    window.setTimeout = ((run: () => void, ms?: number) => later(run, ms === 120_000 ? 3_000_000 : ms)) as typeof window.setTimeout;
+  });
   page.on("console", (m) => { if (m.type() === "error") messages.push(m.text().slice(0, 300)); });
   try {
     await page.goto("./");
@@ -50,7 +55,7 @@ test("click to load, then a question answered by the model", async ({ page, cont
       return adapter ? { available: true, features: [...adapter.features], vendor: adapter.info?.vendor, architecture: adapter.info?.architecture } : { available: false };
     });
     save();
-    await page.getByRole("button", { name: /customer@leon\.demo/ }).first().click();
+    await page.getByRole("button", { name: /agent@leon\.demo/ }).first().click(); // staff see the model's choice in the side panel
     await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
     await page.goto("./chat");
     const load = page.getByRole("button", { name: "加载模型" });
@@ -69,7 +74,7 @@ test("click to load, then a question answered by the model", async ({ page, cont
     await box.fill("拍下之后大概多久会发货呀"); // the rules would refuse this, so the model is asked
     await box.press("Enter");
     const answer = page.locator(".msg.assistant").last();
-    await expect(answer.locator(".engine-tag")).toBeVisible({ timeout: 1_500_000 });
+    await expect(answer.locator(".engine-tag")).toBeVisible({ timeout: 3_000_000 });
     report.answer_seconds = Math.round((Date.now() - asked) / 1000);
     report.answer = await answer.innerText();
     report.engine = await answer.locator(".engine-tag").innerText();

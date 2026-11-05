@@ -145,7 +145,7 @@ function clauseOf(match: RegExpExecArray, text: string): [string, string] {
     if (sepEnd <= match.index) start = sepEnd;
     else if (sep.index >= matchEnd) {
       end = /[？?]/.test(sep[0]) ? sepEnd : sep.index;
-      if (text.slice(sepEnd).search(T._TAG_QUESTION) === 0) end = text.length;
+      if (fullMatch(T._TAG_QUESTION, text.slice(sepEnd))) end = text.length;
       break;
     }
   }
@@ -154,10 +154,11 @@ function clauseOf(match: RegExpExecArray, text: string): [string, string] {
 
 function askedWhether(match: RegExpExecArray, text: string): boolean {
   const [before, after] = clauseOf(match, text);
-  if (T._ASKED_WHETHER.test(before)) return true;
-  if (T._NAMES_WHO.test(before.slice(-4) + match[0])) return false;
-  const clause = before + match[0] + after;
-  return T._CLAUSE_ASKS.test(clause) || T._COLLOQUIAL_QUESTION_RE.test(clause);
+  if (/^[A-Za-z]/.test(match[0])) return T._EN_ASKS.test(before + match[0] + after);
+  if (T._ASKED_WHETHER.test(before) || T._WHETHER_JUST_BEFORE.test(text.slice(0, match.index - before.length))) return true;
+  if (T._NAMES_WHO.test(before.slice(-2) + match[0])) return false;
+  if (match[0].startsWith("就") && T._CAN_THEN.test(before)) return !fullMatch(T._FINISHES_DEMAND, after);
+  return T._ASKING_BEFORE.test(before) || !fullMatch(T._FINISHES_DEMAND, after);
 }
 
 function namedDemand(pattern: RegExp, text: string): boolean {
@@ -195,15 +196,16 @@ const BARE_DEMAND_MAX = pack.settings.bare_demand_max;
 function demandsRefund(text: string): boolean {
   const questions = [T.REFUND_INQUIRY_RE, T._QUESTION_RE, T._COLLOQUIAL_QUESTION_RE].flatMap((p) => findAll(p, text).map((m) => m.index));
   const lastQuestion = Math.max(-1, ...questions);
-  let start = 0, said = false;
+  let start = 0, said = false, whether = false;
   const seps: (RegExpExecArray | null)[] = [...findAll(T._DEMAND_SEP_RE, text), null];
   for (const sep of seps) {
     const end = sep ? sep.index : text.length;
     const bare = sub(T._DEMAND_FILLER_RE, "", sub(T.ORDER_ID_RE, "SO0", text.slice(start, end)));
-    if (start > lastQuestion && bare.length > 0 && bare.length <= BARE_DEMAND_MAX && fullMatch(T._BARE_DEMAND_RE, bare)) {
+    if (start > lastQuestion && bare.length > 0 && bare.length <= BARE_DEMAND_MAX && fullMatch(T._BARE_DEMAND_RE, bare) && !whether) {
       if (!fullMatch(T._BARE_TOPIC_RE, bare) || said || (sep && /[！!]/.test(sep[0]))) return true;
     }
     said = said || Boolean(bare);
+    whether = fullMatch(T._ONLY_WHETHER_RE, bare);
     start = sep ? sep.index + sep[0].length : end;
   }
   return false;

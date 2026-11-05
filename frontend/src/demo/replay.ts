@@ -253,7 +253,13 @@ async function answer(path: string, init: RequestInit): Promise<Response> {
     return json(conversation);
   }
   const stream = /^\/api\/conversations\/(\d+)\/stream$/.exec(path);
-  if (method === "POST" && stream) return replay(email, Number(stream[1]), String(body(init).content ?? ""), recorded);
+  if (method === "POST" && stream) {
+    // As in the backend: only a conversation's owner writes in it. Staff reply from the handoff queue.
+    const id = Number(stream[1]);
+    const owner = local.get(id)?.email ?? (recordedRow(recorded, id) ? email : null);
+    if (owner !== email) return json({ detail: "只有发起这段对话的顾客可以在这里发言" }, 403);
+    return replay(email, id, String(body(init).content ?? ""), recorded);
+  }
   const decide = /^\/api\/approvals\/(\d+)\/(decide|withdraw)$/.exec(path);
   if (method === "POST" && decide && run?.world.approvals.some((a) => a.id === Number(decide[1]))) {
     try {

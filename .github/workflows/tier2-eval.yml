@@ -15,6 +15,7 @@ on:
       - .github/workflows/tier2-eval.yml
       - frontend/src/demo/engine/tier2.ts
       - frontend/public/model-worker.js
+      - frontend/e2e-demo/webgpu-real.spec.ts
   workflow_dispatch:
     inputs:
       limit:
@@ -98,7 +99,7 @@ jobs:
   webgpu:
     name: Click to load, then ask (SwiftShader)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: frontend
