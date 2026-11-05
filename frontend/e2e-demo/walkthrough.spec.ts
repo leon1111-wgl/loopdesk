@@ -161,6 +161,23 @@ test.describe("questions nobody recorded", () => {
     expect(problems).toEqual([]);
   });
 
+  test("reloading says the simulated conversation is gone, and the chat still works", async ({ page }) => {
+    await page.goto("./");
+    await page.getByRole("button", { name: /customer@leon\.demo/ }).first().click();
+    await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
+    await page.goto("./chat");
+    const box = page.locator("textarea").first();
+    await box.fill("退货的时候快递费谁出啊");
+    await box.press("Enter");
+    await expect(page.locator(".msg.assistant").last().locator(".engine-tag")).toHaveText(/规则引擎/, { timeout: 20_000 });
+    await page.reload();
+    await expect(page.getByText("这段模拟对话只保存在当前页面")).toBeVisible();
+    await page.getByRole("button", { name: "新建对话" }).first().click();
+    await page.locator("textarea").first().fill("积分可以怎么抵扣");
+    await page.locator("textarea").first().press("Enter");
+    await expect(page.locator(".msg.assistant").last().locator(".engine-tag")).toHaveText(/规则引擎/, { timeout: 20_000 });
+  });
+
   test("the model is not offered in a build that has not released it, even with WebGPU", async ({ page }) => {
     await page.addInitScript(() => Object.defineProperty(navigator, "gpu", { value: { requestAdapter: async () => ({ features: new Set(["shader-f16"]) }) }, configurable: true }));
     await page.goto("./");

@@ -54,7 +54,8 @@ const TOKEN_PREFIX = "demo:";
 
 let data: Fixtures | null = null;
 const local = new Map<number, LocalConversation>();
-let nextId = 900_001;
+const FIRST_LOCAL_ID = 900_001;
+let nextId = FIRST_LOCAL_ID;
 
 export function recordedAt(): string | null {
   return data?.recorded_at ?? null;
@@ -229,6 +230,7 @@ async function answer(path: string, init: RequestInit): Promise<Response> {
         return json({ conversation: { ...run!.conversationRow(live, String(row.title ?? "新对话")), ...(live.handoff ? { status: "handoff" } : {}) }, handoff: live.handoff, messages: live.messages });
       }
       if (local.has(id)) return json({ conversation: local.get(id)!.conversation, handoff: null, messages: local.get(id)!.fallback ?? [] });
+      if (id >= FIRST_LOCAL_ID) return json({ detail: "这段模拟对话只保存在当前页面，刷新后已清除。" }, 404);
     }
     if (path === "/api/conversations") {
       const mine = [...local.values()].filter((c) => c.email === email).map((c) => {
