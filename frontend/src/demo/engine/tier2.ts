@@ -1,22 +1,19 @@
 /**
  * The second tier of the demo's answers: Qwen3-0.6B in the visitor's browser, downloaded only after a click.
  *
- * The model never writes the answer. Under a JSON schema it picks what the customer wants, which of their orders and which
- * knowledge chunks; the program checks each choice against what it may be (their own orders, the chunks it offered) and
- * then runs the same tools and rules as tier 1, so every fact comes from the data. A write or a refund still has to pass
- * the rules on the customer's own words: the model can only choose among reads.
+ * It comes in when the rules are about to say the documents have no answer, and does one thing: under a JSON schema it picks
+ * which of the nearest knowledge chunks answer the question, or none. The program checks each pick against what it offered and
+ * quotes those chunks. It writes nothing, and it never reaches the tools: letting it choose the intent and the order measured
+ * worse than the rules alone and sometimes named the wrong order (docs/EVALUATION.md), so that was taken out.
  */
-import { M, T } from "./pack";
 import { search } from "./retrieval";
 import type { ModelChoice } from "./runtime";
-import { canonical, findAll, normalizeWidth, refundRequested, refundWithdrawRequested } from "./text";
-import { World } from "./tools";
+import { canonical, normalizeWidth } from "./text";
 
-export const INTENTS = ["order_status", "shipment", "refund_request", "refund_question", "refund_progress", "refund_withdraw", "policy_question", "fault_report", "human", "other"] as const;
-export type Intent = (typeof INTENTS)[number];
-export const NO_ORDER = "none";
 const MAX_CANDIDATES = 6;
+const MAX_EVIDENCE = 2;
 const CANDIDATE_CHARS = 110;
+const MIN_RELEVANCE = 0.1; // nothing shared with the question at all: not offered
 
 export interface Candidate {
   n: number;
@@ -30,94 +27,55 @@ export interface ModelPrompt {
   messages: { role: "system" | "user"; content: string }[];
   schema: Record<string, unknown>;
   candidates: Candidate[];
-  orders: string[];
 }
 
-const SYSTEM = `你是客服系统的路由器，只做选择，不回答问题，不编写任何事实。
-读顾客这句话，输出 JSON：
-- intent：order_status 查订单状态；shipment 查物流；refund_request 顾客明确要求退款；refund_question 只是咨询退款、假设、犹豫或已撤回；refund_progress 问退款进度；refund_withdraw 撤回退款申请；policy_question 问政策规则；fault_report 报告商品故障；human 要人工；other 其他。
-- order_id：顾客说的是哪一单，从给出的订单里选，说不清就选 none。
-- evidence：哪些资料编号能回答这个问题，最多 3 个；都不能回答就给空数组。不要猜。`;
+const SYSTEM = `你是客服资料筛选器，只做选择，不回答问题，不编写任何内容。
+读顾客的问题和下面的资料，输出 JSON：
+- can_answer：资料里确实写了这个问题的答案才为 true；只是话题相近、或者要靠猜，都为 false。
+- evidence：能回答问题的资料编号，最多 2 个；can_answer 为 false 时给空数组。
+
+例子一。资料：1. 配送：满99元包邮。2. 发票：可开电子发票。顾客问：多少钱免运费。输出：{"can_answer":true,"evidence":[1]}
+例子二。资料：1. 配送：满99元包邮。2. 发票：可开电子发票。顾客问：能用信用卡分期吗。输出：{"can_answer":false,"evidence":[]}`;
 
 /** The question the model reads, and the closed choices it may give. */
-export function buildPrompt(world: World, tenant: string, email: string, role: string, question: string): ModelPrompt {
+export function buildPrompt(tenant: string, role: string, question: string): ModelPrompt {
   const text = canonical(normalizeWidth(question));
-  const orders = role === "customer" ? world.ordersOf(tenant, email).slice(0, 5) : [];
   const scope = new Set(role === "customer" ? ["public"] : ["public", "internal"]);
-  const candidates: Candidate[] = search(tenant, text, scope, MAX_CANDIDATES, false).map((hit, i) => ({
+  const candidates: Candidate[] = search(tenant, text, scope, MAX_CANDIDATES, false).filter((hit) => hit.relevance >= MIN_RELEVANCE).map((hit, i) => ({
     n: i + 1, chunk: hit.chunk.id, doc: hit.chunk.doc, heading: hit.chunk.heading, text: hit.chunk.text.slice(0, CANDIDATE_CHARS),
   }));
-  const mentioned = findAll(T.ORDER_ID_RE, text).map((m) => m[0].toUpperCase());
-  const allowed = [...new Set([...orders.map((o) => o.id), ...mentioned])];
-  const orderLines = orders.map((o) => `${o.id}：${o.items.map((i) => i.name).join("、")}`).join("\n") || "（无）";
-  const evidenceLines = candidates.map((c) => `${c.n}. ${c.heading}：${c.text}`).join("\n") || "（无）";
+  const lines = candidates.map((c) => `${c.n}. ${c.heading}：${c.text}`).join("\n") || "（无）";
   return {
     messages: [
       { role: "system", content: SYSTEM },
-      { role: "user", content: `顾客的订单：\n${orderLines}\n\n资料：\n${evidenceLines}\n\n顾客说：${text}` },
+      { role: "user", content: `资料：\n${lines}\n\n顾客问：${text}` },
     ],
     schema: {
       type: "object",
       properties: {
-        intent: { type: "string", enum: INTENTS },
-        order_id: { type: "string", enum: [...allowed, NO_ORDER] },
-        evidence: { type: "array", items: { type: "integer", enum: candidates.length ? candidates.map((c) => c.n) : [0] }, maxItems: 3 },
+        can_answer: { type: "boolean" },
+        evidence: { type: "array", items: { type: "integer", enum: candidates.length ? candidates.map((c) => c.n) : [0] }, maxItems: MAX_EVIDENCE },
       },
-      required: ["intent", "order_id", "evidence"],
+      required: ["can_answer", "evidence"],
     },
     candidates,
-    orders: orders.map((o) => o.id),
   };
 }
 
-const QUESTION_FOR: Partial<Record<Intent, (order: string) => string>> = {
-  order_status: (o) => `${o} 查一下`,
-  shipment: (o) => `${o} 到哪了`,
-  refund_progress: (o) => `${o} 退款进度`,
-};
-
-/**
- * What the program keeps of the model's answer. Null: nothing usable, tier 1 answers on its own.
- * An order must be the customer's or named in their words; evidence must be one of the chunks offered; and anything that
- * writes or moves money goes back through the rules on the customer's own text, so the model cannot talk them into it.
- */
+/** What the program keeps of the model's answer. Null: nothing usable, and the rules' refusal stands. */
 export function validateChoice(raw: string, prompt: ModelPrompt, question: string): ModelChoice | null {
-  let parsed: { intent?: unknown; order_id?: unknown; evidence?: unknown };
+  let parsed: { can_answer?: unknown; evidence?: unknown };
   try {
     parsed = JSON.parse(raw);
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || !INTENTS.includes(parsed.intent as Intent)) return null;
-  const text = canonical(normalizeWidth(question));
-  const intent = parsed.intent as Intent;
-  const named = findAll(T.ORDER_ID_RE, text).map((m) => m[0].toUpperCase());
-  const allowed = new Set([...prompt.orders, ...named]);
-  const notes: string[] = [];
-  let order: string | null = null;
-  if (typeof parsed.order_id === "string" && parsed.order_id !== NO_ORDER) {
-    if (allowed.has(parsed.order_id.toUpperCase())) order = parsed.order_id.toUpperCase();
-    else notes.push(`丢弃不在可选范围内的订单 ${parsed.order_id.slice(0, 24)}`);
-  }
+  if (!parsed || typeof parsed !== "object" || parsed.can_answer !== true) return null;
   const offered = new Map(prompt.candidates.map((c) => [c.n, c.chunk]));
   const picked = Array.isArray(parsed.evidence) ? parsed.evidence : [];
-  const evidence = [...new Set(picked.filter((n) => offered.has(n as number)).map((n) => offered.get(n as number)!))].slice(0, 3);
-  if (picked.length !== evidence.length) notes.push("丢弃不在候选范围内或重复的依据编号");
-
-  // A number the customer named wins: the model may only fill in an order they did not name.
-  const target = named[0] ?? order;
-  let routed = text;
-  const read = QUESTION_FOR[intent];
-  if (read && target) routed = read(target);
-  else if (intent === "refund_request" || intent === "refund_question") {
-    // The same gate as the rules, on the customer's words. An order the model picked never files anything.
-    if (intent === "refund_request" && !refundRequested(text)) notes.push("模型判断要退款，但这句话没有明确要求退款：不提交");
-    routed = target && !named.length ? (refundRequested(text) ? text : `${target} ${text}`) : text;
-  } else if (intent === "refund_withdraw" && !refundWithdrawRequested(text)) {
-    notes.push("模型判断要撤回，但这句话没有明确要求撤回：不撤回");
-  }
-  const usesEvidence = intent === "policy_question" && evidence.length > 0 && !named.length && !M._OWN.test(text);
-  return { question: routed, evidence: usesEvidence ? evidence : [], raw: raw.slice(0, 400), note: notes.join("；") || "通过校验" };
+  const evidence = [...new Set(picked.filter((n) => offered.has(n as number)).map((n) => offered.get(n as number)!))].slice(0, MAX_EVIDENCE);
+  if (!evidence.length) return null;
+  return { question: canonical(normalizeWidth(question)), evidence, raw: raw.slice(0, 400), note: picked.length === evidence.length ? "通过校验" : "丢弃了不在候选范围内的依据编号" };
 }
 
 // ---------------------------------------------------------------- the model, in a worker
@@ -142,11 +100,12 @@ export const TIER2_RELEASED = import.meta.env.VITE_DEMO_TIER2 === "1";
 
 export async function webgpuAvailable(): Promise<boolean> {
   if (!TIER2_RELEASED) return false;
-  const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
+  const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<{ features: Set<string> } | null> } }).gpu;
   if (!globalThis.isSecureContext || !gpu) return false;
   if (window.matchMedia?.("(pointer: coarse)").matches || window.innerWidth < 720) return false; // phones mostly cannot run it
   try {
-    return Boolean(await gpu.requestAdapter());
+    const adapter = await gpu.requestAdapter();
+    return Boolean(adapter?.features.has("shader-f16")); // the shared weights are q4f16: without it the load could only fail
   } catch {
     return false;
   }

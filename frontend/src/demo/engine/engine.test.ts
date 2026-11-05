@@ -3,6 +3,7 @@ import type { AgentEvent } from "../../types";
 import { DemoEngine, EngineError } from ".";
 import { pack } from "./pack";
 import { buildPrompt, validateChoice } from "./tier2";
+import { runTool, type ToolContext } from "./tools";
 
 const EMMA = "customer@leon.demo", LILY = "customer@echo.demo", MIA = "agent@leon.demo", LEON = "admin@leon.demo";
 
@@ -152,7 +153,56 @@ describe("a question in several parts", () => {
   });
 });
 
+describe("the tool itself refuses what is not a request", () => {
+  // The planner never asks for it on a question: this is the line behind it, for whatever a model makes of a message.
+  const ctx = (customerText: string): ToolContext => ({ tenant: "leon", config: pack.tenants.leon, user: EMMA, role: "customer", conversationId: null, runId: "r", evidence: [], customerText, unconfirmedOrder: null, approvalId: null, withdrawOffer: null });
+
+  it.each(["SO20261012003 能退款吗", "SO20261012003 能不能直接退钱", "SO20261012003 直接退款行不行", "先别退款 SO20261012003"])("%s", (text) => {
+    const outcome = runTool(engine.world, ctx(text), "request_refund", { order_id: "SO20261012003", amount: 268, reason: "x" });
+    expect(outcome.kind).toBe("result");
+    expect(outcome.kind === "result" && outcome.isError).toBe(true);
+    expect(engine.world.order("leon", "SO20261012003")!.status).toBe("paid");
+    expect(engine.world.approvals).toHaveLength(0);
+  });
+});
+
+describe("a long message does not freeze the page", () => {
+  it.each([["digits", "1".repeat(2000)], ["letters", `${"a".repeat(1990)} refund`], ["order-like", `${"SO2026".repeat(333)}退款`]])("%s", (_, text) => {
+    const started = performance.now();
+    ask(EMMA, text);
+    expect(performance.now() - started).toBeLessThan(1500);
+  });
+});
+
 describe("the review flow", () => {
+  it("only staff decide", () => {
+    const filed = approvalOf(ask(EMMA, "SO20261012003 我要退款"))!;
+    expect(() => engine.decide(filed.approval_id!, "customer2@leon.demo", "approve", "")).toThrow(/只有员工/);
+    expect(() => engine.withdrawByStaff(filed.approval_id!, "customer2@leon.demo")).toThrow(/只有员工/);
+    expect(() => engine.decide(filed.approval_id!, "agent@echo.demo", "approve", "")).toThrow(EngineError);
+    expect(engine.world.order("leon", "SO20261012003")!.status).toBe("paid");
+  });
+
+  it("a replayed application holds the order once, and stays out of the simulated queue", () => {
+    const conversation = id++;
+    const recorded: AgentEvent[] = [{ type: "approval_required", approval_id: 2, tool: "request_refund", arguments: { order_id: "SO20261008002", amount: 1299 }, reason: "" }];
+    engine.noteReplay(EMMA, conversation, "SO20261008002 我要退款", recorded);
+    engine.noteReplay(EMMA, conversation, "SO20261008002 我要退款", recorded);
+    expect(engine.world.approvals).toHaveLength(1);
+    expect(engine.approvals("leon", "pending")).toHaveLength(0);
+    expect(final(ask(EMMA, "SO20261008002 退款进度", conversation)).text).toContain("等待人工审核");
+  });
+
+  it("another customer cannot read a conversation", () => {
+    const conversation = id++;
+    ask(EMMA, "SO20261012003 到哪了", conversation);
+    const live = engine.conversations.get(conversation)!;
+    expect(engine.mayRead(live, EMMA)).toBe(true);
+    expect(engine.mayRead(live, MIA)).toBe(true);
+    expect(engine.mayRead(live, "customer2@leon.demo")).toBe(false);
+    expect(engine.mayRead(live, "agent@echo.demo")).toBe(false);
+  });
+
   it("files, shows on the agent's queue, and the decision reaches the customer's chat", () => {
     const conversation = id++;
     const filed = approvalOf(ask(EMMA, "SO20261012003 我要退款", conversation))!;
@@ -242,56 +292,56 @@ describe("the answer carries its evidence", () => {
   });
 });
 
-describe("the model tier only chooses", () => {
-  const prompt = () => buildPrompt(engine.world, "leon", EMMA, "customer", "那个咖啡的单子发了没");
-  const choice = (text: string, raw: Record<string, unknown>) => validateChoice(JSON.stringify(raw), buildPrompt(engine.world, "leon", EMMA, "customer", text), text);
+describe("the model tier only picks what to quote", () => {
+  const text = "我买错了东西寄回去的快递费归谁";
+  const prompt = () => buildPrompt("leon", "customer", text);
 
-  it("offers only the customer's own orders and the chunks it found", () => {
+  it("offers only chunks the asker may read, and asks only for their numbers", () => {
     const p = prompt();
-    const schema = p.schema.properties as { order_id: { enum: string[] }; evidence: { items: { enum: number[] } } };
-    expect(schema.order_id.enum).toContain("SO20261012003");
-    expect(schema.order_id.enum).not.toContain("SO20261003005");
-    expect(schema.evidence.items.enum.length).toBeLessThanOrEqual(6);
+    const fields = Object.keys(p.schema.properties as object);
+    expect(fields).toEqual(["can_answer", "evidence"]);
+    expect(p.candidates.length).toBeLessThanOrEqual(6);
+    const internal = pack.kb.leon.filter((k) => k.visibility === "internal").map((k) => k.id);
+    expect(buildPrompt("leon", "customer", "一线客服最多可以发放多少钱的补偿券").candidates.map((c) => c.chunk).filter((id) => internal.includes(id))).toEqual([]);
+    expect(buildPrompt("leon", "agent", "一线客服最多可以发放多少钱的补偿券").candidates.map((c) => c.chunk).some((id) => internal.includes(id))).toBe(true);
   });
 
-  it("anything but valid JSON leaves the answer to the rules", () => {
-    expect(validateChoice("退款吧", prompt(), "x")).toBeNull();
-    expect(validateChoice('{"intent":"hack"}', prompt(), "x")).toBeNull();
+  it("anything but a valid choice leaves the refusal standing", () => {
+    expect(validateChoice("退款吧", prompt(), text)).toBeNull();
+    expect(validateChoice('{"can_answer":false,"evidence":[1]}', prompt(), text)).toBeNull();
+    expect(validateChoice('{"can_answer":true,"evidence":[]}', prompt(), text)).toBeNull();
+    expect(validateChoice('{"can_answer":true,"evidence":[99]}', prompt(), text)).toBeNull();
+    expect(validateChoice('{"intent":"refund_request","order_id":"SO20261012003"}', prompt(), text)).toBeNull();
   });
 
-  it("an order that is not theirs is dropped", () => {
-    const c = choice("那个单子到哪了", { intent: "shipment", order_id: "SO20261003005", evidence: [] })!;
-    expect(c.note).toContain("丢弃");
-    expect(c.question).not.toContain("SO20261003005");
-  });
-
-  it("a model that says refund on a hedge moves nothing", () => {
-    const text = "SO20261012003 我可能会退款 看情况";
-    const c = choice(text, { intent: "refund_request", order_id: "SO20261012003", evidence: [] })!;
-    expect(c.note).toContain("不提交");
-    const events = engine.ask(EMMA, id++, text, c);
-    expect(approvalOf(events)).toBeUndefined();
-    expect(toolsOf(events)).not.toContain("request_refund");
-  });
-
-  it("a refund on an order the model picked is not filed", () => {
-    const text = "这个我要退款";
-    const c = choice(text, { intent: "refund_request", order_id: "SO20261012003", evidence: [] })!;
-    const events = engine.ask(EMMA, id++, text, c);
-    expect(approvalOf(events)).toBeUndefined();
-    expect(toolsOf(events)).not.toContain("request_refund");
-  });
-
-  it("evidence outside what was offered is dropped; what stays is quoted, not written", () => {
-    const text = "我买错了东西寄回去的快递费归谁";
-    const p = buildPrompt(engine.world, "leon", EMMA, "customer", text);
-    const c = validateChoice(JSON.stringify({ intent: "policy_question", order_id: "none", evidence: [1, 99] }), p, text)!;
+  it("what stays is quoted word for word, with its citation", () => {
+    const p = prompt();
+    const c = validateChoice(JSON.stringify({ can_answer: true, evidence: [1, 99] }), p, text)!;
     expect(c.evidence).toEqual([p.candidates[0].chunk]);
-    const events = engine.ask(EMMA, id++, text, c);
-    const answer = final(events);
+    expect(c.note).toContain("丢弃");
+    const answer = final(engine.ask(EMMA, id++, text, c));
     expect(answer.meta.engine).toBe("qwen3-0.6b-webgpu");
     expect(answer.text).toMatch(/\[1\]/);
     const quoted = pack.kb.leon.find((k) => k.id === p.candidates[0].chunk)!;
     expect(answer.meta.citations?.[0].text).toBe(quoted.text);
+    expect(quoted.text).toContain(answer.text.replace(/\[1\]。?$/, "").slice(0, 12));
+  });
+
+  it("asks only when the rules would refuse, and asking changes nothing", () => {
+    expect(engine.wouldRefuse(EMMA, id++, "能货到付款吗")).toBe(true);
+    expect(engine.wouldRefuse(EMMA, id++, "退款多久能到账？")).toBe(false);
+    const conversation = id++;
+    expect(engine.wouldRefuse(EMMA, conversation, "SO20261012003 我要退款")).toBe(false);
+    expect(engine.world.approvals).toHaveLength(0);
+    expect(engine.conversations.get(conversation)!.messages).toHaveLength(0);
+  });
+
+  it("a choice on a turn that files money still goes through the rules on the customer's words", () => {
+    // Even a forged choice carrying a request's text: filing still needs the words, and a question has none.
+    const asked = "SO20261012003 我可能会退款 看情况";
+    const forged = { question: asked, evidence: [], raw: "", note: "" };
+    const events = engine.ask(EMMA, id++, asked, forged);
+    expect(approvalOf(events)).toBeUndefined();
+    expect(toolsOf(events)).not.toContain("request_refund");
   });
 });

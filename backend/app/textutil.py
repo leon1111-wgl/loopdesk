@@ -134,9 +134,9 @@ def asks_for_person(text: str) -> bool:
 OTHER_ORDER = re.compile(r"(?:另一|别的|其他|其它|另外一?)(?:个|单|订单|笔|件)")
 _AMOUNT_OF = r"\s*(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:元|块)钱?)"
 REFUND_AMOUNT = (r"(?<!只)(?<!说)(?<!说好)(?<!答应)(?<!承诺)(?<!才)退" + _AMOUNT_OF
-                 + r"(?=$|[^一-鿿]|补偿|赔偿|差价|到|就|吧|给|啊|呀|呗|行|好|谢)"
+                 + r"(?=$|[^一-鿿]|补偿|赔偿|差价|到|就|吧|给|啊|呀|呗|行|好|谢|可|能)"
                  + r"|只退" + _AMOUNT_OF + r"(?=就行|就好|就可以|吧)")
-REFUND_RE = re.compile(r"退款|退钱|退货|退掉|退我|" + REFUND_AMOUNT + r"|退(?:一半|个?差价)(?!运费|邮费|的?运费)|refund"
+REFUND_RE = re.compile(r"退款|退钱|退货|退掉|退我|直接退|" + REFUND_AMOUNT + r"|退(?:一半|个?差价)(?!运费|邮费|的?运费)|refund"
                        # N-178: "全款退", "退全款", "这个月的也退给我", "把钱退回来", "给我退了"
                        r"|(?:全额|全款)退|退(?:全款|全额)|退给我|(?:钱|款)退回来|能(?:不能)?退(?=吗|不|[？?]|$)|可(?:不可)?以退(?=吗|不|[？?]|$)"
                        # N-156: "money back please", "can I return this?"
@@ -171,34 +171,56 @@ def _in_timing_question(before: str) -> bool:
     return len(rest) <= _TIMING_REACH and not _TIMING_ENDS.search(rest)
 
 
-# Whether it can be done, not a request to do it (second blind set): "三天内是不是可以直接退钱呀" paid out. 是不是 / 是否 / 能否 in
-# front of the words asks. So does a bare 直接退 / 就退 followed by a question ("直接退款可以吗") or, after 能 / 可以, by a
-# colloquial ending ("能直接退钱不"). 帮我 / 给我 name who gets it: "能不能帮我退款" and "可以给我退款吗" are how people ask politely.
-_ASKED_WHETHER = re.compile(r"(?:是不是|是否|能否|可否)[^，,。！!？?；;\n]*$")
-_DIRECT_END = re.compile(r"(?:直接|就)$")
-_CAN_END = re.compile(r"(?:能|可以)[^，,。！!？?；;\n]{0,3}$")
-_REST_OF_CLAUSE = re.compile(r"[^，,。！!；;\n]*")
-_ASKS_AFTER = re.compile(r"吗|么|[？?]")
-_ASKS_AT_END = re.compile(r"(?:不|呀|没|呢)\s*$")
+# Whether it can be done, not a request to do it: "三天内是不是可以直接退钱呀" and "能不能直接退钱" used to pay out (blind set, second-model
+# review). A clause with a question in it asks, unless it names who gets the money: 帮我 / 给我 / 我要 / 退我 are how people ask
+# politely ("能不能帮我退款", "我要退款可以吗"). 是不是 / 是否 / 能否 / 可否 in front of the words ask whoever gets it. Clauses end where
+# they do for a demand (_DEMAND_SEP_RE): "是不是还没发货 不等了 帮我退款" asks nothing about the refund.
+_CLAUSE_END = re.compile(r"[，,。.！!？?；;、～~…\n]+|(?<=[\u4e00-\u9fff])\s+|\s+(?=[\u4e00-\u9fff])")
+_ASKED_WHETHER = re.compile(r"是不是|是否|能否|可否")
+_TAG_QUESTION = re.compile(r"(?:可以吗|行吗|好吗|能吗|成吗|可以不|行不|行不行|可不可以|好不好)[\s？?。！!~～]*$")
+_NAMES_WHO = re.compile(r"帮我|给我|为我|我要|我想|退我|(?<!申)请(?!问)|麻烦")
+_CLAUSE_ASKS = re.compile(
+    r"吗|么\s*$|呢\s*$|[？?]|能不能|可不可以|要不要|好不好|会不会|有没有|多久|多长时间|几天|多少|哪|谁|什么|怎么|如何|应该[^，,。！!？?]{0,10}吧"
+    r"|(?:可以|没问题|就行|就好|就可以了?|的)吧\s*$"
+    r"|(?<![A-Za-z])(?:can|could|may|would|do|am)\s+i(?![A-Za-z])|is\s+it\s+possible|(?:how|where|when)\s+(?:do|can|could|will)\s+i(?![A-Za-z])",
+    re.IGNORECASE)
 
 
-def _asked_whether(before: str, match: re.Match[str], text: str) -> bool:
+def _clause_of(match: re.Match[str], text: str) -> tuple[str, str]:
+    """The words of the clause in front of a match and after it, a question mark that ends it included. A clause that is only
+    a tag ("直接退款 可以吗", "退 100 块，行不行") belongs to the one before it."""
+    start, end = 0, len(text)
+    for sep in _CLAUSE_END.finditer(text):
+        if sep.end() <= match.start():
+            start = sep.end()
+        elif sep.start() >= match.end():
+            end = sep.end() if re.search(r"[？?]", sep.group()) else sep.start()
+            if _TAG_QUESTION.match(text, sep.end()):
+                end = len(text)
+            break
+    return text[start:match.start()], text[match.end():end]
+
+
+def _asked_whether(match: re.Match[str], text: str) -> bool:
+    before, after = _clause_of(match, text)
     if _ASKED_WHETHER.search(before):
         return True
-    if not (match.group().startswith(("直接", "就")) or _DIRECT_END.search(before)):
+    clause = before + match.group() + after
+    if _NAMES_WHO.search(before[-4:] + match.group()):
         return False
-    rest = _REST_OF_CLAUSE.match(text, match.end()).group()
-    return bool(_ASKS_AFTER.search(rest) or (_CAN_END.search(_DIRECT_END.sub("", before)) and _ASKS_AT_END.search(rest)))
+    return bool(_CLAUSE_ASKS.search(clause) or _COLLOQUIAL_QUESTION_RE.search(clause))
 
 
 def _named_demand(pattern: re.Pattern, text: str) -> bool:
-    """A match of ``pattern`` that is neither reported nor inside a question in front of it or around it."""
+    """A match of ``pattern`` that is neither reported nor inside a question."""
     for match in pattern.finditer(text):
         before = text[:match.start()]
-        if _REPORTED_BEFORE.search(before) or _in_timing_question(before) or _asked_whether(before, match, text):
+        if _REPORTED_BEFORE.search(before) or _in_timing_question(before) or _asked_whether(match, text):
             continue
         return True
     return False
+
+
 REFUND_APPLY_RE = re.compile(
     r"我要退|申请退|帮我退|给我退|想退|要退|退一下|退掉|请(?:帮我|直接)?退|直接退|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退"
     r"|退我(?!的)|(?:给|帮|为)(?:客户|顾客|他|她|这位顾客)退|(?:我|客户|顾客|他|她)要求(?:全额|全款|全部)?退"

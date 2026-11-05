@@ -42,6 +42,8 @@ interface Fixtures {
 interface LocalConversation {
   email: string;
   conversation: Record<string, unknown>;
+  /** What this conversation said when the browser engine could not load (a very old browser, a failed download). */
+  fallback?: Record<string, unknown>[];
 }
 
 export const isDemo = import.meta.env.VITE_DEMO === "1";
@@ -81,6 +83,9 @@ function loadEngine(): Promise<DemoEngine> {
     EngineError = module.EngineError;
     engine = new module.DemoEngine((slug) => recordedTenant(slug));
     return engine;
+  }).catch((error) => {
+    engineLoading = null; // a failed download can be tried again on the next question
+    throw error;
   });
   return engineLoading;
 }
@@ -146,16 +151,17 @@ export function stopModel(): void {
 }
 
 /** What the model chooses for this question, validated; null: the rules answer alone. */
-async function modelChoice(email: string, question: string, notes: AgentEvent[]): Promise<ModelChoice | null> {
+async function modelChoice(email: string, conversationId: number, question: string, notes: AgentEvent[]): Promise<ModelChoice | null> {
   if (modelState.status !== "ready" || !modelClient || !engine) return null;
+  if (!engine.wouldRefuse(email, conversationId, question)) return null; // the rules have an answer: no need to ask
   const { buildPrompt, validateChoice } = await import("./engine/tier2");
   const user = data!.users[email];
-  const tenant = (user.tenant as { slug: string }).slug;
-  const prompt = buildPrompt(engine.world, tenant, email, user.role, question);
+  const prompt = buildPrompt((user.tenant as { slug: string }).slug, user.role, question);
+  if (!prompt.candidates.length) return null;
   try {
     const raw = await modelClient.choose(prompt);
     const choice = validateChoice(raw, prompt, question);
-    notes.push({ type: "model_choice", raw: raw.slice(0, 400), note: choice ? choice.note : "模型输出不是合法选择，由规则引擎回答", accepted: Boolean(choice) });
+    notes.push({ type: "model_choice", raw: raw.slice(0, 400), note: choice ? choice.note : "模型认为资料里没有答案，或输出不合法：由规则引擎回答", accepted: Boolean(choice) });
     return choice;
   } catch (error) {
     notes.push({ type: "model_choice", raw: "", note: error instanceof Error ? error.message : String(error), accepted: false });
@@ -217,11 +223,12 @@ async function answer(path: string, init: RequestInit): Promise<Response> {
     if (own) {
       const id = Number(own[1]);
       const live = run?.conversations.get(id);
+      if (live && !run!.mayRead(live, email)) return json({ detail: "对话不存在" }, 404);
       if (live) {
         const row = local.get(id)?.conversation ?? recordedRow(recorded, id) ?? { id, title: "新对话" };
         return json({ conversation: { ...run!.conversationRow(live, String(row.title ?? "新对话")), ...(live.handoff ? { status: "handoff" } : {}) }, handoff: live.handoff, messages: live.messages });
       }
-      if (local.has(id)) return json({ conversation: local.get(id)!.conversation, handoff: null, messages: [] });
+      if (local.has(id)) return json({ conversation: local.get(id)!.conversation, handoff: null, messages: local.get(id)!.fallback ?? [] });
     }
     if (path === "/api/conversations") {
       const mine = [...local.values()].filter((c) => c.email === email).map((c) => {
@@ -260,6 +267,38 @@ async function answer(path: string, init: RequestInit): Promise<Response> {
   return json({ detail: NOT_SAVED }, 403);
 }
 
+const NO_ENGINE = "这个浏览器没能加载演示的回答引擎（版本过旧，或下载失败）。可以换一个新版浏览器或刷新后重试；录制好的示例问题不受影响。";
+
+/** The scripted questions need nothing to replay, and anything else says what went wrong instead of failing the send. */
+function withoutEngine(email: string, conversationId: number, question: string, recordedEvents: AgentEvent[] | undefined, conversation: LocalConversation | undefined): Response {
+  const at = new Date().toISOString();
+  const events: AgentEvent[] = recordedEvents ?? [
+    { type: "final", run_id: "", message_id: null, text: NO_ENGINE, status: "completed", meta: { citations: [], status: "completed" } },
+    { type: "done", run_id: "", status: "completed", latency_ms: 0 },
+  ];
+  const final = events.find((e): e is Extract<AgentEvent, { type: "final" }> => e.type === "final");
+  const own = conversation ?? { email, conversation: { id: conversationId, title: question.slice(0, 30), channel: "web", status: "bot", created_at: at, updated_at: at } };
+  local.set(conversationId, own);
+  own.fallback = [...(own.fallback ?? []),
+    { id: nextId++, role: "user", content: question, run_id: null, meta: {}, created_at: at, feedback: null },
+    { id: nextId++, role: "assistant", content: final?.text ?? "", run_id: null, meta: { ...final?.meta, engine: recordedEvents ? "recorded" : "unavailable" }, created_at: at, feedback: null }];
+  return sse(events);
+}
+
+function sse(events: AgentEvent[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      for (const event of events) {
+        await sleep(event.type === "token" ? 15 : 90);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+}
+
 function recordedRow(recorded: (url: string) => unknown, id: number): Record<string, unknown> | undefined {
   return ((recorded("/api/conversations") as Record<string, unknown>[]) ?? []).find((c) => c.id === id);
 }
@@ -288,9 +327,14 @@ function sleep(ms: number) {
 async function replay(email: string, conversationId: number, content: string, recorded: (url: string) => unknown): Promise<Response> {
   const question = content.trim();
   const chat = data!.chats[email]?.find((c) => c.question === question);
-  const run = await loadEngine();
   const conversation = local.get(conversationId);
   if (conversation && conversation.conversation.title === "新对话") conversation.conversation = { ...conversation.conversation, title: question.slice(0, 30) };
+  let run: DemoEngine;
+  try {
+    run = await loadEngine();
+  } catch {
+    return withoutEngine(email, conversationId, question, chat?.events, conversation);
+  }
   // A recorded conversation the visitor goes on with keeps what it said; it becomes this tab's from here on.
   if (!run.conversations.has(conversationId)) {
     const body = recorded(`/api/conversations/${conversationId}/messages`) as { messages?: Record<string, unknown>[]; conversation?: Record<string, unknown> } | undefined;
@@ -303,18 +347,8 @@ async function replay(email: string, conversationId: number, content: string, re
     run.noteReplay(email, conversationId, question, chat.events);
     events = chat.events.map((e) => (e.type === "final" ? { ...e, meta: { ...e.meta, engine: "recorded" } } : e));
   } else {
-    const choice = await modelChoice(email, question, notes);
+    const choice = await modelChoice(email, conversationId, question, notes);
     events = [...notes, ...run.ask(email, conversationId, question, choice)];
   }
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      for (const event of events) {
-        await sleep(event.type === "token" ? 15 : 90);
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-      }
-      controller.close();
-    },
-  });
-  return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+  return sse(events);
 }

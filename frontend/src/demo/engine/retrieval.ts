@@ -8,6 +8,7 @@ import { canonicalQuery, expandQuery, tokenize } from "./text";
 
 const RRF_K = 60;
 const CANDIDATES = 12;
+const MAX_SPLIT_WORD = 32;
 
 interface Indexed {
   chunk: KbChunk;
@@ -105,7 +106,7 @@ class TenantIndex {
   knownParts(tokens: string[]): string[] {
     const out: string[] = [];
     for (const t of tokens) {
-      if (t.length < 3 || (this.df.get(t) ?? 0) > 0) {
+      if (t.length < 3 || t.length > MAX_SPLIT_WORD || (this.df.get(t) ?? 0) > 0) { // a pasted run: every slice would be tried
         out.push(t);
         continue;
       }

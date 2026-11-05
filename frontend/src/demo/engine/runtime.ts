@@ -6,7 +6,7 @@ import type { AgentEvent, EvidenceItem, SpanRow, Verification } from "../../type
 import { INJECTION, PII, T, W, pack, type TenantConfig } from "./pack";
 import { compose, nextCall, readsAsOrder, understood, type Results, type Turn } from "./planner";
 import { search } from "./retrieval";
-import { addEvidence, availableTools, runTool, type ApprovalRow, type Evidence, type ToolContext, type World, SIMULATED } from "./tools";
+import { addEvidence, availableTools, queueNotice, runTool, type ApprovalRow, type Evidence, type ToolContext, type World, SIMULATED } from "./tools";
 import { asksForPerson, canonical, extractNumbers, findAll, handoffCancelled, money, normalizeWidth, overlapRecall, refundWithdrawRequested, splitSentences, stripCitations, sub } from "./text";
 
 const LEADING = pack.texts.leading;
@@ -64,8 +64,8 @@ export interface RunRecord {
 
 /** What a model tier chose, already validated by the program (tier2.ts). */
 export interface ModelChoice {
-  question: string; // the turn as the rules should read it
-  evidence: number[]; // chunk ids the model picked, for a policy question
+  question: string; // the turn as the rules read it
+  evidence: number[]; // chunk ids the model picked
   raw: string;
   note: string; // what the validator did
 }
@@ -280,14 +280,14 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
       }
       turnText = rest;
     } else {
-      const notice = `已为您转接人工客服，当前排队第 ${conversation.handoff.position} 位。您可以继续留言，人工客服接入后会在这里回复。`;
+      const notice = queueNotice(conversation.handoff.position);
       return [{ type: "handoff", ...conversation.handoff }, { type: "final", run_id: "", message_id: null, text: notice, status: "handoff", meta: { ...({ engine } as object) } },
         { type: "done", run_id: "", status: "handoff", latency_ms: 0 }];
     }
   }
 
   const runId = newRunId();
-  const run: RunRecord = { id: runId, tenant, email, name, role, status: "running", model: engine, route_tier: choice ? "fast" : "rule", input_text: pii.masked, output_text: "", steps: 0, latency_ms: 0,
+  const run: RunRecord = { id: runId, tenant, email, name, role, status: "running", model: engine, route_tier: choice ? "browser" : "rule", input_text: pii.masked, output_text: "", steps: 0, latency_ms: 0,
     evidence_coverage: null, verdict: null, created_at: nowIso(world), spans: [], evidence: [], approvals: [] };
   options.onRun?.(run);
   events.push({ type: "run_started", run_id: runId });

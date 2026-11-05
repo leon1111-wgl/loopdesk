@@ -5,7 +5,8 @@ name: Browser model evaluation
 # - selection: how well the model does the job, natively (llama.cpp, a GGUF of the same weights), on the blind sets and gate
 #   cases, scored by the same validation and tools as the browser. A model that files money on a non-request fails the job.
 # - webgpu: this commit's demo build in Chromium on a software GPU (SwiftShader), to see whether the click-to-load path works end
-#   to end from the shared weights. A runner has no real GPU: if the adapter lacks what the model needs, the job says so.
+#   to end. A runner has no real GPU and SwiftShader has no 16-bit floats, so this run serves the same model's q4f32 build under the
+#   shared URLs: it proves the path, not the q4f16 weights on a real GPU.
 # The model is released separately from the rules (VITE_DEMO_TIER2 in pages.yml): this is what decides whether it can be.
 
 on:
@@ -128,6 +129,7 @@ jobs:
         continue-on-error: true
         env:
           REAL_WEBGPU: "1"
+          WEBGPU_F32: "1"
           DEMO_URL: ${{ inputs.demo_url }}
         run: pnpm exec playwright test -c playwright.demo.config.ts e2e-demo/webgpu-real.spec.ts --timeout 3600000
       - uses: actions/upload-artifact@v4

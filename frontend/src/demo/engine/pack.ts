@@ -72,7 +72,7 @@ export interface TenantTool {
   label: string;
   risk: "read" | "write" | "money";
   description: string;
-  parameters: { properties?: Record<string, { type?: string; description?: string; pattern?: string; enum?: unknown[]; default?: unknown }>; required?: string[] };
+  parameters: { properties?: Record<string, { type?: string; description?: string; pattern?: string; enum?: unknown[]; default?: unknown; maximum?: number }>; required?: string[] };
   approval?: { mode?: string; amount_field?: string; auto_limits?: Record<string, number>; admin_above?: Record<string, number>; approver?: string; customer_note?: string };
   hints?: { intents?: string[]; requires?: string[] };
   enabled: boolean;
@@ -93,6 +93,10 @@ export interface Pack {
     refund_window_max_count: number;
     refund_window_max_amount: number;
     max_agent_steps: number;
+    timing_reach: number;
+    bare_demand_max: number;
+    my_orders_limit: number;
+    rejected_before_days: number;
   };
   rules: {
     text: Record<string, Rule>;
@@ -132,6 +136,5 @@ export const T = compile(pack.rules.text); // app/textutil.py
 export const M = compile(pack.rules.mock); // app/llm/mock.py
 export const W = compile(pack.rules.rewrite); // app/agent/rewrite.py
 export const TOOLS = compile(pack.rules.tools); // app/agent/business_tools.py
-export const OUTCOME = compile(pack.rules.outcome); // app/agent/outcome.py
 export const INJECTION: [string, RegExp][] = pack.rules.injection.map(([name, rule]) => [name, new RegExp(rule.source, rule.flags)]);
 export const PII: [string, RegExp][] = pack.rules.pii.map(([name, rule]) => [name, new RegExp(rule.source, rule.flags)]);

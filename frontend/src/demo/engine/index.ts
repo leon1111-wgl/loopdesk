@@ -5,6 +5,7 @@
 import type { AgentEvent } from "../../types";
 import { pack, type TenantConfig } from "./pack";
 import { resumeApproval, runTurn, type EngineConversation, type Message, type ModelChoice, type RunRecord } from "./runtime";
+import { isRefusal } from "./text";
 import { reviewerRole, World, type ApprovalRow, type TicketRow } from "./tools";
 
 export type { ModelChoice } from "./runtime";
@@ -29,6 +30,12 @@ export class DemoEngine {
     return { ...pack.tenants[slug], ...this.tenantConfig(slug) };
   }
 
+  /** Whether this account may read the conversation: its owner, or staff of its tenant. */
+  mayRead(conversation: EngineConversation, email: string): boolean {
+    const account = pack.accounts[email];
+    return conversation.email === email || (account.role !== "customer" && pack.accounts[conversation.email]?.tenant === account.tenant);
+  }
+
   /** A conversation of this tab, or a recorded one the visitor goes on with. */
   conversation(id: number, email: string, recorded?: Body[]): EngineConversation {
     let conversation = this.conversations.get(id);
@@ -49,6 +56,18 @@ export class DemoEngine {
     });
   }
 
+  /** What the rules would answer now, on copies of everything this turn could touch. */
+  wouldRefuse(email: string, conversationId: number, question: string): boolean {
+    const account = pack.accounts[email];
+    const world = new World(this.world.now);
+    world.approvals = this.world.approvals.map((a) => ({ ...a }));
+    world.refunds = this.world.refunds.map((r) => ({ ...r }));
+    for (const [key, order] of this.world.orders) world.orders.set(key, { ...order });
+    const events = runTurn({ world, conversation: structuredClone(this.conversation(conversationId, email)), email, name: account.name, role: account.role, tenant: account.tenant, config: this.config(account.tenant), question });
+    const final = events.find((e): e is Extract<AgentEvent, { type: "final" }> => e.type === "final");
+    return Boolean(final) && final!.status === "completed" && isRefusal(final!.text);
+  }
+
   /** A scripted question replayed in this conversation: remembered, and what it did holds for the turns after it. */
   noteReplay(email: string, conversationId: number, question: string, events: AgentEvent[]): void {
     const conversation = this.conversation(conversationId, email);
@@ -61,8 +80,10 @@ export class DemoEngine {
     const account = pack.accounts[email];
     for (const event of events) {
       if (event.type === "approval_required" && event.approval_id !== null) {
+        const waiting = this.world.approvals.some((a) => a.tenant === account.tenant && a.tool === event.tool && a.status === "pending" && a.args.order_id === event.arguments.order_id);
+        if (waiting) continue; // the same question replayed again
         const pending: ApprovalRow = { id: this.world.id(), tenant: account.tenant, runId: "", conversationId, tool: event.tool, callId: "", args: event.arguments, reason: event.reason, evidence: [], status: "pending",
-          requester: email, reviewer: null, question, comment: "", createdAt: this.world.now(), decidedAt: null };
+          requester: email, reviewer: null, question, comment: "", createdAt: this.world.now(), decidedAt: null, recorded: true };
         this.world.approvals.push(pending);
       }
       if (event.type === "tool_result" && event.name === "handoff_to_human" && !event.is_error) {
@@ -74,7 +95,7 @@ export class DemoEngine {
         const order = this.world.order(account.tenant, String(event.output.order_id));
         if (order) {
           order.status = "refunding";
-          this.world.refunds.push({ id: this.world.id(), tenant: account.tenant, orderId: order.id, customer: order.customer, amount: Number(event.output.amount), status: "processing", createdAt: this.world.now(), reason: question, approvalId: null, conversationId, filed: true });
+          this.world.refunds.push({ id: this.world.id(), tenant: account.tenant, orderId: order.id, customer: order.customer, amount: Number(event.output.amount), status: "processing", createdAt: this.world.now(), reason: question, filed: true });
         }
       }
     }
@@ -106,13 +127,14 @@ export class DemoEngine {
   }
 
   approvals(tenant: string, filter: string): Body[] {
-    return this.world.approvals.filter((a) => a.tenant === tenant && (filter === "all" || a.status === filter)).sort((x, y) => y.id - x.id).map((a) => this.approvalBody(a));
+    return this.world.approvals.filter((a) => a.tenant === tenant && !a.recorded && (filter === "all" || a.status === filter)).sort((x, y) => y.id - x.id).map((a) => this.approvalBody(a));
   }
 
   /** The same refusals as app/api/approvals.py, in the same order. */
   decide(id: number, email: string, decision: string, comment: string): Body {
     const account = pack.accounts[email];
-    const approval = this.world.approvals.find((a) => a.id === id && a.tenant === account.tenant);
+    if (account.role === "customer") throw new EngineError(403, "只有员工可以审批");
+    const approval = this.world.approvals.find((a) => a.id === id && a.tenant === account.tenant && !a.recorded);
     if (!approval) throw new EngineError(404, "审批单不存在");
     if (approval.status !== "pending") throw new EngineError(409, "这笔申请已经处理过了");
     if (approval.requester === email) throw new EngineError(403, "不能审批自己发起的申请（四眼原则）");
@@ -127,7 +149,9 @@ export class DemoEngine {
   }
 
   withdrawByStaff(id: number, email: string): Body {
-    const approval = this.world.approvals.find((a) => a.id === id);
+    const account = pack.accounts[email];
+    if (account.role === "customer") throw new EngineError(403, "只有员工可以在审批队列里撤回");
+    const approval = this.world.approvals.find((a) => a.id === id && a.tenant === account.tenant && !a.recorded);
     if (!approval) throw new EngineError(404, "审批单不存在");
     if (approval.requester !== email) throw new EngineError(403, "只有提交人可以撤回这笔申请");
     if (approval.status !== "pending") throw new EngineError(409, "这笔申请已经处理过了");

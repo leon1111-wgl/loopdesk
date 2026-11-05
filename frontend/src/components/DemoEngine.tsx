@@ -11,8 +11,9 @@ export function EngineTag({ engine }: { engine?: string }) {
     return <span className="badge engine-tag" title="由本页面里的规则、检索和工具回答，数据为虚构；不是模型，也不代表真实模型的质量。">规则引擎 · 模拟</span>;
   }
   if (engine === "qwen3-0.6b-webgpu") {
-    return <span className="badge engine-tag" title="模型只选择意图、订单和依据，事实由程序陈述，动钱仍由规则决定；不代表真实模型的质量。">{MODEL_NAME} · 浏览器内 · 模拟</span>;
+    return <span className="badge engine-tag" title="规则找不到答案时，由这个小模型从知识库里选出相关片段，程序原文引用；它不写任何内容，也碰不到订单和退款。不代表真实模型的质量。">{MODEL_NAME} · 选依据 · 引用原文</span>;
   }
+  if (engine === "unavailable") return <span className="badge engine-tag">未作答</span>;
   const rec = recording();
   const model = rec && !rec.model.offline ? rec.model.strong : "离线模型";
   return <span className="badge engine-tag" title={rec ? `${rec.date} 录制自真实后端` : "录制自真实后端"}>录制 · {model}</span>;
@@ -49,7 +50,7 @@ export function DemoEngineBar() {
       )}
       {state.status === "ready" && (
         <>
-          <span className="demo-engine-text">{MODEL_NAME} 已加载：模型只选择意图、订单和依据，程序校验后陈述事实，动钱仍由规则决定。不代表真实模型的质量。</span>
+          <span className="demo-engine-text">{MODEL_NAME} 已加载：规则找不到答案时，模型从知识库里选出相关片段，程序原文引用。它碰不到订单和退款，不代表真实模型的质量。</span>
           <button className="btn btn-sm" onClick={stopModel}>卸载模型</button>
         </>
       )}

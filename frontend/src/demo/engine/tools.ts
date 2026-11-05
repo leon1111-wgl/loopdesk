@@ -14,9 +14,7 @@ const DAY = 24 * HOUR;
 /** Every change the engine makes is marked, like the backend's dry run marks its own with "（演练）". */
 export const SIMULATED = "（模拟）";
 const REFUNDABLE = new Set(["paid", "shipped", "delivered"]);
-const COUNTED = new Set(["pending", "processing", "succeeded"]);
-const LIVE = new Set(["pending", "processing", "succeeded"]);
-const MY_ORDERS_LIMIT = 5;
+const LIVE = new Set(["pending", "processing", "succeeded"]); // what holds an order, and what the velocity limit counts
 
 export interface Evidence {
   ref: number;
@@ -66,8 +64,6 @@ export interface RefundRow {
   status: string;
   createdAt: number;
   reason: string;
-  approvalId: number | null;
-  conversationId: number | null;
   filed: boolean; // through this ledger; the seed's old refunds were not, and do not hold their orders
 }
 
@@ -89,6 +85,8 @@ export interface ApprovalRow {
   approverRole?: "admin" | "agent";
   createdAt: number;
   decidedAt: number | null;
+  /** From a replayed recording: it holds the order here, and the recording's own queue already shows it. */
+  recorded?: boolean;
 }
 
 export interface TicketRow {
@@ -184,7 +182,7 @@ export class World {
     for (const [tenant, refunds] of Object.entries(pack.refunds)) {
       for (const r of refunds) {
         this.refunds.push({ id: this.id(), tenant, orderId: r.order_id, customer: r.customer, amount: r.amount, status: r.status,
-          createdAt: ago(r.ago_h) ?? at, reason: r.reason, approvalId: null, conversationId: null, filed: false });
+          createdAt: ago(r.ago_h) ?? at, reason: r.reason, filed: false });
       }
     }
   }
@@ -303,7 +301,7 @@ function getOrder(world: World, ctx: ToolContext, args: Record<string, unknown>)
 
 function listMyOrders(world: World, ctx: ToolContext): Record<string, unknown> {
   return {
-    orders: world.ordersOf(ctx.tenant, ctx.user).slice(0, MY_ORDERS_LIMIT).map((o) => ({
+    orders: world.ordersOf(ctx.tenant, ctx.user).slice(0, pack.settings.my_orders_limit).map((o) => ({
       order_id: o.id, status: o.status, status_text: statusText(o), amount: Math.round(o.amount * 100) / 100,
       paid_at: o.paidAt === null ? null : shanghai(o.paidAt), items: o.items.map((i) => i.name),
     })),
@@ -389,7 +387,7 @@ function refundPrecheck(world: World, ctx: ToolContext, args: Record<string, unk
 function velocityReason(world: World, ctx: ToolContext, customer: string, amount: number): string | null {
   const { refund_window_days: window, refund_window_max_count: maxCount, refund_window_max_amount: maxAmount } = pack.settings;
   const since = world.now() - window * DAY;
-  const rows = world.refunds.filter((r) => r.tenant === ctx.tenant && r.customer === customer && r.createdAt >= since && COUNTED.has(r.status));
+  const rows = world.refunds.filter((r) => r.tenant === ctx.tenant && r.customer === customer && r.createdAt >= since && LIVE.has(r.status));
   const total = rows.reduce((n, r) => n + r.amount, 0);
   let reason: string | null = null;
   if (rows.length + 1 > maxCount) reason = `近 ${window} 天已有 ${rows.length} 笔退款，超过自动审批的次数上限（${maxCount} 笔）`;
@@ -401,7 +399,7 @@ function velocityReason(world: World, ctx: ToolContext, customer: string, amount
 }
 
 function rejectedBefore(world: World, ctx: ToolContext, orderId: string): string | null {
-  const since = world.now() - 30 * DAY;
+  const since = world.now() - pack.settings.rejected_before_days * DAY;
   const earlier = [...world.approvals].reverse().find((a) => a.tenant === ctx.tenant && a.tool === "request_refund" && a.args.order_id === orderId && a.status === "rejected" && (a.decidedAt ?? 0) >= since);
   if (!earlier) return null;
   return `该订单 ${shanghai(earlier.decidedAt ?? world.now())} 被${earlier.reviewer ?? "审批人"}驳回过（审批单 #${earlier.id}，意见：${(earlier.comment || "无").slice(0, 60)}），重新申请需人工复核`;
@@ -439,7 +437,7 @@ function requestRefund(world: World, ctx: ToolContext, args: Record<string, unkn
   const { order, amount } = validated(world, ctx, args);
   const status = ctx.approvalId !== null ? "approved" : "auto_approved";
   const refund: RefundRow = { id: world.id(), tenant: ctx.tenant, orderId: order.id, customer: order.customer, amount, status: "processing", createdAt: world.now(),
-    reason: String(args.reason ?? "").slice(0, 500), approvalId: ctx.approvalId, conversationId: ctx.conversationId, filed: true };
+    reason: String(args.reason ?? "").slice(0, 500), filed: true };
   const live = liveRefund(world, ctx, order.id);
   if (live) throw new ToolError(heldBy(live));
   world.refunds.push(refund);
@@ -502,6 +500,9 @@ function createTicket(world: World, ctx: ToolContext, args: Record<string, unkno
     message: `${SIMULATED}已为您创建工单 #${ticket.id}（优先级：${TX.PRIORITY_TEXT[priority]}），${team}将在 ${sla} 小时内联系您。` };
 }
 
+/** The product says a person replies here. Nobody will in a static page, and the visitor should know how to go on. */
+export const queueNotice = (position: number) => `已为您转接人工客服，当前排队第 ${position} 位。这是演示，不会有真人接入；回复“算了 不用人工了”可以回到自动回答。`;
+
 function handoffToHuman(world: World, ctx: ToolContext, args: Record<string, unknown>): Record<string, unknown> {
   const reason = String(args.reason ?? "用户要求转人工").slice(0, 200);
   const live = ctx.conversationId === null ? undefined : world.tickets.find((t) => t.kind === "handoff" && t.conversationId === ctx.conversationId);
@@ -514,7 +515,7 @@ function handoffToHuman(world: World, ctx: ToolContext, args: Record<string, unk
     description: ctx.customerText.slice(0, 120), priority: "high", kind: "handoff", dueAt: world.now() + 4 * HOUR, createdAt: world.now() });
   const position = waitingAhead + 1;
   return { queued: true, already_queued: false, queue_position: position,
-    message: `${SIMULATED}已为您转接人工客服，当前排队第 ${position} 位。您可以继续留言，人工客服接入后会在这里回复。` };
+    message: `${SIMULATED}${queueNotice(position)}` };
 }
 
 // ---------------------------------------------------------------- the tenant's own tools (tenant_packs)
@@ -547,7 +548,8 @@ function runTenantTool(world: World, ctx: ToolContext, tool: TenantTool, args: R
   }
   if (tool.name === "compensation_voucher") {
     const amount = Number(args.amount);
-    if (amount > 1000) throw new ToolError("单张补偿券最多 1000 元");
+    const most = tool.parameters.properties?.amount?.maximum;
+    if (most !== undefined && amount > most) throw new ToolError(`单张补偿券最多 ${most} 元`);
     const voucher = `V-${world.vouchers.length + 1}`;
     world.vouchers.push({ id: voucher, amount, reason: String(args.reason ?? ""), owner: ctx.user });
     return { status: "succeeded", voucher, amount, message: `${SIMULATED}已为您发放 ${money(amount)} 元补偿券，券号 ${voucher}。` };

@@ -215,7 +215,12 @@ def build() -> dict[str, Any]:
                                           for tool in json.loads((pack_dir / "tools.json").read_text(encoding="utf-8"))]
                     merchant = json.loads((pack_dir / "merchant.json").read_text(encoding="utf-8"))
                     out["members"][slug] = merchant["collections"]["members"]
-    out["settings"] = {"min_relevance": settings.min_relevance, "retrieval_top_k": settings.retrieval_top_k,
+    from .. import textutil
+    from ..agent import business_tools
+
+    out["settings"] = {"timing_reach": textutil._TIMING_REACH, "bare_demand_max": textutil._BARE_DEMAND_MAX,
+                       "my_orders_limit": business_tools.MY_ORDERS_LIMIT, "rejected_before_days": business_tools.REJECTED_BEFORE_DAYS,
+                       "min_relevance": settings.min_relevance, "retrieval_top_k": settings.retrieval_top_k,
                        "refund_window_days": settings.refund_window_days, "refund_window_max_count": settings.refund_window_max_count,
                        "refund_window_max_amount": settings.refund_window_max_amount, "max_agent_steps": settings.max_agent_steps}
     out["rules"] = rules()
@@ -264,8 +269,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{args.output} is out of date: python -m app.ops.demo_pack {args.output}")
             return 1
         return 0
-    args.output.write_text(json.dumps(pack, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    phrases_file.write_text(json.dumps(phrases, ensure_ascii=False, indent=0), encoding="utf-8")
+    args.output.write_text(json.dumps(pack, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    rows = ",\n".join(f"{json.dumps(text, ensure_ascii=False)}: {json.dumps(row)}" for text, row in phrases.items())
+    phrases_file.write_text(f"{{\n{rows}\n}}\n", encoding="utf-8")  # one phrase a line: a rule change shows as that phrase changing
     print(f"{args.output}: {args.output.stat().st_size // 1024} KB, {len(pack['words'].split())} words")
     return 0
 

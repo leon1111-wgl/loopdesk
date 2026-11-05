@@ -135,19 +135,35 @@ function inTimingQuestion(before: string): boolean {
   return rest.length <= T_TIMING_REACH && !T._TIMING_ENDS.test(rest);
 }
 
-const T_TIMING_REACH = 24;
+const T_TIMING_REACH = pack.settings.timing_reach;
 
-function askedWhether(before: string, match: RegExpExecArray, text: string): boolean {
+function clauseOf(match: RegExpExecArray, text: string): [string, string] {
+  const matchEnd = match.index + match[0].length;
+  let start = 0, end = text.length;
+  for (const sep of findAll(T._CLAUSE_END, text)) {
+    const sepEnd = sep.index + sep[0].length;
+    if (sepEnd <= match.index) start = sepEnd;
+    else if (sep.index >= matchEnd) {
+      end = /[？?]/.test(sep[0]) ? sepEnd : sep.index;
+      if (text.slice(sepEnd).search(T._TAG_QUESTION) === 0) end = text.length;
+      break;
+    }
+  }
+  return [text.slice(start, match.index), text.slice(matchEnd, end)];
+}
+
+function askedWhether(match: RegExpExecArray, text: string): boolean {
+  const [before, after] = clauseOf(match, text);
   if (T._ASKED_WHETHER.test(before)) return true;
-  if (!(match[0].startsWith("直接") || match[0].startsWith("就") || T._DIRECT_END.test(before))) return false;
-  const rest = searchFrom(T._REST_OF_CLAUSE, text, match.index + match[0].length)?.[0] ?? "";
-  return T._ASKS_AFTER.test(rest) || (T._CAN_END.test(sub(T._DIRECT_END, "", before)) && T._ASKS_AT_END.test(rest));
+  if (T._NAMES_WHO.test(before.slice(-4) + match[0])) return false;
+  const clause = before + match[0] + after;
+  return T._CLAUSE_ASKS.test(clause) || T._COLLOQUIAL_QUESTION_RE.test(clause);
 }
 
 function namedDemand(pattern: RegExp, text: string): boolean {
   for (const match of findAll(pattern, text)) {
     const before = text.slice(0, match.index);
-    if (T._REPORTED_BEFORE.test(before) || inTimingQuestion(before) || askedWhether(before, match, text)) continue;
+    if (T._REPORTED_BEFORE.test(before) || inTimingQuestion(before) || askedWhether(match, text)) continue;
     return true;
   }
   return false;
@@ -174,7 +190,7 @@ function asksWhatIf(text: string): boolean {
   return true;
 }
 
-const BARE_DEMAND_MAX = 16;
+const BARE_DEMAND_MAX = pack.settings.bare_demand_max;
 
 function demandsRefund(text: string): boolean {
   const questions = [T.REFUND_INQUIRY_RE, T._QUESTION_RE, T._COLLOQUIAL_QUESTION_RE].flatMap((p) => findAll(p, text).map((m) => m.index));

@@ -44,6 +44,7 @@ RRF_K = 60
 MIN_RERANK_SECONDS = 0.2  # less left of the run than this: the search goes on without the reranker
 logger = logging.getLogger(__name__)
 _width_warned: set[tuple[int, int]] = set()
+MAX_SPLIT_WORD = 32
 MIN_SIMILARITY = 1e-6  # below this a vector score is rounding noise (float32), not similarity
 
 
@@ -235,7 +236,8 @@ class TenantIndex:
         does not cover, so the word stays as it is and keeps its weight in the coverage."""
         out: list[str] = []
         for t in tokens:
-            if len(t) < 3 or self.df.get(t, 0) > 0:
+            # Longer than any word: a pasted run of digits or letters, and every slice of it would be tried (quadratic in a 2000-character message).
+            if len(t) < 3 or len(t) > MAX_SPLIT_WORD or self.df.get(t, 0) > 0:
                 out.append(t)
                 continue
             parts: list[str] = []

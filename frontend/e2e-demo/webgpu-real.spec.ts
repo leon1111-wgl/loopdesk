@@ -12,10 +12,34 @@ test.use({
 
 test.skip(!process.env.REAL_WEBGPU, "real inference runs on GitHub Actions only");
 
-test("click to load, then a question answered by the model", async ({ page }) => {
+// A software GPU has no 16-bit floats, and the shared weights need them. WEBGPU_F32 serves the same model's 32-bit build from its
+// upstream for this run only, under the shared URLs, so the path (click, worker, load, schema, validation, answer) still runs for real.
+const F32_MODEL = "https://huggingface.co/mlc-ai/Qwen3-0.6B-q4f32_1-MLC/resolve/main/";
+const F32_LIB = "https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_86/base/Qwen3-0.6B-q4f32_1_cs1k-webgpu.wasm";
+
+test("click to load, then a question answered by the model", async ({ page, context }) => {
   const report: Record<string, unknown> = { url: process.env.DEMO_URL || "this commit's build", started: new Date().toISOString() };
   const save = () => writeFileSync(REPORT, JSON.stringify(report, null, 1));
   const messages: string[] = [];
+  if (process.env.WEBGPU_F32) {
+    report.weights = "q4f32 build of the same model, served under the shared URLs for this run";
+    await context.route("**/career-atlas/models/qwen3/resolve/main/**", async (route) => {
+      const file = route.request().url().split("/resolve/main/")[1];
+      await route.fulfill({ response: await route.fetch({ url: F32_MODEL + file, timeout: 600_000 }), headers: { "access-control-allow-origin": "*" } });
+    });
+    await context.route("**/career-atlas/vendor/qwen3-0.6b-webgpu.wasm", async (route) => {
+      await route.fulfill({ response: await route.fetch({ url: F32_LIB, timeout: 300_000 }), headers: { "access-control-allow-origin": "*", "content-type": "application/wasm" } });
+    });
+    await page.addInitScript(() => {
+      const gpu = (navigator as unknown as { gpu: { requestAdapter(...a: unknown[]): Promise<{ features: Set<string> }> } }).gpu;
+      const request = gpu.requestAdapter.bind(gpu);
+      gpu.requestAdapter = async (...a: unknown[]) => {
+        const adapter = await request(...a);
+        const features = new Set([...adapter.features, "shader-f16"]);
+        return new Proxy(adapter, { get: (t, k) => (k === "features" ? features : Reflect.get(t, k)) });
+      };
+    });
+  }
   page.on("console", (m) => { if (m.type() === "error") messages.push(m.text().slice(0, 300)); });
   try {
     await page.goto("./");
@@ -30,7 +54,7 @@ test("click to load, then a question answered by the model", async ({ page }) =>
     await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
     await page.goto("./chat");
     const load = page.getByRole("button", { name: "加载模型" });
-    report.offered = await load.isVisible({ timeout: 15_000 }).catch(() => false);
+    report.offered = await load.waitFor({ timeout: 15_000 }).then(() => true, () => false);
     save();
     if (!report.offered) return;
     const started = Date.now();
@@ -42,13 +66,14 @@ test("click to load, then a question answered by the model", async ({ page }) =>
     if (await page.getByRole("button", { name: "重试" }).isVisible()) return;
     const asked = Date.now();
     const box = page.locator("textarea").first();
-    await box.fill("退货的时候快递费谁出啊");
+    await box.fill("寄错地址的话改起来麻烦吗"); // nothing the rules can answer, so the model is asked
     await box.press("Enter");
     const answer = page.locator(".msg.assistant").last();
     await expect(answer.locator(".engine-tag")).toBeVisible({ timeout: 1_500_000 });
     report.answer_seconds = Math.round((Date.now() - asked) / 1000);
     report.answer = await answer.innerText();
     report.engine = await answer.locator(".engine-tag").innerText();
+    report.model_events = await page.locator(".event", { hasText: "浏览器模型的选择" }).allInnerTexts();
   } finally {
     report.console_errors = messages.slice(0, 10);
     report.finished = new Date().toISOString();

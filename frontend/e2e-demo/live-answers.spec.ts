@@ -98,6 +98,28 @@ test("a refund request goes to review, and an agent's decision reaches the custo
   await expect(lastAnswer(page)).toContainText("（模拟）");
 });
 
+test("when the engine cannot load, the visitor is told and the recordings still play", async ({ page }) => {
+  await noWebGpu(page);
+  await page.route("**/assets/retrieval-*.js", (route) => route.abort());
+  await page.route("**/assets/index-*.js", async (route) => {
+    // The engine's chunk is the one that carries the pack: fail any chunk with it, the app's own entry passes.
+    const response = await route.fetch();
+    const text = await response.text();
+    if (text.includes("SYNTHETIC")) await route.abort();
+    else await route.fulfill({ response, body: text });
+  });
+  await page.goto("./");
+  await page.getByRole("button", { name: /customer@leon\.demo/ }).first().click();
+  await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
+  await page.goto("./chat");
+  await ask(page, "退货的时候快递费谁出啊");
+  await expect(lastAnswer(page)).toContainText("没能加载", { timeout: 20_000 });
+  await expect(lastAnswer(page).locator(".engine-tag")).toHaveText("未作答");
+  await page.goto("./chat");
+  await page.getByRole("button", { name: "退款多久能到账？" }).click();
+  await expect(lastAnswer(page).locator(".engine-tag")).toHaveText(/录制/, { timeout: 20_000 });
+});
+
 test("a question is not a request: nothing is filed", async ({ page }) => {
   await signIn(page, "customer@leon.demo");
   await page.goto("./chat");
@@ -106,9 +128,18 @@ test("a question is not a request: nothing is filed", async ({ page }) => {
   await expect(lastAnswer(page)).not.toContainText("已提交人工审核");
 });
 
+test("no offer on a GPU without what the weights need", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "gpu", { value: { requestAdapter: async () => ({ features: new Set(["subgroups"]) }) }, configurable: true }));
+  await signIn(page, "customer@leon.demo");
+  await page.goto("./chat");
+  await page.getByRole("button", { name: "退款多久能到账？" }).waitFor();
+  await page.waitForTimeout(500);
+  await expect(page.locator(".demo-engine")).toHaveCount(0);
+});
+
 test("no download and no offer on a phone, even with WebGPU", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.addInitScript(() => Object.defineProperty(navigator, "gpu", { value: { requestAdapter: async () => ({}) }, configurable: true }));
+  await page.addInitScript(() => Object.defineProperty(navigator, "gpu", { value: { requestAdapter: async () => ({ features: new Set(["shader-f16"]) }) }, configurable: true }));
   await signIn(page, "customer@leon.demo");
   await page.goto("./chat");
   await page.getByRole("button", { name: "退款多久能到账？" }).waitFor();
@@ -119,7 +150,7 @@ test("no download and no offer on a phone, even with WebGPU", async ({ page }) =
 test.describe("the browser model, with a stand-in for the weights", () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
-      Object.defineProperty(navigator, "gpu", { value: { requestAdapter: async () => ({}) }, configurable: true });
+      Object.defineProperty(navigator, "gpu", { value: { requestAdapter: async () => ({ features: new Set(["shader-f16"]) }) }, configurable: true });
     });
     // The worker that would run the model: answers load and generate at once, so no weights are downloaded here.
     await page.route("**/model-worker.js", (route) => route.fulfill({
@@ -127,7 +158,7 @@ test.describe("the browser model, with a stand-in for the weights", () => {
       body: `self.onmessage = ({ data }) => {
         if (data.type === "load") { self.postMessage({ id: data.id, type: "progress", value: { progress: 0.5, text: "stand-in" } });
           setTimeout(() => self.postMessage({ id: data.id, type: "done", value: true }), 200); }
-        else self.postMessage({ id: data.id, type: "done", value: JSON.stringify({ intent: "policy_question", order_id: "none", evidence: [1] }) });
+        else self.postMessage({ id: data.id, type: "done", value: JSON.stringify({ can_answer: true, evidence: [1] }) });
       };`,
     }));
   });
@@ -150,8 +181,12 @@ test.describe("the browser model, with a stand-in for the weights", () => {
     await expect(page.locator(".demo-engine")).toContainText("点击后才下载");
     await page.getByRole("button", { name: "加载模型" }).click();
     await expect(page.locator(".demo-engine")).toContainText("已加载");
-    await ask(page, "退货的时候快递费谁出啊");
+    await ask(page, "寄错地址的话改起来麻烦吗"); // nothing the rules can answer: the model picks a chunk, the program quotes it
     await expect(lastAnswer(page).locator(".engine-tag")).toHaveText(/Qwen3-0\.6B/, { timeout: 20_000 });
+    await expect(lastAnswer(page).locator(".cite").first()).toBeVisible();
+    await ask(page, "退款多久能到账呀"); // the rules have this one: the model is not asked
+    await expect(page.locator(".msg.assistant")).toHaveCount(2, { timeout: 20_000 });
+    await expect(lastAnswer(page).locator(".engine-tag")).toHaveText(/规则引擎/, { timeout: 20_000 });
     await page.getByRole("button", { name: "卸载模型" }).click();
     await expect(page.getByRole("button", { name: "加载模型" })).toBeVisible();
   });
