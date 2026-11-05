@@ -151,7 +151,7 @@ _IMPLIED_DEMAND_RE = re.compile(
     r"|money\s+back|(?:want|need)\s+(?:to\s+)?return(?![A-Za-z])")
 # Said about the past or by someone else, right in front of the request words: "已经帮我退了", "客服说退全款".
 # Not "东西已经坏了帮我退款" or "我说了要退款": the report has to be about the refund itself.
-_REPORTED_BEFORE = re.compile(r"(?:已经|已|早就|说|说好|答应)(?:帮我|给我|为我|帮您|给您)?$")
+_REPORTED_BEFORE = re.compile(r"(?:已经|已|早就|(?<![我别])说|(?<!我)说好|答应|承诺)(?:过|了|会|要|是)?(?:帮我|给我|为我|帮您|给您)?$")
 # A request word inside a timing question asks when (P1 of the review): "when do I get my refund", "什么时候给我退款".
 # The question ends at a clause break (a space next to Chinese included: "什么时候发货 不发就帮我退款") or where a
 # consequence starts ("什么时候发货不发就帮我退款").
@@ -179,17 +179,19 @@ def _in_timing_question(before: str) -> bool:
 _CLAUSE_END = re.compile(r"[，,。.！!？?；;、～~…\n]+|(?<=[\u4e00-\u9fff])\s+|\s+(?=[\u4e00-\u9fff])")
 _ASKED_WHETHER = re.compile(r"是不是|是否|能否|可否")
 _TAG_QUESTION = re.compile(r"(?:可以吗|行吗|好吗|能吗|成吗|可以不|行不|行不行|可不可以|好不好|行吧|对吧|是吧|好吧|[^，,。！!？?；;\s]{0,4}[？?])[\s？?。！!~～]*$")
-_NAMES_WHO = re.compile(r"帮我|给我|为我|我要|我想|退我|(?<!申)请(?!问)|麻烦")
+_NAMES_WHO = re.compile(r"帮我|给我|为我|我要|(?<!申)请(?!问)|麻烦")
 # In front of the words: whether it can be done, or someone else's verb ("我想知道…", "请教下…", "听说…").
-_ASKING_BEFORE = re.compile(r"(?:能不能|可不可以|(?<![不可功])能|可以)[^，,。！!？?；;\s]{0,3}$|知道|告诉|请教|问问|问下|问一下|了解|确认|看看|查查|听说|据说|以为|觉得")
-# After them: only what finishes the demand.
-_FINISHES_DEMAND = re.compile(r"(?:款|钱|货|掉|一下|了|全款|全额|差价|补偿|赔偿|给我|到卡|到原卡|回来|回去)*\s*(?:[¥￥]?\s*\d+(?:\.\d+)?\s*(?:元|块)?钱?)?"
-                              r"(?:差价|补偿|赔偿|给我)?(?:就行|就好)?(?:吧|啊|呀|哈|呗|谢谢|谢了|多谢)*[\s！!。.~～]*", re.IGNORECASE)
-_CAN_THEN = re.compile(r"(?:可以|(?<![不可功])能|行)$")
+_ASKING_BEFORE = re.compile(r"(?:能不能|可不可以|(?<![不可功])能|可以)(?!的话)[^，,。！!？?；;\s]{0,3}$|知道(?!了)|告诉|请教|问问|问下|问一下|了解一?下|确认一?下|看看|查查|听说|据说"
+                            r"|以为|觉得|谁[^，,。！!？?；;\s]{0,2}$|为什么|为啥|凭什么")
+_FINISHES_DEMAND = re.compile(r"(?:款|钱|货|我|掉|一下|了|全款|全额|差价|补偿|赔偿|给我|回来|回去|到(?:我的?)?(?:支付宝|微信|银行卡|卡上?|原卡|账户)|不换了?|不要换货?|不用换)*\s*(?:[¥￥]?\s*\d+(?:\.\d+)?\s*(?:元|块)?钱?)?"
+                              r"(?:差价|补偿|赔偿|给我)?(?:就行|就好)?(?:吧|啊|呀|哈|呗|啦|谢谢|谢了|多谢|麻烦了|辛苦了|拜托了)*[\s！!。.~～]*", re.IGNORECASE)
+_CAN_THEN = re.compile(r"(?:可以|(?<![不可功])能|行)(?:的话)?$")
 _WHETHER_JUST_BEFORE = re.compile(r"(?:能不能|可不可以|能否|可否|是不是|是否)[\s，,]*$")  # "能不能 直接退款"
 _LATIN = re.compile(r"[A-Za-z]")
 _EN_ASKS = re.compile(r"(?<![A-Za-z])(?:can|could|may|might|would|will|shall|should|do|did|am)\s+(?:i|we)(?![A-Za-z])"
-                      r"|(?<![A-Za-z])is\s+(?:it\s+possible|there\s+(?:a|any))|(?<![A-Za-z])(?:how|where|when|what)(?![A-Za-z])", re.IGNORECASE)
+                      r"|(?<![A-Za-z])(?:did|do|does|have|has)\s+you(?![A-Za-z])|(?<![A-Za-z])is\s+(?:it\s+possible|there\s+(?:a|any))"
+                      r"|(?<![A-Za-z])(?:how|where|when|what|why|said|told|promised)(?![A-Za-z])", re.IGNORECASE)
+_EN_POLITE = re.compile(r"(?<![A-Za-z])(?:(?:can|could|would|will)\s+you|please)(?![A-Za-z])", re.IGNORECASE)
 
 
 def _clause_of(match: re.Match[str], text: str) -> tuple[str, str]:
@@ -210,7 +212,8 @@ def _clause_of(match: re.Match[str], text: str) -> tuple[str, str]:
 def _asked_whether(match: re.Match[str], text: str) -> bool:
     before, after = _clause_of(match, text)
     if _LATIN.match(match.group()):
-        return bool(_EN_ASKS.search(before + match.group() + after))
+        clause = before + match.group() + after
+        return bool(_EN_ASKS.search(clause) or (re.search(r"[？?]", clause) and not _EN_POLITE.search(clause)))
     if _ASKED_WHETHER.search(before) or _WHETHER_JUST_BEFORE.search(text[:match.start() - len(before)]):
         return True
     if _NAMES_WHO.search(before[-2:] + match.group()):
@@ -241,7 +244,7 @@ NEGATED_REFUND_RE = re.compile(
     r"(?:申请|开|发起)?(?:退款|退钱|退费|退货|退掉|退了|退我的钱)"
     r"|(?<!为什么)(?<!怎么)(?<!凭什么)(?<!还)不退(?:款|货|钱)(?!.{0,2}就)了?|(?:先|就|还是)?不退了"
     r"|(?<!为什么)(?<!怎么)(?<!凭什么)(?<!还)不(?:想|要|用)?退\s*(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:元|块))(?!.{0,2}就)了?"
-    r"|(?:退款|退货)(?:就|先|还是)?(?:算了|不必了|不用了|不要了|放一放)|取消(?:这笔|这个)?退款(?:申请)?"
+    r"|(?:退款|退货)[\s，,]*(?:就|先|还是)?(?:算了|不必了|不用了|不要了|放一放)|取消(?:这笔|这个)?退款(?:申请)?"
     r"|(?:don'?t|do\s+not|didn'?t|did\s+not|haven'?t|have\s+not|never)\s+(?:want(?:ed)?|need(?:ed)?|ask(?:ed)?\s+for"
     r"|request(?:ed)?)\s+(?:a\s+|any\s+|the\s+)?refunds?"
     r"|not\s+(?:asking\s+for|requesting|wanting|looking\s+for|a)\s+(?:a\s+)?refunds?|(?<![A-Za-z])no\s+refunds?",
@@ -250,7 +253,7 @@ NEGATED_REFUND_RE = re.compile(
 # A hedge is not a decision either (N-128): "我可能会退款 看情况", "也许要退 还在考虑".
 _ONLY_ASKING_RE = re.compile(r"只是问问|就问问|问问而已|随便问问|先问问|假如|假设|万一|just\s+asking|just\s+wondering|what\s+if"
                              r"|(?:可能|也许|或许|说不定)(?:会|要|得|想)?(?:申请)?退|看情况|还在考虑|考虑一下|考虑考虑|还在犹豫"
-                             r"|还没想好|没想好|maybe|might\s+(?:want|ask|request)", re.IGNORECASE)
+                             r"|还没想好|没想好|考虑|打算|有点想|再想想|还没决定|没决定|犹豫|maybe|might\s+(?:want|ask|request)", re.IGNORECASE)
 # Asking about refunds, unless a request is made too ("如果不能换货就退款").
 REFUND_INQUIRY_RE = re.compile(
     _ONLY_ASKING_RE.pattern + r"|呢(?=[\s，,。.！!？?~～]*$)|没有?(?=[\s，,。.！!？?~～]*$)|哪|如果|要是|(?:退款|退货|退)的话|咨询一下|想?问一?下|规则|政策|流程|吗|[？?]|多久|多长时间|怎么|如何"
@@ -410,6 +413,9 @@ def _asks_about_refund(text: str) -> bool:
     return any(REFUND_INQUIRY_RE.search(clause) and not _other_question(clause) for clause in _CLAUSE_CUT_RE.split(text))
 
 
+_TAKEN_BACK = re.compile(r"不对|等下|等等|等一下|算了|换货吧|改成换货|还是换")
+
+
 def _retracted(text: str) -> bool:
     """A refund asked for, then declined after it ("帮我退款 不对 我不要退款了", "退给我 算了不退了"): nothing after
     the last refusal asks again. "不是要退货，是要退款" asks again after it. Declining the *return* is not declining
@@ -421,6 +427,9 @@ def _retracted(text: str) -> bool:
         if re.match(r"\s*(?:我?就|的话|我要投诉|投诉)", text[match.end():]):
             continue
         last = match
+    for match in _TAKEN_BACK.finditer(text):  # "直接退款 不对 换货吧": words that take it back, without a 不退
+        if last is None or match.start() > last.start():
+            last = match
     if last is None:
         return False
     before, after = text[:last.start()], text[last.end():]

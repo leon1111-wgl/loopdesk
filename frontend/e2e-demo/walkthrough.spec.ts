@@ -169,7 +169,8 @@ test.describe("questions nobody recorded", () => {
     await page.goto("./chat");
     await page.waitForTimeout(500);
     await expect(page.locator(".demo-engine")).toHaveCount(0);
-    await page.goto("./chat?tier2=1"); // for whoever checks it on a real GPU: nothing links here
-    await expect(page.getByRole("button", { name: "加载模型" })).toBeVisible();
+    await page.goto("./chat?tier2=1");
+    await page.waitForTimeout(500);
+    await expect(page.locator(".demo-engine")).toHaveCount(0);
   });
 });

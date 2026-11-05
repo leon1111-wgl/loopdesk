@@ -95,15 +95,11 @@ const CONFIG = {
 const LOAD_TIMEOUT = 900_000;
 const GENERATE_TIMEOUT = 120_000;
 
-/**
- * Released separately from the rules: a build offers the model only with VITE_DEMO_TIER2=1. ?tier2=1 lets whoever is checking it on
- * a real GPU reach it in a published build before that; no page links to it.
- */
+/** Not released: a build offers the model only with VITE_DEMO_TIER2=1 (docs/EVALUATION.md says why). */
 const TIER2_RELEASED = import.meta.env.VITE_DEMO_TIER2 === "1";
-const TIER2_ASKED_FOR = () => new URLSearchParams(window.location.search).get("tier2") === "1";
 
 export async function webgpuAvailable(): Promise<boolean> {
-  if (!TIER2_RELEASED && !TIER2_ASKED_FOR()) return false;
+  if (!TIER2_RELEASED) return false;
   const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<{ features: Set<string> } | null> } }).gpu;
   if (!globalThis.isSecureContext || !gpu) return false;
   if (window.matchMedia?.("(pointer: coarse)").matches || window.innerWidth < 720) return false; // phones mostly cannot run it

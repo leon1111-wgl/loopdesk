@@ -154,7 +154,10 @@ function clauseOf(match: RegExpExecArray, text: string): [string, string] {
 
 function askedWhether(match: RegExpExecArray, text: string): boolean {
   const [before, after] = clauseOf(match, text);
-  if (/^[A-Za-z]/.test(match[0])) return T._EN_ASKS.test(before + match[0] + after);
+  if (/^[A-Za-z]/.test(match[0])) {
+    const clause = before + match[0] + after;
+    return T._EN_ASKS.test(clause) || (/[？?]/.test(clause) && !T._EN_POLITE.test(clause));
+  }
   if (T._ASKED_WHETHER.test(before) || T._WHETHER_JUST_BEFORE.test(text.slice(0, match.index - before.length))) return true;
   if (T._NAMES_WHO.test(before.slice(-2) + match[0])) return false;
   if (match[0].startsWith("就") && T._CAN_THEN.test(before)) return !fullMatch(T._FINISHES_DEMAND, after);
@@ -218,6 +221,7 @@ function retracted(text: string): boolean {
     if (/^\s*(?:我?就|的话|我要投诉|投诉)/.test(text.slice(match.index + match[0].length))) continue;
     last = match;
   }
+  for (const match of findAll(T._TAKEN_BACK, text)) if (!last || match.index > last.index) last = match; // "直接退款 不对 换货吧"
   if (!last) return false;
   const before = text.slice(0, last.index), after = text.slice(last.index + last[0].length);
   const askedBefore = T.REFUND_APPLY_RE.test(before) || T._IMPLIED_DEMAND_RE.test(before) || demandsRefund(before);
