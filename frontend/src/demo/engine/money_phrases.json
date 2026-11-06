@@ -1063,6 +1063,7 @@
 "确认撤回？还是再想想": [false, false, false, false, false, false, null, false, false, null],
 "确认请说“确认”，不对请说“取消”。": [false, false, false, false, false, false, null, false, false, null],
 "确认退款": [false, true, false, false, false, false, null, false, false, "yes"],
+"确认：SO20261019101刚被扣了续费帮我退款": [true, false, false, false, false, false, null, false, false, null],
 "积分十二个月就过期吗": [false, false, false, false, false, false, null, false, false, null],
 "积分可以怎么抵扣？": [false, false, false, false, false, false, null, false, false, null],
 "积分过多久会失效": [false, false, false, false, false, false, null, false, false, null],

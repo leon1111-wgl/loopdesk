@@ -1263,7 +1263,7 @@
     "flags": "i"
    },
    "_LEAD_IN_RE": {
-    "source": "(?:你好|您好|客服|在吗|嗯|好的|好|不对|错了|说错了|搞错了|那|那就|就|麻烦|麻烦你|请|直接|帮我|给我|替我|我要|我想|我|把|给|为|提交|办理|发起|订单号?|单号|这单|那单|这个|那个|这笔|那笔|顾客原话|the|for|order|please|pls|plz|kindly|can\\s+you|could\\s+you|would\\s+you|i\\s+want|i\\s+need|i'?d\\s+like|my|a|hi|hello|ok|okay|[^\\u4e00-\\u9fffA-Za-z0-9])*",
+    "source": "(?:你好|您好|客服|在吗|嗯|好的|好|确认|不对|错了|说错了|搞错了|那|那就|就|麻烦|麻烦你|请|直接|帮我|给我|替我|我要|我想|我|把|给|为|提交|办理|发起|订单号?|单号|这单|那单|这个|那个|这笔|那笔|顾客原话|the|for|order|please|pls|plz|kindly|can\\s+you|could\\s+you|would\\s+you|i\\s+want|i\\s+need|i'?d\\s+like|my|a|hi|hello|ok|okay|[^\\u4e00-\\u9fffA-Za-z0-9])*",
     "flags": "i"
    },
    "_A_REASON_RE": {

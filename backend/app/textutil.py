@@ -279,7 +279,7 @@ _LATER_IN_ENGLISH_RE = re.compile(r"(?<![A-Za-z])(?:tomorrow|next\s+(?:week|mont
 # rest ("别给 SO… 退款", "测试一下：SO… 退款", "有人冒充我说 SO… 申请退款"), so it files nothing: the customer is offered the
 # refund instead, and says so plainly.
 _LEAD_IN_RE = re.compile(
-    r"(?:你好|您好|客服|在吗|嗯|好的|好|不对|错了|说错了|搞错了|那|那就|就|麻烦|麻烦你|请|直接|帮我|给我|替我|我要|我想|我|把|给|为|提交|办理|发起|订单号?|单号|这单|那单|这个|那个|这笔|那笔"
+    r"(?:你好|您好|客服|在吗|嗯|好的|好|确认|不对|错了|说错了|搞错了|那|那就|就|麻烦|麻烦你|请|直接|帮我|给我|替我|我要|我想|我|把|给|为|提交|办理|发起|订单号?|单号|这单|那单|这个|那个|这笔|那笔"
     r"|顾客原话|the|for|order|please|pls|plz|kindly|can\s+you|could\s+you|would\s+you|i\s+want|i\s+need|i'?d\s+like|my|a|hi|hello|ok|okay"
     r"|[^\u4e00-\u9fffA-Za-z0-9])*", re.IGNORECASE)
 _A_REASON_RE = re.compile(

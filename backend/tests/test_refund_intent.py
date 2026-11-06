@@ -387,6 +387,10 @@ def test_the_money_review_found_these(text):
     assert not refund_requested(text)
 
 
+def test_a_spoken_refund_confirmed_on_the_call_stays_a_request():
+    assert refund_requested("确认：SO20261019101刚被扣了续费帮我退款")  # voice/session.py sends this after the read-back
+
+
 @pytest.mark.parametrize("text", ["取消退款申请的话还能重新申请吗", "撤回退款申请要多久", "撤回退款申请会有什么影响"])
 def test_asking_about_taking_a_request_back_is_not_taking_it_back(text):
     assert not refund_withdraw_requested(text)
