@@ -284,3 +284,32 @@ def test_an_open_question_asks_instead_of_promising_nothing(ask, login):
     answer = by_type(events, "final")[0]["text"]
     assert "不会为您发起退款" not in answer and "如需现在申请退款" in answer
     assert _nothing_filed("SO20260918001")
+
+
+@pytest.mark.parametrize("text", [
+    "SO20260918001这单我不要了 帮我申清退款",
+    "pls refund 那个云朵抱枕 SO20260918001 thx 不想要了",
+    "refund SO20260918001 pls",
+])
+def test_a_typo_or_a_short_english_request_is_still_a_request(text):
+    assert refund_requested(text)
+
+
+@pytest.mark.parametrize("text", ["SO20260918001 申清退款要多久", "pls tell me how to refund SO20260918001", "did you refund SO20260918001"])
+def test_the_same_words_in_a_question_are_not_a_request(text):
+    assert not refund_requested(text)
+
+
+@pytest.mark.parametrize("text", [
+    "SO20261012003 怎么申请退款", "SO20261012003 哪里申请退款", "SO20261012003 我昨天申请退款了", "SO20261012003 已经申请退款了",
+    "SO20261012003 我朋友要退款", "SO20261012003 客服让我申请退款", "SO20261012003 差点就退款了", "SO20261012003 曾经想退款",
+    "SO20261012003 你们会不会自动给我退款", "SO20261012003 我想退款 等会再说吧", "SO20261012003 下周再申请退款",
+    "SO20261012003 再不发货我就退款", "SO20261012003 超过三天我就退款",
+])
+def test_how_to_before_later_and_someone_else_are_not_a_request_now(text):
+    assert not refund_requested(text)
+
+
+def test_a_demand_that_must_happen_is_a_request():
+    assert refund_requested("SO20261012003 必须退款")
+    assert refund_requested("SO20261012003 我已经等了很久了 帮我退款")

@@ -4,10 +4,11 @@
  */
 import type { AgentEvent, EvidenceItem, SpanRow, Verification } from "../../types";
 import { INJECTION, PII, T, W, pack, type TenantConfig } from "./pack";
-import { compose, nextCall, readsAsOrder, understood, type Results, type Turn } from "./planner";
+import { compose, mentionsRefund, nextCall, readsAsOrder, refundRequested, theOneOrder, understood, type Results, type Turn } from "./planner";
+import { DECLINE_TEXT, NOT_GRANTED, canDo, declines, isCanDo, nextSteps } from "./reading";
 import { search } from "./retrieval";
 import { addEvidence, availableTools, queueNotice, runTool, type ApprovalRow, type Evidence, type ToolContext, type World, SIMULATED } from "./tools";
-import { asksForPerson, canonical, extractNumbers, findAll, handoffCancelled, money, normalizeWidth, overlapRecall, refundWithdrawRequested, splitSentences, stripCitations, sub } from "./text";
+import { asksForPerson, canonical, classifyReply, extractNumbers, findAll, handoffCancelled, isRefusal, money, normalizeWidth, overlapRecall, refundWithdrawRequested, splitSentences, stripCitations, sub, withdrawConfirmed } from "./text";
 
 const LEADING = pack.texts.leading;
 const H = pack.texts.handoff;
@@ -38,6 +39,10 @@ export interface EngineConversation {
   previous: string | null;
   frame: Frame | null;
   withdrawOffer: Record<string, unknown> | null;
+  /** The order the last reply asked whether to file a refund for: a plain yes files it, and only that. */
+  refundOffer?: string | null;
+  /** The last order this conversation was about, however many turns ago. */
+  lastOrder?: string | null;
   handoff: { ticket_id: number; status: string; position: number; assignee: null } | null;
 }
 
@@ -179,6 +184,27 @@ function carryOrderLoosely(text: string, previous: string | null): [string, stri
   return [`${named[0]} ${text.trim()}`, named[0]];
 }
 
+// What a customer's turn refers to, past the offline model's rules.
+const REFERS = /它|这单|这一单|这个订单|这笔|那单|那一单|那个订单|刚才那|上面那|该订单/;
+const BARE_DEMAND = /^(?:那|那就|就|好|好吧|行|行吧|嗯|对)?[，, ]*(?:帮我|给我|直接|麻烦)?(?:退|退了|退掉|退款|退钱)(?:吧|了吧|了|呗)?(?:谢谢)?[。！!~～]*$/;
+const CORRECTION = /^(?:不对|不是|错了|搞错了?|说错了?|弄错了?|我说的是|我是说|我问的是|应该是)[，,。 ]*/;
+const STATUS_AGAIN = /^(?:那|现在|目前)?(?:怎么样了?|什么情况|啥情况|进度|进展|状态|什么状态|啥状态|到哪一步了?|审核了吗|审核通过了吗|通过了吗|有结果了吗|结果呢|处理了吗|处理得怎么样了?)[吗呢呀啊了？?。！!~～]*$/;
+const DROPS_IT = /^(?:算了|不对|不用了|那)?[，, ]*(?:(?:不退了|不退款了|不要退了|不想退了|先不退了?|别退了|撤回吧?|取消退款|取消申请)[，, ]*)+[吧了。！!~～]*$/;
+const ONLY_NO = /^(?:不用了?|不要了?|算了|不需要|没有了?|没了|不了|不)[，,。！!~～ ]*(?:谢谢)?[。！!~～]*$/;
+const ASKED_WHICH = /要申请退款的是哪一单|要查询的是哪一单|要撤回的是哪一单/;
+const BARE_NUMBER = /^\s*SO\d+\s*(?:这单|这个|那单|吧)?[。！!]?\s*$/i;
+
+function theOrderTalkedAbout(previous: string | null, history: Turn[]): string | null {
+  if (previous && W._DISOWNED.test(previous)) return null;
+  const inPrevious = [...new Set(findAll(T.ORDER_ID_RE, previous ?? "").map((m) => m[0].toUpperCase()))];
+  if (inPrevious.length) return inPrevious.length === 1 ? inPrevious[0] : null;
+  const lastReply = [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+  const inReply = [...new Set(findAll(T.ORDER_ID_RE, lastReply).map((m) => m[0].toUpperCase()))];
+  return inReply.length === 1 ? inReply[0] : null;
+}
+
+const intentOf = (previous: string | null) => (mentionsRefund(previous ?? "") ? "退款" : /到哪|物流|快递|发货|运单/.test(previous ?? "") ? "到哪了" : "查一下");
+
 // ---------------------------------------------------------------- the answer check (app/agent/verifier.py, lexical)
 const V = Object.fromEntries(Object.entries(pack.rules.verifier).map(([name, rule]) => [name, new RegExp(rule.source, rule.flags)]));
 
@@ -203,7 +229,7 @@ export function verifyAnswer(answer: string, evidence: Evidence[], userText: str
     cited.filter((r) => !byRef.has(r)).forEach((r) => invalid.add(r));
     const claim = sub(V._LIST_NUMBER, "", sub(V._COURTESY, "", text.replace(SIMULATED, "")));
     const numbers = extractNumbers(claim);
-    const factual = !(claim.length < 6 || (!numbers.length && claimsNothing(claim)));
+    const factual = !(claim.length < 6 || isCanDo(claim) || (!numbers.length && claimsNothing(claim)));
     const check = { text, factual, supported: true, score: 1, cited, unverified_numbers: [] as number[], unknown_ids: [] as string[] };
     if (factual) {
       check.unverified_numbers = numbers.filter((n) => !pool.some((p) => Math.abs(p - n) < 1e-6));
@@ -261,6 +287,8 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
   conversation.frame = frameOf(conversation.previous);
   const offer = conversation.withdrawOffer;
   conversation.withdrawOffer = null;
+  const refundOffer = conversation.refundOffer ?? null;
+  conversation.refundOffer = null;
   const events: AgentEvent[] = [];
   const engine = choice ? ENGINE_MODEL : ENGINE_RULES;
 
@@ -309,7 +337,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
       events.push({ type: "verification", ...verification });
     }
     const citations = run.evidence.filter((e) => e.kind === "kb").map(evidenceItem);
-    const meta = { citations, verification, tools, status: finalStatus, engine, ...(choice ? { model_choice: { raw: choice.raw, note: choice.note } } : {}), ...extra };
+    const meta = { citations, verification, tools, status: finalStatus, engine, ...(choice ? { model_choice: { raw: choice.raw, note: choice.note } } : {}), ...(role === "customer" && isRefusal(answer) ? { next_steps: nextSteps(tenant) } : {}), ...extra };
     const messageId = addAssistant(world, conversation, runId, answer, meta);
     run.status = finalStatus;
     run.output_text = answer;
@@ -335,11 +363,84 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     return finish(String(output.message ?? "已为您转接人工客服，请稍候。"), "handoff", false);
   }
 
+  // Only punctuation: nothing to read, and a greeting would pretend otherwise.
+  if (role === "customer" && !choice && !/[\p{L}\p{N}]/u.test(turnText)) return finish(`没有看懂您的问题，暂时无法回答。${canDo(tenant)}`, null, false);
+
+  // What no message may grant, whatever else it says.
+  const decline = role === "customer" && !choice ? declines(turnText, injection.length > 0) : null;
+  if (decline) run.spans.push(span("guardrail", "declined", { text: turnText }, { rule: decline }));
+  // With an order number the rules run on it as on any other request: an injected line changes nothing, either way.
+  const preface = decline && decline !== "internal" && T.ORDER_ID_RE.test(turnText) ? NOT_GRANTED : "";
+  if (decline === "internal") {
+    // Customers search the public documents only; what that found is not what was asked for, so nothing is quoted from it.
+    const call = { id: "browser_0_search_knowledge", name: "search_knowledge", arguments: { query: turnText } };
+    events.push({ type: "tool_call", ...call });
+    const outcome = runTool(world, ctx, call.name, call.arguments);
+    const output = outcome.kind === "result" ? outcome.output : {};
+    run.spans.push(span("tool", call.name, { arguments: call.arguments, risk: "read" }, { output }));
+    events.push({ type: "tool_result", id: call.id, name: call.name, output, is_error: false });
+    run.evidence.length = 0;
+  }
+  if (decline && !preface) return finish(DECLINE_TEXT[decline], null, false);
+
+  // A yes or a no answers the last question, and files only what that question offered.
+  const reply = role === "customer" && !choice && turnText.trim().length <= 8 ? classifyReply(turnText) : null;
+  const saysYes = reply === "yes" || (refundOffer !== null && BARE_DEMAND.test(turnText.trim()));
+  if (reply === "no" && refundOffer) return finish(`好的，没有为订单 ${refundOffer} 提交退款申请。`, null, false);
+  if (reply === "no" && offer) return finish(`好的，不撤回订单 ${String(offer.order_id)} 的退款申请。`, null, false);
+  if (!refundOffer && !offer && (reply === "yes" || (reply === "no" && ONLY_NO.test(turnText.trim())))) return finish(reply === "yes" ? "好的。还有要查的，直接告诉我。" : "好的，有需要再告诉我。", null, false);
+
   // Multi-turn: an explicit follow-up becomes a standalone question.
   let question = choice ? choice.question : turnText;
-  const carried = carryOrder(turnText, previous);
-  const loose = carried === null ? carryOrderLoosely(turnText, previous) : null;
-  if (!choice && (carried !== null || loose)) {
+  const hasNumber = T.ORDER_ID_RE.test(turnText);
+  const adjacent = !choice && role === "customer" ? theOrderTalkedAbout(previous, history) : null;
+  const talkedAbout = adjacent ?? (role === "customer" && !choice ? conversation.lastOrder ?? null : null);
+  const own = () => world.ordersOf(tenant, email).map((o) => ({ id: o.id, items: o.items.map((i) => i.name), amount: o.amount }));
+  let read: { question: string; unconfirmed: string | null; method: string } | null = null;
+  if (!choice && role === "customer") {
+    const correction = previous ? CORRECTION.exec(turnText.trim()) : null;
+    const rest = correction ? turnText.trim().slice(correction[0].length) : "";
+    const corrected = correction ? findAll(T.ORDER_ID_RE, rest)[0]?.[0].toUpperCase() ?? theOneOrder(rest, own())?.id : undefined;
+    const lastReply = [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+    if (saysYes && refundOffer) read = { question: `${refundOffer} 申请退款`, unconfirmed: null, method: "yes_to_offer" };
+    else if (saysYes && offer) read = { question: `确认撤回 ${String(offer.order_id)}`, unconfirmed: null, method: "yes_to_offer" };
+    else if (corrected) {
+      // The corrected order is read, not filed: what was asked of the wrong one has not been asked of this one yet.
+      read = { question: `${corrected} ${intentOf(previous)}`, unconfirmed: corrected, method: "correction" };
+    } else if (ASKED_WHICH.test(lastReply) && !hasNumber && theOneOrder(turnText, own())) {
+      // Which one, answered with its name: read as that order, and a refund on it is only offered.
+      const id = theOneOrder(turnText, own())!.id;
+      read = { question: `${id} ${lastReply.includes("退款") ? "申请退款" : "查一下"}`, unconfirmed: id, method: "order_context" };
+    } else if (BARE_NUMBER.test(turnText) && lastReply.includes("要申请退款的是哪一单")) {
+      const id = findAll(T.ORDER_ID_RE, turnText)[0][0].toUpperCase();
+      read = { question: `${id} ${refundRequested(previous ?? "") ? "申请退款" : "退款"}`, unconfirmed: null, method: "order_context" };
+    } else if (talkedAbout && !hasNumber && !T.OTHER_ORDER.test(turnText) && BARE_DEMAND.test(turnText.trim())) {
+      // A bare "退了吧" right after an order files it; with other turns in between it is only offered.
+      read = { question: `${talkedAbout} 申请退款`, unconfirmed: adjacent ? null : talkedAbout, method: "order_context" };
+    } else if (talkedAbout && !hasNumber && DROPS_IT.test(turnText.trim())) {
+      read = { question: `${talkedAbout} ${turnText}`, unconfirmed: null, method: "order_context" };
+    } else if (talkedAbout && !hasNumber && STATUS_AGAIN.test(turnText.trim())) {
+      read = { question: `${talkedAbout} ${mentionsRefund(previous ?? "") || world.approvals.some((a) => a.status === "pending" && a.args.order_id === talkedAbout) ? "退款进度" : "查一下"}`, unconfirmed: null, method: "order_context" };
+    } else if (talkedAbout && !hasNumber && !T.OTHER_ORDER.test(turnText) && REFERS.test(turnText)) {
+      read = { question: `${talkedAbout} ${turnText}`, unconfirmed: null, method: "order_context" };
+    } else if (!hasNumber && (refundWithdrawRequested(turnText) || (withdrawConfirmed(turnText) && !offer))) {
+      const waiting = [...new Set(world.approvals.filter((a) => a.tenant === tenant && a.tool === "request_refund" && a.status === "pending" && a.requester === email).map((a) => String(a.args.order_id)))];
+      const id = talkedAbout && waiting.includes(talkedAbout) ? talkedAbout : waiting.length === 1 ? waiting[0] : null;
+      if (id) read = { question: `${id} 撤回退款申请`, unconfirmed: null, method: "order_context" };
+      else if (waiting.length) return finish(`您有 ${waiting.length} 笔等待人工审核的退款申请：${waiting.join("、")}。要撤回哪一笔？请回复“订单号 撤回退款申请”。`, null, false);
+      else read = { question: "我想撤回退款申请", unconfirmed: null, method: "order_context" }; // which one: never "缺少订单号"
+    }
+  }
+  const carried = read ? null : carryOrder(turnText, previous);
+  const loose = read || carried !== null ? null : carryOrderLoosely(turnText, previous);
+  if (read) {
+    question = read.question;
+    ctx.unconfirmedOrder = read.unconfirmed;
+    run.spans.push(span("rewrite", read.method, { question: turnText, previous }, { standalone: question, unconfirmed: read.unconfirmed }));
+    conversation.previous = question;
+    conversation.frame = frameOf(question);
+    events.push({ type: "rewrite", standalone: question, method: read.method });
+  } else if (!choice && (carried !== null || loose)) {
     question = carried ?? loose![0];
     if (loose) ctx.unconfirmedOrder = loose[1];
     run.spans.push(span("rewrite", "order_context", { question: turnText, previous }, { standalone: question, method: "order_context" }));
@@ -358,12 +459,11 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
 
   // An item instead of an order number: read as that order, and a refund on it is only offered.
   if (!choice && question === turnText && role === "customer") {
-    const own = world.ordersOf(tenant, email).map((o) => ({ id: o.id, items: o.items.map((i) => i.name), amount: o.amount }));
-    const read = readsAsOrder(canonical(turnText), own);
-    if (read) {
-      question = read.question;
-      ctx.unconfirmedOrder = read.unconfirmed;
-      run.spans.push(span("rewrite", "item_to_order", { question: turnText }, { standalone: question, unconfirmed: read.unconfirmed }));
+    const item = readsAsOrder(canonical(turnText), own());
+    if (item) {
+      question = item.question;
+      ctx.unconfirmedOrder = item.unconfirmed;
+      run.spans.push(span("rewrite", "item_to_order", { question: turnText }, { standalone: question, unconfirmed: item.unconfirmed }));
       conversation.previous = question;
       conversation.frame = frameOf(question);
       events.push({ type: "rewrite", standalone: question, method: "item_to_order" });
@@ -374,7 +474,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
 
   run.spans.push(span("router", "model_router", { length: text.length, history_turns: Math.floor(history.length / 2) }, { tier: run.route_tier, model: engine, reasons: ["static demo: rules in the browser"] }));
 
-  const { text: planned, exclude } = understood(question, history);
+  const { text: planned, exclude } = understood(question, history, previous ?? conversation.lastOrder ?? null);
   const available = availableTools(ctx);
   const results: Results = {};
   const called: string[] = [];
@@ -406,7 +506,8 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
       run.spans.push(span("tool", toolName, { arguments: args, risk: "high" }, { approval_required: true, reason: outcome.reason, customer_note: outcome.customerNote, arguments: outcome.args }, "ok", toolStart));
       const shown = role === "customer" ? outcome.customerNote : outcome.reason;
       events.push({ type: "approval_required", approval_id: approval.id, tool: toolName, arguments: outcome.args, reason: shown });
-      return finish(pausedText(ctx, toolName, outcome.args, shown), "waiting_approval", false, { approval_id: approval.id });
+      noteOrder(conversation, planned);
+      return finish(preface + pausedText(ctx, toolName, outcome.args, shown), "waiting_approval", false, { approval_id: approval.id });
     }
     (results[toolName] ??= []).push(outcome.output);
     run.spans.push(span("tool", toolName, { arguments: args, risk: toolName === "request_refund" ? "high" : "read" }, { output: outcome.output }, outcome.isError ? "rejected" : "ok", toolStart));
@@ -415,11 +516,19 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     if (toolName === "withdraw_refund_request" && outcome.output.confirm_required) conversation.withdrawOffer = outcome.output;
   }
 
-  const answer = compose(planned, results, tenant, exclude);
+  const answer = preface + compose(planned, results, tenant, exclude);
+  const offeredFor = results.request_refund?.at(-1)?.confirm_order;
+  if (offeredFor) conversation.refundOffer = String(offeredFor);
+  noteOrder(conversation, planned);
   // Streamed in small pieces, like the real backend's model tokens.
   for (let start = 0; start < answer.length; start += 8) events.push({ type: "token", step: Math.max(1, run.steps), text: answer.slice(start, start + 8) });
   if (results.handoff_to_human) events.push(...handoffEvent(conversation));
   return finish(answer, null, true);
+}
+
+function noteOrder(conversation: EngineConversation, question: string) {
+  const named = [...new Set(findAll(T.ORDER_ID_RE, question).map((m) => m[0].toUpperCase()))];
+  if (named.length === 1) conversation.lastOrder = named[0];
 }
 
 function handoffEvent(conversation: EngineConversation): AgentEvent[] {
@@ -451,6 +560,15 @@ function fileApproval(world: World, ctx: ToolContext, run: RunRecord, tool: stri
 }
 
 const LABEL: Record<string, string> = { request_refund: "退款" };
+const REVIEW_TIME = /人工审核时效为[^，。；]+/;
+
+/** How long a person takes, in the tenant's own words and with its source. */
+function reviewTime(ctx: ToolContext): string {
+  const hit = search(ctx.tenant, "退款 人工审核时效", new Set(["public"]), 4).find((h) => REVIEW_TIME.test(h.chunk.text));
+  if (!hit) return "";
+  const item = addEvidence(ctx, "kb", hit.chunk.doc, hit.chunk.text, { heading: hit.chunk.heading, chunk_id: hit.chunk.id, document_id: hit.chunk.doc_id, page: null, relevance: Math.round(hit.relevance * 1000) / 1000 });
+  return `${REVIEW_TIME.exec(hit.chunk.text)![0]}[${item.ref}]。`;
+}
 
 function pausedText(ctx: ToolContext, tool: string, args: Record<string, unknown>, shown: string): string {
   const custom = pack.tools[ctx.tenant]?.find((t) => t.name === tool);
@@ -460,7 +578,8 @@ function pausedText(ctx: ToolContext, tool: string, args: Record<string, unknown
     const order = args.order_id ? `订单 ${args.order_id} 的` : "";
     return `${SIMULATED}已为顾客提交${order}${label}申请${amount}，等待另一位员工审核${shown ? `：${shown}` : ""}。审核结果会在这里显示。`;
   }
-  return `${SIMULATED}您的${label}申请${amount}已提交人工审核${shown ? `：${shown}` : ""}。审核完成后会第一时间在这里通知您。`;
+  const whose = args.order_id ? `订单 ${args.order_id} 的` : "您的";
+  return `${SIMULATED}${whose}${label}申请${amount}已提交人工审核${shown ? `：${shown}` : ""}。${tool === "request_refund" ? reviewTime(ctx) : ""}审核完成后会第一时间在这里通知您。`;
 }
 
 // ---------------------------------------------------------------- a person decides (app/api/approvals.py)

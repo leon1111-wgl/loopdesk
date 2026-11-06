@@ -246,10 +246,10 @@ export function refundWithdrawRequested(text: string): boolean {
 /** True when the message asks for a refund, not when it asks about one or declines one. */
 export function refundRequested(text: string): boolean {
   if (refundWithdrawRequested(text)) return false;
-  const folded = numeralAmounts(normalizeWidth(text || ""));
+  const folded = numeralAmounts(normalizeWidth(fixTypos(text || "")));
   if (retracted(folded)) return false;
   const kept = sub(T.NEGATED_REFUND_RE, "，", folded);
-  if (T._ONLY_ASKING_RE.test(kept)) return false;
+  if (T._ONLY_ASKING_RE.test(kept) || T._NOT_NOW_RE.test(kept)) return false;
   if (!T.REFUND_RE.test(kept)) return demandsRefund(kept);
   if (asksWhatIf(kept)) return false;
   if (namedDemand(T.REFUND_APPLY_RE, kept) || demandsRefund(kept)) return true;
@@ -346,6 +346,7 @@ for (const item of pack.words.split(" ")) {
   maxWord = Math.max(maxWord, match[1].length);
 }
 const LOG_TOTAL = Math.log2(60_101_967); // jieba's dictionary total
+
 // jieba's HMM keeps the characters of a word it does not know together ("打分"), and function words apart. These stand
 // alone; any other characters next to each other are an unknown word and keep their weight in the relevance gate.
 const FUNCTION_CHARS = new Set("的了是我你他她它们要能吗呢吧啊呀哦嘛么在有和与及或就都也还又很太更最再才把被让给跟对向从到为以于而但却如若等个这那哪谁啥咋怎几多少不没别请帮想会可该应需得着过来去上下里外中前后时候好大小一二三四五六七八九十两百千万元块天月年日号次件台张本买卖用说看听吃喝拿放问查退换发收寄送钱货单");

@@ -707,7 +707,7 @@ export default function ChatPage() {
               </div>
             </div>
           )}
-          {messages.map((m) => m.role === "system" ? (
+          {messages.map((m, i) => m.role === "system" ? (
             <div key={m.id} className="msg-system" role="status">{m.content}</div>
           ) : (
             <div key={m.id} className={`msg ${m.role}`}>
@@ -720,6 +720,11 @@ export default function ChatPage() {
                   <>
                     <AnswerText text={m.content} citations={m.meta.citations ?? []} verification={m.meta.verification} />
                     <Sources citations={m.meta.citations ?? []} />
+                    {i === messages.length - 1 && !!m.meta.next_steps?.length && (
+                      <div className="next-steps" aria-label="可以这样问">
+                        {m.meta.next_steps.map((step) => <button key={step} className="btn btn-sm" onClick={() => send(step)}>{step}</button>)}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="bubble-text">{m.content}</div>

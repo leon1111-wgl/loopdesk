@@ -4,7 +4,8 @@
  * word ("货到付款") is missing, coverage falls and the answer is a refusal, not a neighbouring policy.
  */
 import { pack, type KbChunk } from "./pack";
-import { canonicalQuery, expandQuery, tokenize } from "./text";
+import { answerFit, cannotAnswer, documentWords, isFiller, saidOtherwise, statesWhatIsAsked } from "./reading";
+import { canonicalQuery, expandQuery, splitSentences, tokenize } from "./text";
 
 const RRF_K = 60;
 const CANDIDATES = 12;
@@ -78,6 +79,21 @@ class TenantIndex {
     return Math.log(1 + (this.chunks.length - df + 0.5) / (df + 0.5));
   }
 
+  /** What a word says about the topic. Filler ("大概", "之后") says little, a number alone nothing; anything else the documents never use ("货到付款") names what is missing. */
+  weight(token: string): number {
+    if (/^\d+$/.test(token)) return 0;
+    const idf = this.idf(token);
+    if ((this.df.get(token) ?? 0) > 0) return idf;
+    return idf * (isFiller(token) ? 0.1 : 0.8);
+  }
+
+  /** The words of a question to weigh: its own, less the everyday ones the vocabulary has read, plus what it read them as. */
+  asked(text: string, base: string): string[] {
+    const said = saidOtherwise(text);
+    const own = this.knownParts(tokenize(base)).filter((t) => (this.df.get(t) ?? 0) > 0 || !said.some((s) => s.includes(t)));
+    return [...own, ...this.knownParts(tokenize(this.inDocuments(documentWords(text))))];
+  }
+
   bm25(tokens: string[], allowed: Set<string>): [number, number][] {
     const scores = new Map<number, number>();
     const k1 = 1.5, b = 0.75;
@@ -100,6 +116,15 @@ class TenantIndex {
       if (allowed.has(c.chunk.visibility)) scored.push([i, cosine(query, c.features)]);
     });
     return scored.filter((s) => s[1] > 1e-6).sort((x, y) => y[1] - x[1] || x[0] - y[0]).slice(0, CANDIDATES);
+  }
+
+  isKnown(token: string): boolean {
+    return (this.df.get(token) ?? 0) > 0;
+  }
+
+  /** Of the words a phrase maps to, those this tenant's documents use. */
+  inDocuments(words: string): string {
+    return tokenize(words).filter((t) => (this.df.get(t) ?? 0) > 0).join(" ");
   }
 
   /** A word the knowledge base never uses, read as the KB words inside it when only single characters are left over. */
@@ -139,11 +164,11 @@ class TenantIndex {
   coverage(tokens: string[], c: Indexed): number {
     const unique = new Set(tokens);
     let total = 0;
-    for (const t of unique) total += this.idf(t);
+    for (const t of unique) total += this.weight(t);
     if (total === 0) return 0;
     const weak = this.weakParts(unique, c);
     let hit = 0;
-    for (const t of unique) if (c.tf.has(t) && !weak.has(t)) hit += this.idf(t);
+    for (const t of unique) if (c.tf.has(t) && !weak.has(t)) hit += this.weight(t);
     return hit / total;
   }
 
@@ -180,9 +205,10 @@ function indexOf(tenant: string): TenantIndex {
 /** hybrid_search: `gated` false returns the nearest chunks whatever their coverage, for the model tier to read. */
 export function search(tenant: string, asked: string, allowed: Set<string>, topK: number, gated = true): Hit[] {
   const index = indexOf(tenant);
-  const gateTokens = index.knownParts(tokenize(canonicalQuery(asked)));
-  const query = expandQuery(asked);
-  const queryTokens = index.knownParts(tokenize(query));
+  const known = index.inDocuments(documentWords(asked));
+  const gateTokens = index.asked(asked, canonicalQuery(asked));
+  const query = `${expandQuery(asked)} ${known}`;
+  const queryTokens = index.asked(asked, expandQuery(asked));
   const bm25 = index.bm25(queryTokens, allowed);
   const vec = index.vector(features(query), allowed);
   const cosineOf = new Map(vec);
@@ -201,4 +227,123 @@ export function search(tenant: string, asked: string, allowed: Set<string>, topK
     if (hits.length === topK) break;
   }
   return hits;
+}
+
+// ---------------------------------------------------------------- the sentence that answers
+export interface SentenceHit {
+  ref: number;
+  heading?: string;
+  text?: string;
+}
+
+interface Picked {
+  covers: number; // how much of the question's weight the sentence has
+  score: number; // the same, for the kind of answer asked for
+  ref: number;
+  pos: number;
+  sentence: string;
+}
+
+const CUT_MARK = pack.texts.mock.CUT_MARK;
+const NOT_AN_ANSWER = /SYNTHETIC|虚构/;
+const LEANS_BACK = /^(?:这类|这些|这种|其|该)/;
+const COVERS = 0.34;
+const COVERS_DESPITE = 0.5;
+const COVERS_ITS_CLAUSE = 0.6;
+const GOES_ON = 0.2;
+const ON_TOPIC = 0.15;
+const A_CLAUSE = /[，,。！!？?；;~～\s]+/;
+
+/** A chunk's sentences; a part that only makes sense after the one before it ("这类扣费…") stays with it. */
+function sentencesOf(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of splitSentences(text)) {
+    const sentence = raw.replace(/^[-*• ]+/, "").trimEnd();
+    if (LEANS_BACK.test(sentence) && out.length) out[out.length - 1] = `${out[out.length - 1].replace(/[；;]+$/, "")}；${sentence}`;
+    else out.push(sentence);
+  }
+  return out;
+}
+
+/** The longest run of Chinese both say word for word, when it is at least three characters: what segmentation can miss. */
+function sharedRun(question: string, sentence: string): number {
+  let best = 0;
+  for (let i = 0; i < question.length; i++) {
+    let n = 0;
+    while (i + n < question.length && /[一-鿿]/.test(question[i + n]) && sentence.includes(question.slice(i, i + n + 1))) n += 1;
+    best = Math.max(best, n);
+  }
+  return best >= 3 ? best : 0;
+}
+
+/** Whether the question's words add up to most of a longer word: "质量" and "问题" do say "质量问题". */
+function sayTheWhole(asked: string[], word: string): boolean {
+  return asked.filter((t) => t !== word && word.includes(t)).reduce((n, t) => n + t.length, 0) >= 0.75 * word.length;
+}
+
+function ranked(tenant: string, question: string, hits: SentenceHit[], oneQuestion = true): Picked[] {
+  const index = indexOf(tenant);
+  const asked = [...new Set(index.asked(question, expandQuery(question)))];
+  const total = asked.reduce((n, t) => n + index.weight(t), 0);
+  if (!total) return [];
+  const out: Picked[] = [];
+  hits.forEach((hit, rank) => {
+    const heading = new Set(tokenize(hit.heading ?? ""));
+    sentencesOf(hit.text ?? "").forEach((sentence, pos) => {
+      if ([...sentence].length < 6 || NOT_AN_ANSWER.test(sentence) || sentence.endsWith(CUT_MARK) || (oneQuestion && cannotAnswer(question, sentence))) return;
+      const tokens = new Set(tokenize(sentence));
+      const list = [...tokens];
+      let direct = 0, context = 0;
+      for (const t of asked) {
+        // "手机" at the head of "手机号" modifies another word; "发票" at the end of "电子普通发票" is the word asked about.
+        if (tokens.has(t)) direct += index.weight(t) * (list.some((o) => o.length > t.length && o.startsWith(t) && !sayTheWhole(asked, o)) ? 0.5 : 1);
+        else if (heading.has(t)) context += index.weight(t);
+      }
+      if (!direct) return;
+      const covers = (direct + 0.3 * context) / total;
+      out.push({ covers, score: covers * answerFit(question, sentence) + 0.03 * Math.min(6, sharedRun(question, sentence)) - rank * 0.01 - pos * 0.005, ref: hit.ref, pos, sentence });
+    });
+  });
+  return out.sort((a, b) => b.score - a.score);
+}
+
+const quoted = (p: Picked) => `${p.sentence.replace(/[。；;…]+$/, "")}[${p.ref}]。`;
+
+function unknownWord(tenant: string, question: string): boolean {
+  const index = indexOf(tenant);
+  return index.asked(question, expandQuery(question)).some((t) => !index.isKnown(t) && !isFiller(t) && !/^\d+$/.test(t));
+}
+
+/** The sentences that answer a question: the best for each of its clauses that says something of its own, then the best overall. */
+export function answerSentences(tenant: string, question: string, hits: SentenceHit[], limit: number): string[] {
+  const clauses = question.split(A_CLAUSE).filter((c) => c.length >= 3);
+  // What one clause asks for ("多少钱") says nothing about the sentence another clause needs.
+  const every = ranked(tenant, question, hits, clauses.length < 2);
+  // A word the documents never use names something they may not cover ("纸质发票", "保修"): the rest must say more.
+  const whole = every.filter((p) => p.covers >= (unknownWord(tenant, question) ? COVERS_DESPITE : COVERS));
+  const overall = new Map(every.map((p) => [p.sentence, p]));
+  const picked: Picked[] = [];
+  const add = (p: Picked | undefined) => {
+    if (p && picked.length < limit && !picked.some((q) => q.sentence === p.sentence)) picked.push(p);
+  };
+  if (clauses.length > 1) {
+    for (const clause of clauses) {
+      // A clause counts what the whole question says too: "审核要多久" after "怎么入驻" is about joining, not about refunds.
+      const best = ranked(tenant, clause, hits).filter((p) => p.covers >= COVERS_ITS_CLAUSE && (overall.get(p.sentence)?.covers ?? 0) >= ON_TOPIC)
+        .map((p) => ({ ...p, score: p.score + 0.5 * (overall.get(p.sentence)?.score ?? 0) })).sort((x, y) => y.score - x.score);
+      add(best[0]);
+    }
+  }
+  add(whole[0]);
+  for (const p of whole) if (p.score >= 0.7 * whole[0].score) add(p);
+  // The passage that answers often goes on in the next line: "审核周期为5个工作日", then what to submit.
+  const refs = new Set(picked.map((p) => p.ref));
+  for (const p of every) if (refs.has(p.ref) && p.covers >= GOES_ON && statesWhatIsAsked(question, p.sentence)) add(p);
+  return picked.sort((a, b) => a.ref - b.ref || a.pos - b.pos).map(quoted);
+}
+
+/** The clauses of a run-on question, each searched on its own. */
+export function clauseHits(tenant: string, question: string, allowed: Set<string>): Hit[] {
+  const clauses = question.split(A_CLAUSE).filter((c) => c.length >= 3);
+  return clauses.length > 1 ? clauses.flatMap((clause) => search(tenant, clause, allowed, 2)) : [];
 }

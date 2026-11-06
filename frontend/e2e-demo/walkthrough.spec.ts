@@ -191,3 +191,45 @@ test.describe("questions nobody recorded", () => {
     await expect(page.locator(".demo-engine")).toHaveCount(0);
   });
 });
+
+test.describe("a conversation", () => {
+  const start = async (page: Page, email: string) => {
+    await page.goto("./");
+    await page.getByRole("button", { name: new RegExp(email.replace(".", "\\.")) }).first().click();
+    await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
+    await page.goto("./chat");
+  };
+  const say = async (page: Page, words: string) => {
+    const box = page.locator("textarea").first();
+    await box.fill(words);
+    await box.press("Enter");
+  };
+
+  test("a question it cannot answer offers next steps, and tapping one asks it", async ({ page }) => {
+    const problems = watch(page);
+    await start(page, "customer@leon.demo");
+    await say(page, "支持花呗分期吗");
+    const answer = page.locator(".msg.assistant").last();
+    await expect(answer).toContainText("我可以帮您");
+    const steps = page.locator(".next-steps button");
+    await expect(steps).toHaveCount(3);
+    await steps.filter({ hasText: "七天无理由" }).click();
+    await expect(page.locator(".msg.assistant").last()).toContainText("7天");
+    await expect(page.locator(".next-steps button")).toHaveCount(0);
+    expect(problems).toEqual([]);
+  });
+
+  test("an item is offered, a yes files it, and it can be asked about and taken back", async ({ page }) => {
+    const problems = watch(page);
+    await start(page, "customer@leon.demo");
+    await say(page, "手冲咖啡套装我不要了 帮我退掉");
+    await expect(page.locator(".msg.assistant").last()).toContainText("需要为订单 SO20261012003");
+    await say(page, "是的");
+    await expect(page.locator(".msg.assistant").last()).toContainText("已提交人工审核");
+    await say(page, "怎么样了");
+    await expect(page.locator(".msg.assistant").last()).toContainText("等待人工审核");
+    await say(page, "撤回退款申请");
+    await expect(page.locator(".msg.assistant").last()).toContainText("确认撤回 SO20261012003");
+    expect(problems).toEqual([]);
+  });
+});

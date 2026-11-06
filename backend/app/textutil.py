@@ -191,7 +191,7 @@ _LATIN = re.compile(r"[A-Za-z]")
 _EN_ASKS = re.compile(r"(?<![A-Za-z])(?:can|could|may|might|would|will|shall|should|do|did|am)\s+(?:i|we)(?![A-Za-z])"
                       r"|(?<![A-Za-z])(?:did|do|does|have|has)\s+you(?![A-Za-z])|(?<![A-Za-z])is\s+(?:it\s+possible|there\s+(?:a|any))"
                       r"|(?<![A-Za-z])(?:how|where|when|what|why|said|told|promised)(?![A-Za-z])", re.IGNORECASE)
-_EN_POLITE = re.compile(r"(?<![A-Za-z])(?:(?:can|could|would|will)\s+you|please)(?![A-Za-z])", re.IGNORECASE)
+_EN_POLITE = re.compile(r"(?<![A-Za-z])(?:(?:can|could|would|will)\s+you|please|pls|plz)(?![A-Za-z])", re.IGNORECASE)
 
 
 def _clause_of(match: re.Match[str], text: str) -> tuple[str, str]:
@@ -234,10 +234,10 @@ def _named_demand(pattern: re.Pattern, text: str) -> bool:
 
 
 REFUND_APPLY_RE = re.compile(
-    r"我要退|申请退|帮我退|给我退|想退(?!订|出)|要退(?!订|出)|退一下|退掉|请(?:帮我|直接)?退|直接退(?!订|出|回|群|换|票|役)|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退(?!订|出|回|群|换|票|役)"
+    r"我要退|申请退|帮我退|给我退|必须(?:给我)?退|想退(?!订|出)|要退(?!订|出)|退一下|退掉|请(?:帮我|直接)?退|直接退(?!订|出|回|群|换|票|役)|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退(?!订|出|回|群|换|票|役)"
     r"|退我(?!的)|(?:给|帮|为)(?:客户|顾客|他|她|这位顾客)退|(?:我|客户|顾客|他|她)要求(?:全额|全款|全部)?退"
-    r"|(?:want|need|request|issue|process|like|get)\s+(?:a\s+|my\s+|the\s+)?refund|refund\s+(?:me|it|my|this|the|order)"
-    r"|please\s+refund|(?:want|need)\s+(?:my\s+|the\s+)?money\s+back|money\s+back\s+please",
+    r"|(?:want|need|request|issue|process|like|get)\s+(?:a\s+|my\s+|the\s+)?refund|refund\s+(?:me|it|my|this|the|order|so\d)"
+    r"|(?:please|pls|plz)\s+refund|(?:want|need)\s+(?:my\s+|the\s+)?money\s+back|money\s+back\s+please",
     re.IGNORECASE)
 NEGATED_REFUND_RE = re.compile(
     r"(?:不是要?|不是想|不想要?|不要|不需要|不用|不打算|没打算|没说要|没想|并不想|先别|别|暂时不|暂不|先不)(?:给我|帮我)?"
@@ -254,6 +254,18 @@ NEGATED_REFUND_RE = re.compile(
 _ONLY_ASKING_RE = re.compile(r"只是问问|就问问|问问而已|随便问问|先问问|假如|假设|万一|just\s+asking|just\s+wondering|what\s+if"
                              r"|(?:可能|也许|或许|说不定)(?:会|要|得|想)?(?:申请)?退|看情况|还在考虑|考虑一下|考虑考虑|还在犹豫"
                              r"|还没想好|没想好|考虑|打算|有点想|再想想|还没决定|没决定|犹豫|maybe|might\s+(?:want|ask|request)", re.IGNORECASE)
+# Not a request now, whatever words it uses: how to file one, one filed before or for later, someone else's, one that nearly
+# happened, or a threat ("再不发货我就退款").
+_NOT_NOW_RE = re.compile(
+    r"(?:怎么|怎样|如何|哪里|哪儿|在哪|去哪)(?:才能|能|可以|去)?(?:申请)?退"
+    r"|(?:昨天|前天|上周|上个月|之前|早就|刚才|刚刚|已经|已)(?:就|也)?(?:已经)?(?:申请|提交|提)(?:了|过)?退"
+    r"|(?:^|[\s，,。])我申请(?:(?:了|过)退|退(?:款|货)了)"
+    r"|(?:朋友|老婆|老公|同事|妈|爸|室友|家人|别人|他们|有人|客服|同学|邻居|闺蜜)[^，,。！!？?；;\s]{0,4}(?:要|让我|叫我|想|说|也)[^，,。！!？?；;\s]{0,4}退"
+    r"|(?:差点|差一点|险些|曾经|本来|原本)[^，,。！!？?；;\s]{0,6}退"
+    r"|会不会[^，,。！!？?；;\s]{0,8}退"
+    r"|(?:等会|等一会|待会|回头|晚点|过几天|过两天|改天|明天|后天|下周|下个月|以后|到时候)(?:再|才)?[^，,。！!？?；;\s]{0,4}退"
+    r"|(?:^|[\s，,。])(?:等会|等等|以后|回头|之后|先)?再说吧?[\s。.!！~～]*$"
+    r"|(?:再不|超过[^，,。！!？?；;\s]{0,4})[^，,。！!？?；;\s]{0,8}(?:我就|我要|就要)退")
 # Asking about refunds, unless a request is made too ("如果不能换货就退款").
 REFUND_INQUIRY_RE = re.compile(
     _ONLY_ASKING_RE.pattern + r"|呢(?=[\s，,。.！!？?~～]*$)|没有?(?=[\s，,。.！!？?~～]*$)|哪|如果|要是|(?:退款|退货|退)的话|咨询一下|想?问一?下|规则|政策|流程|吗|[？?]|多久|多长时间|怎么|如何"
@@ -367,11 +379,11 @@ def refund_requested(text: str) -> bool:
     """True when the message asks for a refund, not when it asks about one or declines one."""
     if refund_withdraw_requested(text):  # "撤回退款申请" takes one back (N-127)
         return False
-    folded = numeral_amounts(normalize_width(text or ""))
+    folded = numeral_amounts(normalize_width(fix_typos(text or "")))
     if _retracted(folded):  # "我要退款 算了不退了": the last word on it takes the demand back
         return False
     kept = NEGATED_REFUND_RE.sub("，", folded)
-    if _ONLY_ASKING_RE.search(kept):
+    if _ONLY_ASKING_RE.search(kept) or _NOT_NOW_RE.search(kept):
         return False
     if not REFUND_RE.search(kept):
         return _demands_refund(kept)  # "SO… 退了吧": not one of the refund words, but a bare demand
@@ -624,7 +636,8 @@ _END = r"(?=[吗呢吧啊了？?！!。.，,\s]|$)"
 TYPOS: list[tuple[re.Pattern, str]] = [(re.compile(p), r) for p, r in (
     ("推款", "退款"), ("退宽", "退款"), ("退欵", "退款"), ("运废", "运费"), ("运肺", "运费"), ("发漂", "发票"), ("发瞟", "发票"),
     ("过其" + _END, "过期"), ("怎么陪" + _END, "怎么赔"), ("咋陪" + _END, "咋赔"), ("到那了", "到哪了"), ("到那儿了", "到哪儿了"),
-    ("物留(?=信息|到哪|查询)", "物流"), ("退贷", "退货"), ("积份", "积分"))]
+    ("物留(?=信息|到哪|查询)", "物流"), ("退贷", "退货"), ("积份", "积分"), ("申清(?=退)", "申请"), ("定单", "订单"), ("快地", "快递"),
+    ("发或", "发货"), ("优惠卷", "优惠券"), ("补偿卷", "补偿券"), ("兑换卷", "兑换券"), ("续废", "续费"), ("人功", "人工"), ("取笑(?=订单)", "取消"))]
 
 
 def fix_typos(text: str) -> str:

@@ -44,6 +44,8 @@ export interface Verification {
 }
 
 export interface MessageMeta {
+  /** What the static demo offers to ask next when it could not answer. */
+  next_steps?: string[];
   citations?: EvidenceItem[];
   verification?: Verification | null;
   tools?: string[];

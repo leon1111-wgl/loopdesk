@@ -4,11 +4,15 @@
  * the answer from what they returned, so every fact in an answer comes from a tool or a quoted knowledge chunk.
  */
 import { M, T, pack, type TenantTool } from "./pack";
+import { asksHowLong, canDo, conditionalRefund } from "./reading";
+import { answerSentences } from "./retrieval";
 import { tenantTools } from "./tools";
 import {
   cancelRequested, expandQuery, findAll, fixTypos, fullMatch, handoffCancelled, money, normalizeWidth, otherQuestion, refundBareDecline,
-  refundRequested, refundWithdrawRequested, splitSentences, statedRefundAmount, sub, tokenSet, withdrawConfirmed,
+  refundRequested as requestedByTheRules, refundWithdrawRequested, splitSentences, statedRefundAmount, sub, tokenSet, withdrawConfirmed,
 } from "./text";
+
+export const refundRequested = (text: string): boolean => requestedByTheRules(text) && !conditionalRefund(text);
 
 type Output = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 export type Results = Record<string, Output[]>;
@@ -42,19 +46,40 @@ function thenRefundTiming(text: string): [string, string] | null {
   return null;
 }
 
+const ASKS_SOMETHING = /吗|呢|多少|多久|几天|怎么|如何|能不能|可不可以|可以|咋|在哪|谁/;
+const MY_POINTS = /积分(?:还有|还剩|余额|一共|有)多少|有多少积分|我的积分|查积分/;
+const ARRIVAL = /(?:什么时候|多久|几天|啥时候|何时)(?:能|才能)?(?:到|送到|收到)(?!账)/;
+const WHO_SIGNED = /谁签|谁收|签收了吗|签收没|有人签|有人收/;
+const wantsTracking = (text: string) => M._SHIPMENT.test(text) || ARRIVAL.test(text) || WHO_SIGNED.test(text);
+const OUTAGE = /彻底|完全|全部|整个/;
+
+/** "SO… 到哪了 能开发票吗": a question about the order, and one that is not about it. */
+function secondQuestion(text: string): [string, string] | null {
+  if (!T.ORDER_ID_RE.test(text) && !MY_POINTS.test(text)) return null;
+  const clauses = sub(T.ORDER_ID_RE, " ", text).split(/[，,。！!？?；;~～\s]+/).filter(Boolean);
+  const other = clauses.slice(1).find((c) => c.length >= 4 && ASKS_SOMETHING.test(c) && !mentionsRefund(c) && !wantsTracking(c) && !M._RUSH.test(c) && !M._FAULTY.test(c) && !M._CHASE.test(c));
+  if (!other) return null;
+  const main = strip(text.replace(other, " "), " ，,。？?！!；;　");
+  // Never when taking the clause away changes what the rest asks for: "如果我申请退款，下载的歌还能听吗" is one question.
+  return refundRequested(main) === refundRequested(text) ? [main, other] : null;
+}
+
 export function splitIntents(text: string): [string, string | null] {
   const match = M._EXTRA.exec(text);
   if (!match) {
     const other = otherQuestion(text);
     if (other && text.includes(other)) return [strip(text.replace(other, " "), " ，,。？?！!；;　"), other];
-    return thenRefundTiming(text) ?? [text, null];
+    return thenRefundTiming(text) ?? secondQuestion(text) ?? [text, null];
   }
   const extra = text.slice(match.index + match[0].length).trim();
   if (extra.length < 2 || T.ORDER_ID_RE.test(extra)) return [text, null];
   return [text.slice(0, match.index).trim(), extra];
 }
 
-export const mentionsRefund = (text: string): boolean => M._REFUND.test(text) || refundRequested(text);
+// Beyond the backend's refund words, for a model it has and this page has not: "能退吗", "就帮我退了吧", "退不退".
+const LOOSE_REFUND = /退(?:了|吧|吗|么|嘛|不退)|(?:能|可以|可|要|想|帮我|给我)退(?!订|出|群|役|回)/;
+
+export const mentionsRefund = (text: string): boolean => M._REFUND.test(text) || refundRequested(text) || LOOSE_REFUND.test(text);
 
 export const asksRefundStatus = (text: string): boolean =>
   (mentionsRefund(text) || text.includes("到账") || M._MY_MONEY.test(text)) && M._PROGRESS.test(text) && !M._APPLY.test(text);
@@ -130,15 +155,35 @@ function orderClauses(text: string): Record<string, string> {
   return Object.fromEntries(spans.map(([start, id], i) => [id, text.slice(start, i + 1 < spans.length ? spans[i + 1][0] : text.length)]));
 }
 
+// What the order's own record answers.
+const ORDER_FACTS = /多少钱|金额|买的(?:什么|啥)|什么商品|啥东西|状态|怎么样|情况|进度/;
+
 export function orderQuestion(text: string): string {
   const rest = sub(T.ORDER_ID_RE, " ", text);
-  if (!M._QUESTION_MARK.test(rest)) return "";
+  if (!M._QUESTION_MARK.test(rest) || ORDER_FACTS.test(rest)) return "";
   const bare = sub(M._LOOKUP_WORDS, "", rest.replace(/[\s，,。.！!？?~～]+/g, ""));
   return bare.length >= 3 ? strip(rest, " ，,") : "";
 }
 
 function namedOrders(text: string, listing: Output, exclude: Set<string>): Output[] {
   return (listing.orders ?? []).filter((o: Output) => !exclude.has(o.order_id) && (o.items ?? []).some((n: string) => namesItem(text, n)));
+}
+
+const THROUGH_APPLE = /苹果|iphone|ipad|ios|app\s*store/i;
+
+/** How much of a product's name the message says: "豪华年卡" fits the yearly plan better than the monthly one. */
+function nameFit(text: string, name: string): number {
+  const han = name.replace(/[^一-鿿]/g, "");
+  let fit = 0;
+  for (let i = 0; i + 1 < han.length; i++) if (text.includes(han.slice(i, i + 2))) fit += 1;
+  return fit + (THROUGH_APPLE.test(text) && name.includes("App Store") ? 2 : 0);
+}
+
+/** The orders that fit a message best, when one of its words names a product at all. */
+function bestNamed<O>(text: string, orders: O[], names: (order: O) => string[]): O[] {
+  const fits = orders.map((o) => Math.max(0, ...names(o).map((n) => nameFit(text, n))));
+  const best = Math.max(0, ...fits);
+  return best ? orders.filter((_, i) => fits[i] === best) : [];
 }
 
 function faultTickets(text: string, faults: string[], listing: Output, lookedUp: Output[], exclude: Set<string>): Output[] {
@@ -292,6 +337,10 @@ function composeCustom(text: string, results: Results, custom: TenantTool[]): st
 }
 
 // ---------------------------------------------------------------- planning
+const ABOUT_REFUNDS = /退|到账|原路/;
+const OTHER_SUBJECT = /自动续费|续费|续订|订阅|积分|发票|密码|账号/;
+const asksBeyondRefunds = (text: string) => text.split(/[，,。！!？?；;~～\s]+/).some((c) => M._QUESTION_MARK.test(c) && !/退/.test(c));
+
 function mainCall(text: string, called: string[], results: Results, available: Set<string>, exclude: Set<string>): Call | null {
   const can = (name: string) => available.has(name) && !called.includes(name);
   let orderIds = upperIds(text);
@@ -354,7 +403,8 @@ function mainCall(text: string, called: string[], results: Results, available: S
       }
       return null;
     }
-    const reported = (M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (!T.ORDER_ID_RE.test(text) && faultReport(text));
+    const reported = !asksHowLong(text) && ((M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (!T.ORDER_ID_RE.test(text) && faultReport(text))
+      || (M._FAULTY.test(text) && !M._NOT_FAULTY.test(text) && !M._SELF_DAMAGE.test(text) && !M._FAULT_QUESTION.test(text) && !mentionsRefund(text)));
     const repair = M._REPAIR.test(text) && (M._FAULTY.test(text) || !M._ASKING.test(text.trim()));
     if ((repair || reported) && !refundRequested(text)) {
       if (can("search_knowledge")) return ["search_knowledge", { query: "质量问题 退货 换货" }];
@@ -389,10 +439,10 @@ function mainCall(text: string, called: string[], results: Results, available: S
       if (can("create_ticket")) return ["create_ticket", { title: `${orderId} 修改收货信息`, description: text, priority: "normal" }];
       return null;
     }
-    if ((M._SHIPMENT.test(text) || chasing(text)) && order.status !== "paid") {
+    if ((wantsTracking(text) || chasing(text)) && order.status !== "paid") {
       if (can("track_shipment")) return ["track_shipment", { order_id: orderId }];
       const shipment = (results.track_shipment ?? [{}]).at(-1)!;
-      if (M._ETA.test(text) && shipment.shipped && !shipment.delivered && can("search_knowledge")) return ["search_knowledge", { query: "发货后 预计 送达" }];
+      if ((M._ETA.test(text) || ARRIVAL.test(text)) && shipment.shipped && !shipment.delivered && can("search_knowledge")) return ["search_knowledge", { query: "发货后 预计 送达" }];
       return null;
     }
     if (M._SHIPMENT.test(text) && can("track_shipment")) return ["track_shipment", { order_id: orderId }];
@@ -404,9 +454,9 @@ function mainCall(text: string, called: string[], results: Results, available: S
 
   if (M._SELF_DAMAGE.test(text)) return can("search_knowledge") ? ["search_knowledge", { query: X.SELF_DAMAGE_QUERY }] : null;
 
-  if ((M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (faultReport(text) && !refundRequested(text))) {
+  if (!asksHowLong(text) && ((M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (faultReport(text) && !refundRequested(text)))) {
     if (can("search_knowledge")) return ["search_knowledge", { query: text }];
-    if (can("create_ticket")) return ["create_ticket", { title: text.slice(0, 30), description: text, priority: M._URGENT.test(text) ? "high" : "normal" }];
+    if (can("create_ticket")) return ["create_ticket", { title: text.slice(0, 30), description: text, priority: M._URGENT.test(text) || OUTAGE.test(text) ? "high" : "normal" }];
     return null;
   }
 
@@ -434,8 +484,8 @@ export function nextCall(text: string, called: string[], results: Results, avail
   const [faults, main, extra] = available.has("create_ticket") ? faultIntents(text) : ([[], ...splitIntents(text)] as [string[], string, string | null]);
   if (wantsHuman(main) && available.has("handoff_to_human") && !called.includes("handoff_to_human")) return ["handoff_to_human", { reason: main.slice(0, 120) }];
   const plan = planCustom(main, tenantTools(tenant), called);
-  if (plan) return plan.call;
-  const call = faults.length ? faultCall(main, faults, called, results, available, exclude, !extra) : mainCall(main, called, results, available, exclude);
+  if (plan && (plan.call || plan.missing || !extra)) return plan.call;
+  const call = plan ? null : faults.length ? faultCall(main, faults, called, results, available, exclude, !extra) : mainCall(main, called, results, available, exclude);
   if (call) return call;
   const searched = new Set((results.search_knowledge ?? []).map((r) => r.query));
   if (extra && available.has("search_knowledge") && !searched.has(extra)) return ["search_knowledge", { query: extra }];
@@ -445,8 +495,10 @@ export function nextCall(text: string, called: string[], results: Results, avail
 // ---------------------------------------------------------------- answering
 function askWhich(text: string, listing: Output): string {
   if (listing.error) return `暂时查不到您的订单：${listing.error}。也可以直接告诉我订单号。`;
-  const orders: Output[] = listing.orders ?? [];
-  if (!orders.length) return "没有查到您账号下的订单。如果是用其他账号下的单，请告诉我订单号。";
+  const every: Output[] = listing.orders ?? [];
+  if (!every.length) return "没有查到您账号下的订单。如果是用其他账号下的单，请告诉我订单号。";
+  const fitting = bestNamed(text, every, (o) => o.items ?? []);
+  const orders = fitting.length > 1 ? fitting : every;
   const lines = orders.map((o) => `${o.order_id}（${(o.items ?? []).join("、")}，${o.status_text}，¥${money(o.amount)}）`).join("；");
   if (refundWithdrawRequested(text)) return `您账号下最近的订单有：${lines}。请问要撤回的是哪一单的退款申请？请回复“订单号 撤回退款申请”，例如“${orders[0].order_id} 撤回退款申请”。`;
   if (mentionsRefund(text) && !asksRefundStatus(text)) return `您账号下最近的订单有：${lines}。请问要申请退款的是哪一单？请回复“订单号 申请退款”，例如“${orders[0].order_id} 申请退款”。`;
@@ -461,7 +513,7 @@ function refundProgressText(order: Output): string {
   const waiting = order.refund_awaiting_approval;
   if (waiting) lines.push(`订单 ${oid} 有一笔 ¥${money(waiting.amount)} 的退款申请（${waiting.filed_on} 提交）正在等待人工审核，审核通过后会按原支付方式退回。`);
   for (const r of (order.refunds ?? []).slice(0, 3)) lines.push(`订单 ${oid} 的退款单 #${r.refund_id}（¥${money(r.amount)}，${r.filed_on} 提交）${r.status_text}。`);
-  if (!lines.length && order.status === "refunded") lines.push(`订单 ${oid} 的状态为“已退款”，款项已按原支付方式退回。如超过到账时效仍未收到，可以回复“转人工”帮您核查。`);
+  if (!lines.length && order.status === "refunded") lines.push(`订单 ${oid} 当前状态为“已退款”。如超过到账时效仍未收到，可以回复“转人工”帮您核查。`);
   if (!lines.length) {
     lines.push(`订单 ${oid} 当前状态为“${order.status_text}”，没有查到在线提交的退款记录。`);
     if (order.refundable) lines.push(`如需退款，可以直接回复“${oid} 申请退款”。`);
@@ -566,6 +618,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
       const items = (order.items ?? []).map((i: Output) => `${i.name}×${i.qty}`).join("、");
       parts.push(`订单 ${order.order_id} 当前状态为“${order.status_text}”，订单金额 ¥${money(order.amount)}，商品：${items}。`);
       if (orders.length === 1 && mentionsRefund(text) && !order.refundable) parts.push(`该订单暂不能发起退款：${order.refund_note ?? ""}。`);
+      else if (orders.length === 1 && mentionsRefund(text) && order.refund_note) parts.push(`${order.refund_note}。`);
     }
   }
   const clauses = orders.length > 1 ? orderClauses(text) : {};
@@ -596,7 +649,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   const ticket = last("create_ticket");
   const knowledge = last("search_knowledge");
   const selfDamage = M._SELF_DAMAGE.test(text);
-  const eta = shipments.length > 0 && M._ETA.test(text);
+  const eta = shipments.length > 0 && (M._ETA.test(text) || ARRIVAL.test(text));
   const rush = orders.length > 0 && !shipments.length && M._RUSH.test(text);
   const inquiry = orders.length === 1 && !refund && !orders[0].error && orders[0].refundable && mentionsRefund(text) && !refundRequested(text);
   if (knowledge) {
@@ -605,10 +658,13 @@ export function compose(input: string, allResults: Results, tenant: string, excl
       : eta || rush || ticket ? expandQuery(knowledge.query ?? text)
       : expandQuery(inquiry ? refundQuestion(text) : text);
     if (!refundFailed) {
-      const limit = refund || ticket || progress || customParts.length || eta || rush || selfDamage ? 1 : 3;
-      let sentences = extract(query, knowledge.results ?? [], limit);
+      const plain = !(refund || ticket || progress || customParts.length || eta || rush || selfDamage || knowledge.chosen);
+      const limit = !plain && !knowledge.chosen ? 1 : inquiry ? 2 : 3;
+      let sentences = plain ? answerSentences(tenant, inquiry ? refundQuestion(text) : sub(T.ORDER_ID_RE, " ", text), knowledge.results ?? [], limit) : extract(query, knowledge.results ?? [], limit);
+      // About one order's refund: only what is about refunds, whatever else the message's other words brought up.
+      if (inquiry && !extra && !asksBeyondRefunds(text) && !OTHER_SUBJECT.test(text)) sentences = sentences.filter((s) => ABOUT_REFUNDS.test(s));
       // A question in several clauses is answered clause by clause, not only by what covers all of it.
-      if (sentences.length < limit) {
+      if (!plain && sentences.length < limit) {
         for (const clause of clausesOf(text)) {
           for (const sentence of extract(expandQuery(clause), knowledge.results ?? [], 1)) {
             if (sentences.length < limit && !sentences.includes(sentence)) sentences = [...sentences, sentence];
@@ -620,7 +676,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
       const asked = orders.length === 1 && !inquiry && !mentionsRefund(text) && !(eta || rush || ticket) ? orderQuestion(text) : "";
       if (sentences.length) parts.push(...sentences);
       else if (asked) parts.push(`关于“${asked}”，知识库中没有找到相关依据。`);
-      else if (!parts.length && !ticket) parts.push(knowledge.error ? X.SEARCH_DOWN : X.REFUSAL);
+      else if (!parts.length && !ticket) parts.push(knowledge.error ? X.SEARCH_DOWN : `${X.REFUSAL}${canDo(tenant)}`);
     }
   }
   if (inquiry) {
@@ -648,10 +704,13 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   if (M._IF_COMPLAIN.test(text) && !handoff) parts.push(X.IF_COMPLAIN_TEXT);
 
   if (extraSearch) {
-    const sentences = extract(expandQuery(extra!), extraSearch.results ?? [], refund && extra === other ? 1 : 2);
+    const sentences = answerSentences(tenant, extra!, extraSearch.results ?? [], refund && extra === other ? 1 : 2);
     parts.push(sentences.length ? `另外，${sentences.join("")}` : `关于“${extra}”，知识库中没有找到相关依据。`);
   }
-  if (!parts.filter(Boolean).length) parts.push(X.REFUSAL);
+  // "补偿券要是能发的话…": a tenant's tool the message only wonders about.
+  const wondered = custom.find((t) => matches(text, t) > 0 && (t.risk === "write" || t.risk === "money"));
+  if (wondered && parts.length === 1 && parts[0].startsWith(X.REFUSAL)) parts[0] = `这次没有办理${wondered.label}。如需办理，请直接告诉我，例如“${wondered.hints?.intents?.[0] ?? wondered.label}”。`;
+  if (!parts.filter(Boolean).length) parts.push(`${X.REFUSAL}${canDo(tenant)}`);
   return parts.filter(Boolean).join("");
 }
 
@@ -661,9 +720,8 @@ export function compose(input: string, allResults: Results, tenant: string, excl
 // such a guess: a refund demand is offered back ("需要为订单 … 申请退款吗"), everything else only reads.
 const LIST_ORDERS = /(?:下了|下过|买了|买过|下的|买的).{0,4}(?:哪些|什么|啥)|(?:哪些|什么).{0,3}(?:订单|单子)|最近.{0,4}(?:订单|单子|下的单)|有几个?(?:订单|单子)/;
 const ORDER_NUMBER = /订单号|单号|哪一?单|什么单/;
-const TRACKING = /运单|快递|物流|到哪|发货了吗|发了没|发货没/;
+const TRACKING = /运单|快递|物流|到哪|发货了吗|发了没|发货没|到了吗|到了没|到没到|收到了吗/;
 const STATUS = /状态|怎么样了|开通了吗|生效了吗|查一下|看一下|看看/;
-const OWN_ITEM = /那个|这个|我的|我要|我买|我那|刚买|上次|上周|昨天|前天/;
 const PRICE = /(?:[¥￥]\s*)?(\d+(?:\.\d+)?)\s*(?:元|块)?/g;
 
 interface OwnOrder {
@@ -672,8 +730,8 @@ interface OwnOrder {
   amount: number;
 }
 
-function theOneOrder(text: string, orders: OwnOrder[]): OwnOrder | null {
-  const named = orders.filter((o) => o.items.some((name) => namesItem(text, name)));
+export function theOneOrder(text: string, orders: OwnOrder[]): OwnOrder | null {
+  const named = bestNamed(text, orders, (o) => o.items);
   const prices = [...sub(T.ORDER_ID_RE, " ", text).matchAll(PRICE)].map((m) => Number(m[1])).filter((n) => n > 0);
   const priced = orders.filter((o) => prices.some((p) => Math.abs(p - o.amount) < 0.005));
   if (named.length === 1) return named[0];
@@ -683,25 +741,31 @@ function theOneOrder(text: string, orders: OwnOrder[]): OwnOrder | null {
   return null;
 }
 
+const DEMANDS = /我要退|要退|想退|退给我|退掉|退我|给我退|帮我退/;
+// "数字专辑买了能退吗" asks about the policy; "那个专辑能退吗" and "五天前扣的会员能退吗", about the one they bought.
+const OWN_ITEM = /那个|这个|我的|我要|我买|我那|刚买|上次|上周|昨天|前天|帮我|给我|\d+[块元]|[前几].{0,2}天|扣的|扣了|买的|收到|签收/;
+
 export function readsAsOrder(text: string, orders: OwnOrder[]): { question: string; unconfirmed: string | null } | null {
   if (T.ORDER_ID_RE.test(text) || T.OTHER_ORDER.test(text) || refundWithdrawRequested(text)) return null;
   if (LIST_ORDERS.test(text) && !mentionsRefund(text)) return { question: "我的订单有哪些", unconfirmed: null };
   const order = theOneOrder(text, orders);
-  if (!order) return null;
-  if (refundRequested(text)) return { question: `${order.id} ${text}`, unconfirmed: order.id };
+  const several = orders.filter((o) => o.items.some((name) => namesItem(text, name)));
+  if (!order && several.length >= 2 && several.length <= 3 && TRACKING.test(text) && !mentionsRefund(text)) return { question: `${several.map((o) => o.id).join(" ")} 到哪了`, unconfirmed: null };
+  if (!order) {
+    // "豪华会员刚扣的费我要退": several fit, so which one is asked, and nothing can be filed without a number.
+    return DEMANDS.test(text) && bestNamed(text, orders, (o) => o.items).length > 1 ? { question: `我要退款 ${text}`, unconfirmed: null } : null;
+  }
+  if (refundRequested(text) || (mentionsRefund(text) && (OWN_ITEM.test(text) || aboutMyOrder(text)))) return { question: `${order.id} ${text}`, unconfirmed: order.id };
   if (aboutMyOrder(text)) return null; // the offline model's own path follows up on one match
-  // "把我的年卡退了吧": no number, so it is answered about that order and offered, not filed.
-  if (/退/.test(text) && OWN_ITEM.test(text) && !mentionsRefund(text)) return { question: `${order.id} 退款`, unconfirmed: order.id };
-  // "数字专辑买了能退吗" asks about the policy; "那个专辑能退吗", about the one they bought.
-  if ((mentionsRefund(text) && OWN_ITEM.test(text)) || M._RUSH.test(text)) return { question: `${order.id} ${text}`, unconfirmed: order.id };
-  if (TRACKING.test(text)) return { question: `${order.id} 到哪了`, unconfirmed: null };
+  if (M._RUSH.test(text)) return { question: `${order.id} ${text}`, unconfirmed: order.id };
+  if (TRACKING.test(text) || wantsTracking(text)) return { question: `${order.id} 到哪了`, unconfirmed: null };
   if (ORDER_NUMBER.test(text) || STATUS.test(text)) return { question: `${order.id} 查一下`, unconfirmed: null };
   return null;
 }
 
 /** What the planner reads: typos fixed, an ordinal after a listing resolved. */
-export function understood(question: string, history: Turn[]): { text: string; exclude: Set<string> } {
+export function understood(question: string, history: Turn[], previous: string | null = null): { text: string; exclude: Set<string> } {
   const fixed = fixTypos(question);
   const text = resolveOrdinal(fixed, history) ?? fixed;
-  return { text, exclude: T.OTHER_ORDER.test(text) ? earlierOrders(history) : new Set() };
+  return { text, exclude: T.OTHER_ORDER.test(text) ? new Set([...earlierOrders(history), ...upperIds(previous ?? "")]) : new Set() };
 }

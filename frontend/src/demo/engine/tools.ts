@@ -5,7 +5,8 @@
  * Nothing leaves the page: a reload starts again from the seed data.
  */
 import { pack, T, TOOLS, type SeedOrder, type TenantConfig, type TenantTool } from "./pack";
-import { search } from "./retrieval";
+import { conditionalRefund } from "./reading";
+import { clauseHits, search } from "./retrieval";
 import { classifyReply, findAll, fixTypos, money, normalizeWidth, refundBareDecline, refundDeclined, refundRequested, refundWithdrawRequested, statedRefundAmount, withdrawConfirmed } from "./text";
 
 const TX = pack.texts.tools;
@@ -246,15 +247,17 @@ function searchKnowledge(_world: World, ctx: ToolContext, args: Record<string, u
   const topK = Math.max(1, Math.min(Number(args.top_k ?? pack.settings.retrieval_top_k), 8));
   const scope = new Set(isStaff(ctx) ? ["public", "internal"] : ["public"]);
   let hits = search(ctx.tenant, query, scope, topK);
-  // A run-on question fails the gate as a whole when only one part of it is in the documents: each part gets its own gate.
-  if (!hits.length) {
-    const seen = new Set<number>();
-    hits = query.split(/[，,。！!？?；;~～\s]+/).filter((c) => c.length >= 4).flatMap((clause, _, all) => (all.length > 1 ? search(ctx.tenant, clause, scope, 2) : []))
-      .filter((hit) => !seen.has(hit.chunk.id) && Boolean(seen.add(hit.chunk.id))).slice(0, topK);
-  }
   if (hits.length) {
     const floor = 0.5 * Math.max(...hits.map((h) => h.relevance));
     hits = hits.filter((h) => h.relevance >= floor);
+  }
+  // A run-on question is several questions: each part gets its own search and its own gate.
+  const seen = new Set(hits.map((h) => h.chunk.id));
+  for (const hit of clauseHits(ctx.tenant, query, scope)) {
+    if (!seen.has(hit.chunk.id) && hits.length < 8) {
+      seen.add(hit.chunk.id);
+      hits.push(hit);
+    }
   }
   const results = hits.map((hit) => {
     const evidence = addEvidence(ctx, "kb", hit.chunk.doc, hit.chunk.text, { heading: hit.chunk.heading, chunk_id: hit.chunk.id, document_id: hit.chunk.doc_id, page: null, relevance: Math.round(hit.relevance * 1000) / 1000 });
@@ -364,13 +367,14 @@ function validated(world: World, ctx: ToolContext, args: Record<string, unknown>
 
 function refundPrecheck(world: World, ctx: ToolContext, args: Record<string, unknown>): Record<string, unknown> {
   // Whatever the planner or the model makes of it, a question or a "先别退款" does not move money.
-  if (ctx.approvalId === null && refundDeclined(ctx.customerText)) {
+  if (ctx.approvalId === null && (refundDeclined(ctx.customerText) || conditionalRefund(ctx.customerText))) {
     throw new ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。请回答顾客的问题；顾客明确要求退款时再申请。");
   }
   const { order, amount } = validated(world, ctx, args);
   if (ctx.approvalId === null && ctx.unconfirmedOrder && order.id === ctx.unconfirmedOrder.toUpperCase()) {
     const names = order.items.map((i) => i.name).join("、");
-    const message = `需要为订单 ${order.id}（${names}）申请退款吗？回复“${order.id} 申请退款”即可提交`;
+    const note = String(getOrder(world, ctx, { order_id: order.id }).refund_note ?? "");
+    const message = `需要为订单 ${order.id}（${names}）申请退款吗？${note ? `${note}。` : ""}回复“是的”或“${order.id} 申请退款”即可提交`;
     throw new RefundWaiting(message, { error: message, confirm_order: order.id });
   }
   const oneOrder = new Set(findAll(T.ORDER_ID_RE, normalizeWidth(ctx.customerText)).map((m) => m[0].toUpperCase())).size <= 1;
@@ -443,7 +447,7 @@ function requestRefund(world: World, ctx: ToolContext, args: Record<string, unkn
   world.refunds.push(refund);
   order.status = "refunding";
   return { status, refund_status: "processing", refund_id: refund.id, order_id: order.id, amount,
-    message: `${SIMULATED}退款单 #${refund.id} 已受理，退款金额 ¥${money(amount)} 将按原支付方式退回。` };
+    message: `${SIMULATED}订单 ${order.id} 的退款单 #${refund.id} 已受理，退款金额 ¥${money(amount)} 将按原支付方式退回。` };
 }
 
 function withdrawRefund(world: World, ctx: ToolContext, args: Record<string, unknown>): Record<string, unknown> {
