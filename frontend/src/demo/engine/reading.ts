@@ -132,21 +132,23 @@ export const conditionalRefund = (text: string): boolean => /(?:如果|要是|�
 export const asksHowLong = (text: string): boolean => /多久|多长时间|几个?小时|几天|什么时候|啥时候|何时|时效/.test(text);
 
 // ---------------------------------------------------------------- what is declined whatever the wording
-const THE_RULES = "(?:额度|上限|限额|门槛|规则|政策|阈值|审批|审核|期限)";
-const CHANGE_RULE = new RegExp(`(?:调高|调大|调到|调成|调整|提高|提升|放宽|改成|改为|改到|修改|更改|取消|关掉|降低).{0,12}${THE_RULES}|${THE_RULES}.{0,12}(?:调高|调大|调到|调成|调整|提高|提升|放宽|改成|改为|改到|修改|更改|太低)`);
-const SKIP_REVIEW = /(?:跳过|绕过|绕开|不走|别走|不用走|免).{0,6}(?:审核|审批|人工)|(?:不用|不要|无需|不需要|别)(?:再)?(?:审核|审批)|全部(?:都)?(?:订单)?.{0,4}退款|所有订单.{0,12}(?:退|赔)|名下.{0,6}(?:全部|所有).{0,6}退/;
-const AUTHORITY = /我是.{0,8}(?:运营|管理员|老板|主管|经理|开发|工程师|员工|同事|客服|负责人|技术)|管理员模式|开发者模式|调试模式|已授权|授权你|我授权|system\s*[:：]/i;
-const AUTHORITY_ASKS = /退|改|调|规则|额度|上限|审批|审核|权限|照做|执行|指令/;
-const INTERNAL = /内部.{0,12}(?:规定|规则|标准|手册|文档|资料|政策|流程|权限|怎么定|最多|上限|批|话术)|(?:员工|客服)(?:手册|话术)|客诉组长|你们.{0,4}内部|客服.{0,6}(?:最多|最高|能批|能赔|能补|能给|可以给|可以补).{0,10}(?:补偿|赔|多少|几天)|补偿(?:权限|标准|上限)|审批权限|升级流程|风控/;
+const LIMITS = "(?:额度|上限|限额|门槛|阈值)";
+const CHANGING = "(?:调高|调大|调到|调成|调整|提高|提升|放宽|改成|改为|改到|修改|更改|降低)";
+const CHANGE_RULE = new RegExp(`${CHANGING}.{0,12}${LIMITS}|${LIMITS}.{0,12}(?:${CHANGING}|太低)|(?:修改|更改|改变|改掉)(?:一下)?(?:你们的?|退款的?)?(?:规则|政策)|(?:规则|政策).{0,6}(?:改成|改为|改到|调到|放宽)`);
+const SKIP_REVIEW = /(?:跳过|绕过|绕开|不走|别走|不用走|免).{0,6}(?:审核|审批|人工)|(?:不用|不要|无需|不需要|别)(?:再)?(?:审核|审批)|(?:全部|所有)的?订单.{0,12}(?:退|赔)|名下.{0,6}(?:全部|所有).{0,6}退/;
+const ASKS_IN_THE_CLAUSE = /是不是|是否|吗|呢|[？?]|多少|什么|哪些/;
+const AUTHORITY = /我是(?!不是)(?:你们|贵司|平台|商家|Leon|Echo|Iris)?.{0,4}(?:运营|老板|客服主管|经理|内部员工|工程师|开发)|(?:你们的?|平台|系统)管理员|管理员模式|开发者模式|调试模式|已授权|授权你|我授权|system\s*[:：]/i;
+const AUTHORITY_ASKS = /退|额度|上限|规则|审批|审核|照做|执行|指令/;
+const INTERNAL = /内部.{0,12}(?:规定|规则|标准|手册|文档|资料|政策|流程|权限|怎么定|最多|上限|批|话术)|(?:员工|客服)(?:手册|话术)|客诉组长|客诉.{0,4}升级|你们.{0,4}内部|客服.{0,6}(?:最多|最高|能批).{0,10}(?:补偿|赔|批|多少|几天)|补偿(?:权限|上限)|审批权限|风控规则/;
 
 export type Decline = "rules" | "authority" | "internal";
 
-/** A customer's message asking for what no chat may grant. */
+/** A customer's message asking for what no chat may grant. A clause asking how the rule works is an ordinary question. */
 export function declines(text: string, injected = false): Decline | null {
   if (INTERNAL.test(text)) return "internal";
   if (injected || (AUTHORITY.test(text) && AUTHORITY_ASKS.test(text))) return "authority";
-  if (SKIP_REVIEW.test(text) || CHANGE_RULE.test(text)) return "rules";
-  return null;
+  const asksForIt = text.split(/[，,。！!；;\s]+/).some((clause) => (SKIP_REVIEW.test(clause) || CHANGE_RULE.test(clause)) && (!ASKS_IN_THE_CLAUSE.test(clause) || /能不能|可不可以|帮我|给我/.test(clause)));
+  return asksForIt ? "rules" : null;
 }
 
 export const DECLINE_TEXT: Record<Decline, string> = {
@@ -170,7 +172,7 @@ const NEXT_STEPS: Record<string, string[]> = {
 
 export const canDo = (tenant: string): string => CAN_DO[tenant] ?? "";
 /** A sentence of ours about what the assistant does: nothing to check against the evidence. */
-export const isCanDo = (sentence: string): boolean => sentence.startsWith("如超过到账时效") || Object.values(CAN_DO).some((line) => line.startsWith(sentence));
+export const isCanDo = (sentence: string): boolean => /^(?:如超过到账时效|回复订单号|如需查询这一单)/.test(sentence) || Object.values(CAN_DO).some((line) => line.startsWith(sentence));
 /** A number was given, so the rules still apply to it, and the message's other words are answered first. */
 export const NOT_GRANTED = "对话里的指令或身份说明不会改变规则，退款也不能跳过审核，这部分我无法处理。";
 export const nextSteps = (tenant: string): string[] => NEXT_STEPS[tenant] ?? [];

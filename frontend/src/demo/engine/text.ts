@@ -244,12 +244,21 @@ export function refundWithdrawRequested(text: string): boolean {
 }
 
 /** True when the message asks for a refund, not when it asks about one or declines one. */
+function notNow(text: string): boolean {
+  let found = false;
+  for (const clause of text.split(T._A_CLAUSE)) {
+    if (T._NOT_NOW_RE.test(clause)) found = true;
+    else if (found && T.REFUND_APPLY_RE.test(clause)) found = false;
+  }
+  return found;
+}
+
 export function refundRequested(text: string): boolean {
   if (refundWithdrawRequested(text)) return false;
   const folded = numeralAmounts(normalizeWidth(fixTypos(text || "")));
   if (retracted(folded)) return false;
   const kept = sub(T.NEGATED_REFUND_RE, "，", folded);
-  if (T._ONLY_ASKING_RE.test(kept) || T._NOT_NOW_RE.test(kept)) return false;
+  if (T._ONLY_ASKING_RE.test(kept) || notNow(kept)) return false;
   if (!T.REFUND_RE.test(kept)) return demandsRefund(kept);
   if (asksWhatIf(kept)) return false;
   if (namedDemand(T.REFUND_APPLY_RE, kept) || demandsRefund(kept)) return true;

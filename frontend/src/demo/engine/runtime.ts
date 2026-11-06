@@ -3,7 +3,7 @@
  * stream, so the console's citations, trace and approval screens work unchanged.
  */
 import type { AgentEvent, EvidenceItem, SpanRow, Verification } from "../../types";
-import { INJECTION, PII, T, W, pack, type TenantConfig } from "./pack";
+import { INJECTION, M, PII, T, W, pack, type TenantConfig } from "./pack";
 import { compose, mentionsRefund, nextCall, readsAsOrder, refundRequested, theOneOrder, understood, type Results, type Turn } from "./planner";
 import { DECLINE_TEXT, NOT_GRANTED, canDo, declines, isCanDo, nextSteps } from "./reading";
 import { search } from "./retrieval";
@@ -186,7 +186,10 @@ function carryOrderLoosely(text: string, previous: string | null): [string, stri
 
 // What a customer's turn refers to, past the offline model's rules.
 const REFERS = /它|这单|这一单|这个订单|这笔|那单|那一单|那个订单|刚才那|上面那|该订单/;
-const BARE_DEMAND = /^(?:那|那就|就|好|好吧|行|行吧|嗯|对)?[，, ]*(?:帮我|给我|直接|麻烦)?(?:退|退了|退掉|退款|退钱)(?:吧|了吧|了|呗)?(?:谢谢)?[。！!~～]*$/;
+// "退款" alone names a subject; "退吧", "帮我退款" and "退款吧" ask for it.
+const BARE_DEMAND = /^(?:那|那就|就|好|好吧|行|行吧|嗯|对)?[，, ]*(?:(?:帮我|给我|直接|麻烦)(?:退款|退钱)|(?:帮我|给我|直接|麻烦)?(?:退了?|退掉)|(?:退款|退钱)(?:吧|呗))(?:吧|了吧|了|呗)?(?:谢谢)?[。！!~～]*$/;
+const YES_TO_AN_OFFER = /^(?:(?:嗯+|恩|ok|okay|yes|y)|(?:对|嗯|是|好|行)[^，。？?]{0,8}[，, ]*(?:就)?退(?:吧|了吧)?)[。！!~～]*$/i;
+const ACK_THEN_MORE = /^(?:好的|好|嗯+|行)[，, ]+(?=\S)/;
 const CORRECTION = /^(?:不对|不是|错了|搞错了?|说错了?|弄错了?|我说的是|我是说|我问的是|应该是)[，,。 ]*/;
 const STATUS_AGAIN = /^(?:那|现在|目前)?(?:怎么样了?|什么情况|啥情况|进度|进展|状态|什么状态|啥状态|到哪一步了?|审核了吗|审核通过了吗|通过了吗|有结果了吗|结果呢|处理了吗|处理得怎么样了?)[吗呢呀啊了？?。！!~～]*$/;
 const DROPS_IT = /^(?:算了|不对|不用了|那)?[，, ]*(?:(?:不退了|不退款了|不要退了|不想退了|先不退了?|别退了|(?:帮我|给我)?撤回(?:吧|一下)?|取消退款|取消申请)[，, ]*)+[吧了。！!~～]*$/;
@@ -385,10 +388,10 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
 
   // A yes or a no answers the last question, and files only what that question offered.
   const reply = role === "customer" && !choice && turnText.trim().length <= 8 ? classifyReply(turnText) : null;
-  const saysYes = reply === "yes" || (refundOffer !== null && BARE_DEMAND.test(turnText.trim()));
+  const saysYes = reply === "yes" || (refundOffer !== null && (BARE_DEMAND.test(turnText.trim()) || YES_TO_AN_OFFER.test(turnText.trim())));
   if (reply === "no" && refundOffer) return finish(`好的，没有为订单 ${refundOffer} 提交退款申请。`, null, false);
   if (reply === "no" && offer) return finish(`好的，不撤回订单 ${String(offer.order_id)} 的退款申请。`, null, false);
-  if (!refundOffer && !offer && (reply === "yes" || (reply === "no" && ONLY_NO.test(turnText.trim())))) return finish(reply === "yes" ? "好的。还有要查的，直接告诉我。" : "好的，有需要再告诉我。", null, false);
+  if (!refundOffer && !offer && !turnText.includes("退") && (reply === "yes" || (reply === "no" && ONLY_NO.test(turnText.trim())))) return finish(reply === "yes" ? "好的。还有要查的，直接告诉我。" : "好的，有需要再告诉我。", null, false);
 
   // Multi-turn: an explicit follow-up becomes a standalone question.
   let question = choice ? choice.question : turnText;
@@ -400,9 +403,15 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
   if (!choice && role === "customer") {
     const correction = previous ? CORRECTION.exec(turnText.trim()) : null;
     const rest = correction ? turnText.trim().slice(correction[0].length) : "";
-    const corrected = correction ? findAll(T.ORDER_ID_RE, rest)[0]?.[0].toUpperCase() ?? theOneOrder(rest, own())?.id : undefined;
+    // Only a correction that says nothing else: "不对 SO… 帮我退款" is a new request, "不是说七天无理由吗" a new question.
+    const onlyCorrects = correction && !M._QUESTION_MARK.test(rest) && !mentionsRefund(rest) && sub(T.ORDER_ID_RE, "", rest).length <= 10;
+    const corrected = onlyCorrects ? findAll(T.ORDER_ID_RE, rest)[0]?.[0].toUpperCase() ?? theOneOrder(rest, own())?.id : undefined;
+    const ack = ACK_THEN_MORE.exec(turnText.trim());
     const lastReply = [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
-    if (saysYes && refundOffer) read = { question: `${refundOffer} 申请退款`, unconfirmed: null, method: "yes_to_offer" };
+    if (saysYes && refundOffer) {
+      read = { question: `${refundOffer} 申请退款`, unconfirmed: null, method: "yes_to_offer" };
+      ctx.customerText = read.question;
+    }
     else if (saysYes && offer) read = { question: `确认撤回 ${String(offer.order_id)}`, unconfirmed: null, method: "yes_to_offer" };
     else if (corrected) {
       // The corrected order is read, not filed: what was asked of the wrong one has not been asked of this one yet.
@@ -417,8 +426,16 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     } else if (talkedAbout && !hasNumber && !T.OTHER_ORDER.test(turnText) && BARE_DEMAND.test(turnText.trim())) {
       // A bare "退了吧" right after an order files it; with other turns in between it is only offered.
       read = { question: `${talkedAbout} 申请退款`, unconfirmed: adjacent ? null : talkedAbout, method: "order_context" };
+      if (adjacent) ctx.customerText = read.question;
     } else if (talkedAbout && !hasNumber && DROPS_IT.test(turnText.trim())) {
-      read = { question: `${talkedAbout} ${turnText}`, unconfirmed: null, method: "order_context" };
+      const waiting = world.approvals.some((a) => a.tool === "request_refund" && a.status === "pending" && a.requester === email && a.args.order_id === talkedAbout);
+      read = { question: `${talkedAbout} ${waiting ? "撤回退款申请" : turnText}`, unconfirmed: null, method: "order_context" };
+      if (waiting) ctx.customerText = read.question;
+    } else if (adjacent && !hasNumber && reply === "yes" && turnText.includes("退")) {
+      // "可以退" after an order: about that order, and offered.
+      read = { question: `${adjacent} 退款`, unconfirmed: adjacent, method: "order_context" };
+    } else if (ack && !hasNumber && !refundOffer && !mentionsRefund(turnText)) {
+      read = { question: turnText.trim().slice(ack[0].length), unconfirmed: null, method: "order_context" };
     } else if (talkedAbout && !hasNumber && STATUS_AGAIN.test(turnText.trim())) {
       read = { question: `${talkedAbout} ${mentionsRefund(previous ?? "") || world.approvals.some((a) => a.status === "pending" && a.args.order_id === talkedAbout) ? "退款进度" : "查一下"}`, unconfirmed: null, method: "order_context" };
     } else if (talkedAbout && !hasNumber && !T.OTHER_ORDER.test(turnText) && REFERS.test(turnText)) {

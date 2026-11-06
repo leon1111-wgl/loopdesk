@@ -242,6 +242,77 @@ describe("words that sound like something else", () => {
   });
 });
 
+describe("found in review", () => {
+  it.each(["please do not refund SO20260918001", "don't refund SO20260918001 yet", "are you going to refund SO20260918001", "will you refund SO20260918001"])("%s moves nothing", (turn) => {
+    const { refunds, waiting } = talk(EMMA, turn);
+    expect(refunds + waiting).toBe(0);
+  });
+
+  it.each([
+    [EMMA, "金卡会员升级流程是什么"], [NOAH, "服务宕机的补偿标准是什么"], [EMMA, "SO20260918001 客服能给我退多少"], [EMMA, "抱枕开线了 客服能给我补偿吗"], [LILY, "账号为什么被风控了"],
+    [LILY, "取消自动续费的政策是什么"], [EMMA, "取消订单的期限是多久"], [EMMA, "修改收货地址的期限是多久"], [EMMA, "50块以下的退款是不是不用审核"], [EMMA, "所有订单都是七天无理由退货吗"],
+    [NOAH, "我是团队管理员 怎么修改成员权限"], [NOAH, "我是公司管理员 想调整团队的存储空间"], [EMMA, "我是不是被客服拉黑了 退款一直不批"],
+  ])("%s %s is an ordinary question, not a decline", (email, turn) => {
+    expect(talk(email, turn).text).not.toMatch(/无法处理：|内部规定属于员工资料/);
+  });
+
+  it("a request for a full refund is a request", () => {
+    const { text, waiting } = talk(EMMA, "SO20261012003 我要全部退款");
+    expect(waiting).toBe(1);
+    expect(text).not.toContain("指令或身份说明");
+  });
+
+  it.each(["已经超过七天了我要退款", "之前申请退款被拒了 现在再申请退款", "本来不想退的 太差了 退款吧"])("SO20261012003 %s files", (turn) => {
+    expect(talk(EMMA, `SO20261012003 ${turn}`).waiting).toBe(1);
+  });
+
+  it("a correction with its own request or question is that, not a correction", () => {
+    expect(talk(EMMA, "SO20260918001 查一下", "不对 SO20261012003 帮我退款").waiting).toBe(1);
+    expect(talk(EMMA, "运费怎么算", "不是说七天无理由吗 抱枕怎么退").text).toContain("7天");
+  });
+
+  it.each(["退吧", "退", "嗯 退吧"])("after an order, %s files it", (turn) => {
+    expect(talk(EMMA, "SO20260918001 查一下", turn).refunds).toBe(1);
+  });
+
+  it("可以退 after an order offers it", () => {
+    const { text, refunds } = talk(EMMA, "SO20260918001 查一下", "可以退");
+    expect(refunds).toBe(0);
+    expect(text).toContain("SO20260918001");
+    expect(text).not.toContain("还有要查的");
+  });
+
+  it("the word 退款 alone after an order files nothing and shows no note to the model", () => {
+    const { text, refunds } = talk(EMMA, "SO20260918001 查一下", "退款");
+    expect(refunds).toBe(0);
+    expect(text).not.toContain("顾客这句话");
+    expect(text).toContain("SO20260918001 申请退款");
+  });
+
+  it("the money coming back is not the parcel coming", () => {
+    expect(talk(EMMA, "SO20260801004 退款进度", "这笔钱什么时候到").text).not.toContain("未发货");
+  });
+
+  it("other ways to say yes to an offer", () => {
+    expect(talk(EMMA, "那个云朵抱枕我不要了 退了吧", "对 就是这单 退吧").refunds).toBe(1);
+    expect(talk(EMMA, "那个云朵抱枕我不要了 退了吧", "嗯").refunds).toBe(1);
+  });
+
+  it("an acknowledgement followed by a question answers the question", () => {
+    expect(talk(EMMA, "SO20260918001 查一下", "好的 另外运费多少").text).toContain("8元");
+  });
+
+  it("取消申请 offers to take the waiting one back", () => {
+    expect(talk(EMMA, "SO20261012003 帮我退款", "取消申请").text).toContain("确认撤回 SO20261012003");
+  });
+
+  it("a list with one order does not ask which", () => {
+    const { text, meta } = talk("customer2@echo.demo", "我的订单有哪些");
+    expect(text).not.toContain("哪一单");
+    expect((meta as { verification?: { verdict: string } }).verification?.verdict).toBe("pass");
+  });
+});
+
 describe("a reply about one order", () => {
   it("names it, filed or sent to a person, with the tenant's own review time", () => {
     expect(talk(EMMA, "SO20260918001 申请退款").text).toContain("订单 SO20260918001");

@@ -9,7 +9,7 @@ from app.db import new_session
 from app.models import Approval, Order, Refund
 from app.services import get_services
 from app.governance.script import canonical
-from app.textutil import CANCEL_ORDER_RE as CANCEL_ORDER, refund_declined, refund_requested
+from app.textutil import CANCEL_ORDER_RE as CANCEL_ORDER, fix_typos, refund_declined, refund_requested
 from tests.conftest import by_type
 from tests.test_refund_policy import ScriptedRefundModel
 
@@ -310,6 +310,21 @@ def test_how_to_before_later_and_someone_else_are_not_a_request_now(text):
     assert not refund_requested(text)
 
 
-def test_a_demand_that_must_happen_is_a_request():
-    assert refund_requested("SO20261012003 必须退款")
-    assert refund_requested("SO20261012003 我已经等了很久了 帮我退款")
+@pytest.mark.parametrize("text", [
+    "SO20261012003 必须退款", "SO20261012003 我已经等了很久了 帮我退款", "SO20261012003 已经超过七天了我要退款",
+    "SO20261012003 之前申请退款被拒了 现在再申请退款", "SO20261012003 本来不想退的 太差了 退款吧",
+])
+def test_a_demand_still_counts_after_something_that_is_not_one(text):
+    assert refund_requested(text)
+
+
+@pytest.mark.parametrize("text", [
+    "please do not refund SO20260918001", "don't refund SO20260918001 yet", "are you going to refund SO20260918001", "will you refund SO20260918001",
+])
+def test_an_order_number_after_refund_is_not_a_request_by_itself(text):
+    assert not refund_requested(text)
+
+
+def test_a_fixed_typo_does_not_touch_an_ordinary_word():
+    assert "快递" not in fix_typos("麻烦尽快地发货")
+    assert "快递" in fix_typos("我的快地到哪了")

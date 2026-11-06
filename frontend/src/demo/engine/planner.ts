@@ -50,7 +50,8 @@ const ASKS_SOMETHING = /吗|呢|多少|多久|几天|怎么|如何|能不能|可
 const MY_POINTS = /积分(?:还有|还剩|余额|一共|有)多少|有多少积分|我的积分|查积分/;
 const ARRIVAL = /(?:什么时候|多久|几天|啥时候|何时)(?:能|才能)?(?:到|送到|收到)(?!账)/;
 const WHO_SIGNED = /谁签|谁收|签收了吗|签收没|有人签|有人收/;
-const wantsTracking = (text: string) => M._SHIPMENT.test(text) || ARRIVAL.test(text) || WHO_SIGNED.test(text);
+// The money coming back ("这笔钱什么时候到") is not the parcel coming.
+const wantsTracking = (text: string) => !/钱|款/.test(text) && (M._SHIPMENT.test(text) || ARRIVAL.test(text) || WHO_SIGNED.test(text));
 const OUTAGE = /彻底|完全|全部|整个/;
 
 /** "SO… 到哪了 能开发票吗": a question about the order, and one that is not about it. */
@@ -446,7 +447,7 @@ function mainCall(text: string, called: string[], results: Results, available: S
       if ((M._ETA.test(text) || ARRIVAL.test(text)) && shipment.shipped && !shipment.delivered && can("search_knowledge")) return ["search_knowledge", { query: "发货后 预计 送达" }];
       return null;
     }
-    if (M._SHIPMENT.test(text) && can("track_shipment")) return ["track_shipment", { order_id: orderId }];
+    if (wantsTracking(text) && can("track_shipment")) return ["track_shipment", { order_id: orderId }];
     if (M._RUSH.test(text) && can("search_knowledge")) return ["search_knowledge", { query: "发货时效 付款后 小时" }];
     const rest = orderQuestion(text);
     if (rest && can("search_knowledge")) return ["search_knowledge", { query: rest }];
@@ -505,6 +506,7 @@ function askWhich(text: string, listing: Output): string {
   if (mentionsRefund(text) && !asksRefundStatus(text)) return `您账号下最近的订单有：${lines}。请问要申请退款的是哪一单？请回复“订单号 申请退款”，例如“${orders[0].order_id} 申请退款”。`;
   if (asksRefundStatus(text) && !orders.some((o) => o.status === "refunding")) return `没有查到您账号下正在处理中的退款。最近的订单有：${lines}。如果问的是其中一单的退款，回复订单号即可帮您查。`;
   if (M._FAULTY.test(text)) return `您账号下最近的订单有：${lines}。请问出问题的是哪一单？回复订单号即可帮您处理。`;
+  if (orders.length === 1) return `您账号下最近的订单有：${lines}。如需查询这一单，回复订单号即可。`;
   return `您账号下最近的订单有：${lines}。请问要查询的是哪一单？回复订单号即可。`;
 }
 
@@ -640,6 +642,8 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   const refundFailed = Boolean(refund) && (Boolean(refund!.error) || refund!.status === "rejected" || refund!.refund_status === "pending");
   if (refund) {
     if (refund.awaiting_review || refund.confirm_order) parts.push(`${refund.error}。`);
+    // The tool read the customer's own words as not a request: never its note to the model, only the offer.
+    else if (String(refund.error ?? "").startsWith("顾客这句话") && orders.length === 1) parts.push(`如需现在申请退款，回复“${orders[0].order_id} 申请退款”即可，我马上为您提交。`);
     else if (refund.error) parts.push(`退款申请未能提交：${refund.error}。`);
     else if (refund.status === "rejected") {
       parts.push(refund.message ?? "");
@@ -650,7 +654,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   const ticket = last("create_ticket");
   const knowledge = last("search_knowledge");
   const selfDamage = M._SELF_DAMAGE.test(text);
-  const eta = shipments.length > 0 && (M._ETA.test(text) || ARRIVAL.test(text));
+  const eta = shipments.length > 0 && (M._ETA.test(text) || wantsTracking(text) && ARRIVAL.test(text));
   const rush = orders.length > 0 && !shipments.length && M._RUSH.test(text);
   const inquiry = orders.length === 1 && !refund && !orders[0].error && orders[0].refundable && mentionsRefund(text) && !refundRequested(text);
   if (knowledge) {
