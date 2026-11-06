@@ -188,7 +188,7 @@ function carryOrderLoosely(text: string, previous: string | null): [string, stri
 const REFERS = /它|这单|这一单|这个订单|这笔|那单|那一单|那个订单|刚才那|上面那|该订单/;
 // "退款" alone names a subject; "退吧", "帮我退款" and "退款吧" ask for it.
 const BARE_DEMAND = /^(?:那|那就|就|好|好吧|行|行吧|嗯|对)?[，, ]*(?:(?:帮我|给我|直接|麻烦)(?:退款|退钱)|(?:帮我|给我|直接|麻烦)?(?:退了?|退掉)|(?:退款|退钱)(?:吧|呗))(?:吧|了吧|了|呗)?(?:谢谢)?[。！!~～]*$/;
-const YES_TO_AN_OFFER = /^(?:(?:嗯+|恩|ok|okay|yes|y)|(?:对|嗯|是|好|行)[^，。？?]{0,8}[，, ]*(?:就)?退(?:吧|了吧)?)[。！!~～]*$/i;
+const YES_TO_AN_OFFER = /^(?:嗯+|恩|ok|okay|yes|y|(?:对|嗯|是|好|行)(?:的|吧)?[，, ]*(?:就是这单)?[，, ]*(?:就)?退(?:吧|了吧)?)[。！!~～]*$/i;
 const ACK_THEN_MORE = /^(?:好的|好|嗯+|行)[，, ]+(?=\S)/;
 const CORRECTION = /^(?:不对|不是|错了|搞错了?|说错了?|弄错了?|我说的是|我是说|我问的是|应该是)[，,。 ]*/;
 const STATUS_AGAIN = /^(?:那|现在|目前)?(?:怎么样了?|什么情况|啥情况|进度|进展|状态|什么状态|啥状态|到哪一步了?|审核了吗|审核通过了吗|通过了吗|有结果了吗|结果呢|处理了吗|处理得怎么样了?)[吗呢呀啊了？?。！!~～]*$/;
@@ -391,7 +391,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
   if (decline && !preface) return finish(DECLINE_TEXT[decline], null, false);
 
   // A yes or a no answers the last question, and files only what that question offered.
-  const reply = role === "customer" && !choice && turnText.trim().length <= 8 ? classifyReply(turnText) : null;
+  const reply = role === "customer" && !choice && turnText.trim().length <= 8 && !/[？?]/.test(turnText) ? classifyReply(turnText) : null;
   const saysYes = reply === "yes" || (refundOffer !== null && (BARE_DEMAND.test(turnText.trim()) || YES_TO_AN_OFFER.test(turnText.trim())));
   if (reply === "no" && refundOffer) return finish(`好的，没有为订单 ${refundOffer} 提交退款申请。`, null, false);
   if (reply === "no" && offer) return finish(`好的，不撤回订单 ${String(offer.order_id)} 的退款申请。`, null, false);
@@ -427,6 +427,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     } else if (BARE_NUMBER.test(turnText) && lastReply.includes("要申请退款的是哪一单")) {
       const id = findAll(T.ORDER_ID_RE, turnText)[0][0].toUpperCase();
       read = { question: `${id} ${refundRequested(previous ?? "") ? "申请退款" : "退款"}`, unconfirmed: null, method: "order_context" };
+      ctx.customerText = read.question;
     } else if (!hasNumber && holdsOff(turnText.trim())) {
       // Say nothing was filed only when nothing was: a request or a refund already in this tab is answered about that one.
       if (refundOffer) return finish(`好的，没有为订单 ${refundOffer} 提交退款申请。`, null, false);

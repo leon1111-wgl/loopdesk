@@ -253,15 +253,19 @@ NEGATED_REFUND_RE = re.compile(
 # A hedge is not a decision either (N-128): "我可能会退款 看情况", "也许要退 还在考虑".
 _ONLY_ASKING_RE = re.compile(r"只是问问|就问问|问问而已|随便问问|先问问|假如|假设|万一|just\s+asking|just\s+wondering|what\s+if"
                              r"|(?:可能|也许|或许|说不定)(?:会|要|得|想)?(?:申请)?退|看情况|还在考虑|考虑一下|考虑考虑|还在犹豫"
-                             r"|还没想好|没想好|考虑|打算|有点想|再想想|还没决定|没决定|犹豫|maybe|might\s+(?:want|ask|request)", re.IGNORECASE)
+                             r"|还没想好|没想好|考虑|打算|有点想|再想想|还没决定|没决定|犹豫|大概率|八成|多半|估计|恐怕|怕是|兴许|搞不好|应该会|准备(?:申请)?退|maybe|might\s+(?:want|ask|request)", re.IGNORECASE)
 # Not a request now, whatever words it uses: how to file one, one filed before or for later, someone else's, one that nearly
 # happened, or a threat ("再不发货我就退款").
 _NOT_NOW_RE = re.compile(
     r"(?:怎么|怎样|如何|哪里|哪儿|在哪|去哪)(?:才能|能|可以|去)?(?:申请)?退"
     r"|(?:昨天|前天|上周|上个月|之前|早就|刚才|刚刚|已经|已)(?:就|也)?(?:已经)?(?:申请|提交|提)(?:了|过)?退"
     r"|(?:昨天|前天|上周|上个月|之前|早就|刚才|刚刚)[^，,。！!？?；;\s]{0,14}(?<!帮我)(?<!给我)(?<!我要)(?<!请)(?:申请|提交)(?:了|过)?退"
-    r"|我就(?:申请)?退"
-    r"|(?<![A-Za-z])(?:tomorrow|next\s+(?:week|month)|later|by\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day)(?![A-Za-z])"
+    r"|我就要?(?:申请)?退"
+    r"|(?:前几天|[一二三四五六七八九十两\d]+天前|今天早上|上礼拜|上星期|[一二三四五六七八九十两\d]+周前|昨晚|刚)(?:就|也)?(?:申请|提交)(?:了|过)?退"
+    r"|^申请退(?:款|货)了|退款的(?:钱|那个)"
+    r"|(?:周末|下次|等下|一会儿?|稍后|晚上|明早|过一阵|下个星期|下礼拜)(?:再|才)?[^，,。！!？?；;\s]{0,4}退"
+    r"|等[^，,。！!？?；;\s]{0,10}(?:结束|之后|以后|回来|到了|到货|收到)[^，,。！!？?；;\s]{0,6}退"
+    r"|(?<!其)(?:他|她|我?(?:哥|姐|弟|妹|儿子|女儿|表哥|表姐|表弟|表妹|对象|爱人|媳妇))[^，,。！!？?；;\s]{0,2}(?:想|要)[^，,。！!？?；;\s]{0,2}退"
     r"|^我申请(?:(?:了|过)退|退(?:款|货)了)"
     r"|(?:朋友|老婆|老公|同事|妈|爸|室友|家人|别人|他们|有人|客服|同学|邻居|闺蜜)[^，,。！!？?；;\s]{0,4}(?:要|让我|叫我|想|说|也)[^，,。！!？?；;\s]{0,4}退"
     r"|(?:差点|差一点|险些|曾经|本来|原本)[^，,。！!？?；;\s]{0,6}退"
@@ -270,6 +274,7 @@ _NOT_NOW_RE = re.compile(
     r"|^(?:等会|等等|以后|回头|之后|先)?再说吧?$"
     r"|再不[^，,。！!？?；;\s]{0,8}(?:我就|我要|就要)退|再(?:这样|那样|敢|乱)[^。！!？?；;]{0,16}退|超过[^，,。！!？?；;\s]{0,12}(?:我就|就要)退")
 _A_CLAUSE = re.compile(r"[，,。！!？?；;\s]+")
+_LATER_IN_ENGLISH_RE = re.compile(r"(?<![A-Za-z])(?:tomorrow|next\s+(?:week|month)|later|by\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day|once\s+it|after\s+i|when\s+it)(?![A-Za-z])", re.IGNORECASE)
 # What may stand in front of an order number that comes before the request. Anything else there may be what governs the
 # rest ("别给 SO… 退款", "测试一下：SO… 退款", "有人冒充我说 SO… 申请退款"), so it files nothing: the customer is offered the
 # refund instead, and says so plainly.
@@ -284,12 +289,13 @@ _A_REASON_RE = re.compile(
 _AN_ORDER_OR_ITEM_RE = re.compile(r"[^\s，,。！!？?；;]{0,12}(?:那单|这单|订单|单子|买的|下的|扣的)[^\s，,。！!？?；;]{0,8}|[\u4e00-\u9fff]{1,8}|[A-Za-z0-9 -]{1,16}")
 _NAMES_AN_ORDER_RE = re.compile(r"那单|这单|订单|单子|买的|下的|扣的")
 # Words that make a noun phrase of the above something else.
-_NOT_A_NAME_RE = re.compile(r"[的了是你他她它们要能吗呢吧啊呀哦嘛么在和与及或就都也还又很更最再才被让给跟对向从到而但却如若等这那哪谁啥咋怎几多少不没别帮想会可该应需得着过来去说问看听试写讲查]")
+_NOT_A_NAME_RE = re.compile(r"[的了是你他她它们玩一要能吗呢吧啊呀哦嘛么在和与及或就都也还又很更最再才被让给跟对向从到而但却如若等这那哪谁啥咋怎几多少不没别帮想会可该应需得着过来去说问看听试写讲查]")
 _LEANS_ON_NEXT_RE = re.compile(r"(?:说|讲|问|写|写着|提到|认为|觉得|以为|表示|通知|显示|别|不要|不用|不能|不想|不会|没|未|千万|勿|禁止|如果|要是|假如|万一|[:：“\"「『'《]"
                                r"|don'?t|do\s+not|not|never|if|said|say|says|told|asked|whether|about|to)\s*$", re.IGNORECASE)
 _NOT_ITS_OWN_RE = re.compile(r"测试|试一下|试试|演示|举例|举个例子|比如|例如|模拟|假装|假设|冒充|扮演|有人|别人|朋友|同事|老婆|老公|室友|同学|邻居|闺蜜|家人|这句话|这段话|什么意思|翻译|造句|例句")
 _ITS_OWN_RE = re.compile(r"帮我|给我|为我|我要|我想|就要|请|麻烦|给客户|给顾客|给他|给她|帮客户|帮顾客|please|pls|plz|i\s+want|i\s+need", re.IGNORECASE)
 _ASKS_AT_THE_END_RE = re.compile(r"(?:[？?]|哪些|什么|怎么|如何|步骤|手续|流程)[^，,。！!；;]{0,8}$")
+_ASKS_AFTER_RE = re.compile(r"[？?]|吗|呢|多久|多少|几天|怎么|什么|如何|对吧|模板|格式|不是认真", re.IGNORECASE)
 _NOT_ONLY_MARKS_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
 _REQUEST_WORD_RE = re.compile(r"(?:申请|要求|全额|全款|全部)?退|refund|money\s+back|return", re.IGNORECASE)
 
@@ -330,12 +336,15 @@ def _governed_from_outside(text: str) -> bool:
                 return True
     last = words[-1].start()
     before = text[number.end():last] if number.start() < last else text[:last]
-    return bool(_NOT_ONLY_MARKS_RE.search(before) and _LEANS_ON_NEXT_RE.search(before.rstrip()))
+    if _NOT_ONLY_MARKS_RE.search(before) and _LEANS_ON_NEXT_RE.search(before.rstrip()):
+        return True
+    # "SO… 申请退款 需要多久": the words after it ask, and nothing says it is for this customer.
+    return not _ITS_OWN_RE.search(text[:last]) and bool(_ASKS_AFTER_RE.search(_REQUEST_WORD_RE.sub("", text[last:], count=1)))
 
 
 def _not_now(text: str) -> bool:
     """Clause by clause: a demand after it still counts ("本来不想退的 太差了 退款吧", "之前被拒了 现在再申请退款")."""
-    found = False
+    found = bool(_LATER_IN_ENGLISH_RE.search(text))
     for clause in _A_CLAUSE.split(text):
         if _NOT_NOW_RE.search(clause):
             found = True
@@ -503,7 +512,8 @@ def _asks_about_refund(text: str) -> bool:
     return any(REFUND_INQUIRY_RE.search(clause) and not _other_question(clause) for clause in _CLAUSE_CUT_RE.split(text))
 
 
-_TAKEN_BACK = re.compile(r"不对|等下|等等|等一下|算了|换货吧|改成换货|还是换")
+_TAKEN_BACK = re.compile(r"不对|等下|等等|等一下|算了|换货吧|改成换货|还是换|开玩笑|逗你|当我没说|先别|不用了|(?:^|\s)错了(?:错了)?(?:\s|$)|(?:^|\s)不是?(?:\s|$)|(?:^|\s)撤回(?:\s|$)|(?:^|\s)取消(?:\s|$)"
+                         r"|(?<![A-Za-z])(?:just\s+kidding|jk|never\s*mind|forget\s+it|wait\s+no|nope|no|cancel\s+that|not\s+really)(?![A-Za-z])", re.IGNORECASE)
 
 
 def _retracted(text: str) -> bool:
@@ -552,6 +562,7 @@ WITHDRAW_REFUND_RE = re.compile(
     re.IGNORECASE)
 _NOT_WITHDRAW_RE = re.compile(
     rf"(?:不是要?|不要|别|不用|不想|没说要?|没有|没)(?:帮我|给我)?{_WITHDRAW_VERB}"
+    r"|的话|要多久|多长时间|什么影响|有什么|会有|重新申请吗"
     # a complaint or a question about a cancellation, not a request for one (reviewed after N-127)
     # (anchored to the withdrawal itself: "算了，撤回退款申请吧" is still one)
     rf"|(?:为什么|为啥|凭什么|谁)[^，,。！!？?]{{0,12}}{_WITHDRAW_VERB}|怎么回事|被{_WITHDRAW_VERB}"

@@ -9,7 +9,7 @@ from app.db import new_session
 from app.models import Approval, Order, Refund
 from app.services import get_services
 from app.governance.script import canonical
-from app.textutil import CANCEL_ORDER_RE as CANCEL_ORDER, fix_typos, refund_declined, refund_requested
+from app.textutil import CANCEL_ORDER_RE as CANCEL_ORDER, fix_typos, refund_declined, refund_requested, refund_withdraw_requested
 from tests.conftest import by_type
 from tests.test_refund_policy import ScriptedRefundModel
 
@@ -371,3 +371,22 @@ def test_a_request_word_first_is_not_a_request_by_itself(text):
 ])
 def test_these_are_requests(text):
     assert refund_requested(text)
+
+
+# The money review at 6bf3c49. The backend keeps a list of what is not a request, with a model above it; it stays a list, so these
+# are examples, not a proof. The static demo has no model and files only what fits a closed grammar (frontend reading.ts).
+@pytest.mark.parametrize("text", [
+    "SO20260918001 申请退款 开玩笑的", "SO20260918001 帮我退款 当我没说", "SO20260918001 我要退款 不 我不要", "帮我退款 SO20260918001 先别",
+    "I want a refund for SO20260918001 jk", "please refund SO20260918001, wait no", "SO20260918001 帮我退款 nope",
+    "SO20260918001 大概率要退款", "SO20260918001 八成要退款了", "SO20260918001 估计要退款", "SO20260918001 周末再帮我退款吧", "SO20260918001 下次帮我退款",
+    "SO20260918001 等活动结束我再申请退款", "SO20260918001 我准备申请退款", "Refund SO20260918001 next week", "Refund SO20260918001 by Friday", "Refund SO20260918001 once it arrives",
+    "SO20260918001 他想退款", "SO20260918001 我女儿想退款", "SO20260918001 前几天申请退款了", "SO20260918001 三天前申请退款了", "SO20260918001 刚申请退款了", "SO20260918001 申请退款了，等审核",
+    "SO20260918001 你们不处理我就要退款了", "SO20260918001 申请退款 需要多久", "SO20260918001 申请退款 对吗", "玩一下 SO20260918001 申请退款",
+])
+def test_the_money_review_found_these(text):
+    assert not refund_requested(text)
+
+
+@pytest.mark.parametrize("text", ["取消退款申请的话还能重新申请吗", "撤回退款申请要多久", "撤回退款申请会有什么影响"])
+def test_asking_about_taking_a_request_back_is_not_taking_it_back(text):
+    assert not refund_withdraw_requested(text)

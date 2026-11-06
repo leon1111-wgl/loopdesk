@@ -4,7 +4,7 @@
  * the answer from what they returned, so every fact in an answer comes from a tool or a quoted knowledge chunk.
  */
 import { M, T, pack, type TenantTool } from "./pack";
-import { asksHowLong, canDo, conditionalRefund } from "./reading";
+import { asksHowLong, canDo, conditionalRefund, plainRequest } from "./reading";
 import { answerSentences } from "./retrieval";
 import { tenantTools } from "./tools";
 import {
@@ -12,7 +12,20 @@ import {
   refundRequested as requestedByTheRules, refundWithdrawRequested, splitSentences, statedRefundAmount, sub, tokenSet, withdrawConfirmed,
 } from "./text";
 
-export const refundRequested = (text: string): boolean => requestedByTheRules(text) && !conditionalRefund(text);
+// The words of every item on sale here: what a clause may name and still be part of a plain request.
+const ITEM_WORDS = new Set(Object.values(pack.orders).flat().flatMap((order) => order.items.flatMap((item) => {
+  const han = item.name.replace(/[^一-鿿]/g, "");
+  return [...han].slice(0, -1).map((_, i) => han.slice(i, i + 2));
+})));
+
+/** What counts as a request on this page: the rules' reading, no condition, and nothing in the message that is not part of one. */
+export const isPlainRequest = (text: string): boolean => plainRequest(text, T.ORDER_ID_RE, ITEM_WORDS);
+
+// "SO… 我要退": a bare 退 the rules leave out, in a message that is nothing but a request for it.
+const SAYS_WHOSE = /(?:我要|帮我|给我|请|麻烦|要|想|赶紧|立刻|现在就)退/;
+
+export const refundRequested = (text: string): boolean => !conditionalRefund(text) && isPlainRequest(text)
+  && (requestedByTheRules(text) || (T.ORDER_ID_RE.test(text) && SAYS_WHOSE.test(sub(T.ORDER_ID_RE, " ", text)) && !T.NEGATED_REFUND_RE.test(text) && !refundWithdrawRequested(text)));
 
 type Output = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 export type Results = Record<string, Output[]>;
@@ -401,7 +414,7 @@ function mainCall(text: string, called: string[], results: Results, available: S
       return null;
     }
     if (M._CANCEL.test(text) && !mentionsRefund(text)) {
-      if (cancelRequested(text) && order.status === "paid" && order.refundable && can("request_refund")) {
+      if (cancelRequested(text) && isPlainRequest(text) && order.status === "paid" && order.refundable && can("request_refund")) {
         return ["request_refund", { order_id: orderId, amount: Number(order.amount ?? 0), reason: `顾客要求取消未发货订单：${text.slice(0, 100)}` }];
       }
       return null;

@@ -5,7 +5,7 @@
  * Nothing leaves the page: a reload starts again from the seed data.
  */
 import { pack, T, TOOLS, type SeedOrder, type TenantConfig, type TenantTool } from "./pack";
-import { conditionalRefund } from "./reading";
+import { conditionalRefund, plainRequest } from "./reading";
 import { clauseHits, search } from "./retrieval";
 import { classifyReply, findAll, fixTypos, money, normalizeWidth, refundBareDecline, refundDeclined, refundRequested, refundWithdrawRequested, statedRefundAmount, withdrawConfirmed } from "./text";
 
@@ -365,9 +365,15 @@ function validated(world: World, ctx: ToolContext, args: Record<string, unknown>
   return { order, amount };
 }
 
+const ITEM_WORDS = new Set(Object.values(pack.orders).flat().flatMap((order) => order.items.flatMap((item) => {
+  const han = item.name.replace(/[^一-鿿]/g, "");
+  return [...han].slice(0, -1).map((_, i) => han.slice(i, i + 2));
+})));
+const isPlainRequest = (text: string): boolean => plainRequest(text, T.ORDER_ID_RE, ITEM_WORDS);
+
 function refundPrecheck(world: World, ctx: ToolContext, args: Record<string, unknown>): Record<string, unknown> {
   // Whatever the planner or the model makes of it, a question or a "先别退款" does not move money.
-  if (ctx.approvalId === null && (refundDeclined(ctx.customerText) || conditionalRefund(ctx.customerText))) {
+  if (ctx.approvalId === null && (refundDeclined(ctx.customerText) || conditionalRefund(ctx.customerText) || !isPlainRequest(ctx.customerText))) {
     throw new ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。请回答顾客的问题；顾客明确要求退款时再申请。");
   }
   const { order, amount } = validated(world, ctx, args);

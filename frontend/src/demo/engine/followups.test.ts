@@ -346,6 +346,49 @@ describe("whose request it is", () => {
   });
 });
 
+// The money review's findings at 6bf3c49, one or two of each shape. A list of what is not a request never closes, so the page files
+// only what fits a closed grammar (reading.ts plainRequest); these are here to keep it that way.
+const N = "SO20260918001";
+describe("a message files only if every clause in it is part of a request", () => {
+  it.each([
+    `${N} 申请退款 开玩笑的`, `${N} 帮我退款 当我没说`, `${N} 帮我退款 错了错了`, `${N} 我要退款 不 我不要`, `${N} 帮我退款 不是 我是想换货`, `帮我退款 ${N} 先别`, `帮我退款 ${N} 不用了`,
+    `${N} 帮我退款 撤回 撤回`, `${N} 帮我退款 不过先别提交`, `I want a refund for ${N} jk`, `I want a refund for ${N} never mind`, `please refund ${N}, wait no`, `${N} 帮我退款 nope`,
+    `${N} 大概率要退款`, `${N} 八成要退款了`, `${N} 应该会退款吧`, `${N} 估计要退款`, `${N} 搞不好要退款`,
+    `${N} 周末再帮我退款吧`, `${N} 下次帮我退款`, `${N} 等活动结束我再申请退款`, `${N} 我准备申请退款`, `Refund ${N} next week`, `Refund ${N} by Friday`, `Refund ${N} once it arrives`, `Refund ${N} after I return it`,
+    `${N} 他想退款`, `${N} 我女儿想退款`, `${N} 这单我表哥要退款`, `${N} 是我爸买的，他想退款`,
+    `${N} 前几天申请退款了`, `${N} 三天前申请退款了`, `${N} 刚申请退款了`, `${N} 申请退款了，等审核`, `${N} 给我退款的钱到了`, `${N} 帮我退款的那个客服是谁`,
+    `${N} 你们不处理我就要退款了`, `${N} 不发货我要退款`, `${N} 不发货就退款`, `Refund ${N} if it breaks`,
+    `${N} 申请退款 需要多久`, `${N} 申请退款 对吗`, `${N} 申请退款 这是模板吗`, `${N} 申请退款 会扣手续费吗`, `我输入 ${N} 申请退款 你会怎么做`, `玩一下 ${N} 申请退款`,
+    `我要退款，但不是 ${N} 这单`, `我要退款，不是 ${N}`, `我要退款 ${N} 除外`, `帮我退款，不是 ${N}，是上周那单`, `我要退款，先别管 ${N}`, `${N} 留着，我要退款的是上个月那单`,
+    `${N} 帮我退款 ×`, `${N} 帮我退款 👎`, `${N} 帮我退款 ？？？`, `${N} 帮我退款 开玩笑`, `${N} 帮我退款 取消`,
+    `申请退款 ${N} 需要走哪些步骤？`, "再这样乱扣费，我就申请退款 SO20261019101，然后卸载 App。", "前天我打客服热线申请退款 SO20261015102 了，到现在没人回我。", "If it still hasn't shipped by tomorrow, please refund order SO20261012003.",
+  ])("%s files nothing", (turn) => {
+    const { refunds, waiting } = talk(turn.includes("SO20261019101") || turn.includes("SO20261015102") ? LILY : EMMA, turn);
+    expect(refunds + waiting).toBe(0);
+  });
+
+  it.each(["好吧我不想退", "好的 我朋友说退", "对 他说退", "行 测试一下退", "是的 明天退", "好 等收到再退", "对 下次退", "好 如果可以就退", "好 不发货就退", "OK?", "yes?"])("after an offer, %s files nothing", (turn) => {
+    expect(talk(EMMA, "那个云朵抱枕我不要了 退了吧", turn).refunds).toBe(0);
+  });
+
+  it("a question about taking a request back is not taking it back", () => {
+    for (const turn of ["取消退款申请的话还能重新申请吗", "撤回退款申请要多久", "撤回退款申请会有什么影响"]) {
+      const { engine, text } = (() => {
+        const e = new DemoEngine(() => undefined);
+        e.ask(EMMA, 1, "SO20261012003 帮我退款");
+        const events = e.ask(EMMA, 1, turn);
+        return { engine: e, text: events.find((x): x is Extract<AgentEvent, { type: "final" }> => x.type === "final")!.text };
+      })();
+      expect(text, turn).not.toContain("确认撤回");
+      expect(engine.world.approvals.filter((a) => a.status === "pending").length).toBe(1);
+    }
+  });
+
+  it.each([`${N} 我要退`, `${N} 帮我退`, `${N} 买错了帮我退`, `${N} 请退`, `${N} 现在就退`, `${N} 赶紧退`, `${N} 立刻给我退`, `${N} 这单帮我退款，我拍错了，不需要了。`, `帮我把 ${N} 退了吧 抱枕不太喜欢`, `I want a refund for order ${N}, please process it now.`])("%s files", (turn) => {
+    expect(talk(EMMA, turn).refunds).toBe(1);
+  });
+});
+
 describe("questions visitors really type", () => {
   it("what it is", () => {
     const { text, meta } = talk(EMMA, "你是谁呀，能帮我干啥");

@@ -265,11 +265,13 @@ function governedFromOutside(text: string): boolean {
   }
   const last = words[words.length - 1].index;
   const before = number.index < last ? text.slice(number.index + number[0].length, last) : text.slice(0, last);
-  return T._NOT_ONLY_MARKS_RE.test(before) && T._LEANS_ON_NEXT_RE.test(before.trimEnd());
+  if (T._NOT_ONLY_MARKS_RE.test(before) && T._LEANS_ON_NEXT_RE.test(before.trimEnd())) return true;
+  const after = text.slice(last).replace(new RegExp(T._REQUEST_WORD_RE.source, T._REQUEST_WORD_RE.flags.replace("g", "")), "");
+  return !T._ITS_OWN_RE.test(text.slice(0, last)) && T._ASKS_AFTER_RE.test(after);
 }
 
 function notNow(text: string): boolean {
-  let found = false;
+  let found = T._LATER_IN_ENGLISH_RE.test(text);
   for (const clause of text.split(T._A_CLAUSE)) {
     if (T._NOT_NOW_RE.test(clause)) found = true;
     else if (found && T.REFUND_APPLY_RE.test(clause)) found = false;
