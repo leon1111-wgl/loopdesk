@@ -189,7 +189,7 @@ const REFERS = /它|这单|这一单|这个订单|这笔|那单|那一单|那个
 const BARE_DEMAND = /^(?:那|那就|就|好|好吧|行|行吧|嗯|对)?[，, ]*(?:帮我|给我|直接|麻烦)?(?:退|退了|退掉|退款|退钱)(?:吧|了吧|了|呗)?(?:谢谢)?[。！!~～]*$/;
 const CORRECTION = /^(?:不对|不是|错了|搞错了?|说错了?|弄错了?|我说的是|我是说|我问的是|应该是)[，,。 ]*/;
 const STATUS_AGAIN = /^(?:那|现在|目前)?(?:怎么样了?|什么情况|啥情况|进度|进展|状态|什么状态|啥状态|到哪一步了?|审核了吗|审核通过了吗|通过了吗|有结果了吗|结果呢|处理了吗|处理得怎么样了?)[吗呢呀啊了？?。！!~～]*$/;
-const DROPS_IT = /^(?:算了|不对|不用了|那)?[，, ]*(?:(?:不退了|不退款了|不要退了|不想退了|先不退了?|别退了|撤回吧?|取消退款|取消申请)[，, ]*)+[吧了。！!~～]*$/;
+const DROPS_IT = /^(?:算了|不对|不用了|那)?[，, ]*(?:(?:不退了|不退款了|不要退了|不想退了|先不退了?|别退了|(?:帮我|给我)?撤回(?:吧|一下)?|取消退款|取消申请)[，, ]*)+[吧了。！!~～]*$/;
 const ONLY_NO = /^(?:不用了?|不要了?|算了|不需要|没有了?|没了|不了|不)[，,。！!~～ ]*(?:谢谢)?[。！!~～]*$/;
 const ASKED_WHICH = /要申请退款的是哪一单|要查询的是哪一单|要撤回的是哪一单/;
 const BARE_NUMBER = /^\s*SO\d+\s*(?:这单|这个|那单|吧)?[。！!]?\s*$/i;
@@ -349,7 +349,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     return events;
   };
 
-  if (asksForPerson(turnText)) {
+  if (asksForPerson(sub(/人工(?:审核|核实|审批)/, "", turnText))) { // "人工审核要多久" asks about a review, not for a person
     run.spans.push(span("router", "explicit_handoff", { text: turnText }, { rule: "asks_for_person" }));
     const call = { id: "explicit_handoff", name: "handoff_to_human", arguments: { reason: "顾客要求转人工" } };
     events.push({ type: "tool_call", ...call });

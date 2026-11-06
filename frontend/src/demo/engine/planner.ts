@@ -228,7 +228,8 @@ function pickMyOrder(text: string, listing: Output, exclude: Set<string>): strin
   return candidates.length === 1 ? candidates[0].order_id : null;
 }
 
-export const wantsHuman = (text: string): boolean => M._HANDOFF.test(sub(M._IF_COMPLAIN, "", sub(M._NEGATED_HANDOFF, "", text)));
+// "人工审核要多久" asks about a review, not for a person.
+export const wantsHuman = (text: string): boolean => M._HANDOFF.test(sub(/人工(?:审核|核实|审批)/, "", sub(M._IF_COMPLAIN, "", sub(M._NEGATED_HANDOFF, "", text))));
 
 function chasing(text: string): boolean {
   const rest = sub(T.ORDER_ID_RE, "", text).replace(/[\s，,。.！!？?~～]+/g, "");
@@ -741,7 +742,7 @@ export function theOneOrder(text: string, orders: OwnOrder[]): OwnOrder | null {
   return null;
 }
 
-const DEMANDS = /我要退|要退|想退|退给我|退掉|退我|给我退|帮我退/;
+const DEMANDS = /我要退|要退|想退|退给我|退掉|退我|给我退|帮我退|退一下/;
 // "数字专辑买了能退吗" asks about the policy; "那个专辑能退吗" and "五天前扣的会员能退吗", about the one they bought.
 const OWN_ITEM = /那个|这个|我的|我要|我买|我那|刚买|上次|上周|昨天|前天|帮我|给我|\d+[块元]|[前几].{0,2}天|扣的|扣了|买的|收到|签收/;
 

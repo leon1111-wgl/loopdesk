@@ -112,6 +112,7 @@ describe("taking a refund request back", () => {
 
   it("said plainly after filing", () => {
     expect(talk(EMMA, "SO20261012003 帮我退款", "不对 不退了 撤回").text).toContain("确认撤回 SO20261012003");
+    expect(talk(EMMA, "SO20260918001 帮我退款", "算了 不退了 帮我撤回").text).toContain("SO20260918001");
   });
 });
 
@@ -217,6 +218,27 @@ describe("only an explicit request moves money, in any words", () => {
 
   it.each(["帮我退款", "我要退款", "申请退款", "给我退款", "我要退货退款", "退款吧", "把钱退给我", "现在就退款", "必须退款", "pls refund", "申清退款"])("SO20261012003 %s files", (turn) => {
     expect(talk(EMMA, `SO20261012003 ${turn}`).waiting).toBe(1);
+  });
+});
+
+describe("words that sound like something else", () => {
+  it("asking about a review by a person is not asking for a person", () => {
+    const { text, meta } = talk(EMMA, "退款多少钱以上要人工审核 审核要多久");
+    expect(meta.status).not.toBe("handoff");
+    expect(text).toContain("50元");
+    expect(text).toContain("24小时");
+  });
+
+  it("asking for a person still is", () => {
+    expect(talk(EMMA, "转人工").meta.status).toBe("handoff");
+    expect(talk(EMMA, "我要找人工客服").meta.status).toBe("handoff");
+  });
+
+  it("several plans fit: asks which, among those", () => {
+    const { text, refunds } = talk(LILY, "我想把豪华会员退一下");
+    expect(text).toContain("SO20261015102");
+    expect(text).not.toContain("SO20261014103");
+    expect(refunds).toBe(0);
   });
 });
 
