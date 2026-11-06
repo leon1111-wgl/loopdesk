@@ -131,7 +131,7 @@ export function answerFit(question: string, sentence: string): number {
  * The backend counts "如果不能换货就退款" as a request, because its model can check the condition first. Nothing here can, so
  * this page files nothing on a condition: it answers about the order and offers.
  */
-export const conditionalRefund = (text: string): boolean => /(?:如果|要是|若是?|假如|万一|不到|没到|不行|实在不行|不然|否则|可以的话|方便的话|能的话|行的话|来得及的话|有可能的话)[^。！!]{0,20}?(?:就|我就|帮我|给我|直接|那)?(?:申请)?退/.test(text);
+export const conditionalRefund = (text: string): boolean => /(?:如果|要是|若是?|假如|万一|不到|没到|不行|实在不行|不然|否则|可以的话|方便的话|能的话|行的话|来得及的话|有可能的话)[^。！!]{0,20}?(?:就|我就|帮我|给我|直接|那)?(?:申请)?退|(?<![a-z])(?:if|unless|in case)(?![a-z])[^.!?]{0,60}(?:refund|money back)/i.test(text);
 
 export const asksHowLong = (text: string): boolean => /多久|多长时间|几个?小时|几天|什么时候|啥时候|何时|时效/.test(text);
 

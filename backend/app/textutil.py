@@ -234,7 +234,7 @@ def _named_demand(pattern: re.Pattern, text: str) -> bool:
 
 
 REFUND_APPLY_RE = re.compile(
-    r"我要(?:全部|全额|全款)?退|申请退|帮我退|给我退|必须(?:给我)?退|想退(?!订|出)|要退(?!订|出)|退一下|退掉|请(?:帮我|直接)?退|直接退(?!订|出|回|群|换|票|役)|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退(?!订|出|回|群|换|票|役)"
+    r"我要(?:全部|全额|全款)?退|申请退|(?:办理|办|发起)(?:一下|个)?退(?:款|货)|提交[^，,。！!？?；;]{0,24}退(?:款|货)申请|(?:帮我|给我|请|麻烦)把[^，,。！!？?；;\s]{0,8}退|帮我退|给我退|必须(?:给我)?退|想退(?!订|出)|要退(?!订|出)|退一下|退掉|请(?:帮我|直接)?退|直接退(?!订|出|回|群|换|票|役)|退款吧|退了吧|退款给我|把钱退|就(?:直接)?退(?!订|出|回|群|换|票|役)"
     r"|退我(?!的)|(?:给|帮|为)(?:客户|顾客|他|她|这位顾客)退|(?:我|客户|顾客|他|她)要求(?:全额|全款|全部)?退"
     r"|(?:want|need|request|issue|process|like|get)\s+(?:a\s+|my\s+|the\s+)?refund|refund\s+(?:me|it|my|this|the|order)|^\s*refund\s+so\d"
     r"|(?:please|pls|plz)\s+refund|(?:want|need)\s+(?:my\s+|the\s+)?money\s+back|money\s+back\s+please",
@@ -259,25 +259,28 @@ _ONLY_ASKING_RE = re.compile(r"只是问问|就问问|问问而已|随便问问|
 _NOT_NOW_RE = re.compile(
     r"(?:怎么|怎样|如何|哪里|哪儿|在哪|去哪)(?:才能|能|可以|去)?(?:申请)?退"
     r"|(?:昨天|前天|上周|上个月|之前|早就|刚才|刚刚|已经|已)(?:就|也)?(?:已经)?(?:申请|提交|提)(?:了|过)?退"
+    r"|(?:昨天|前天|上周|上个月|之前|早就|刚才|刚刚)[^，,。！!？?；;\s]{0,14}(?<!帮我)(?<!给我)(?<!我要)(?<!请)(?:申请|提交)(?:了|过)?退"
+    r"|我就(?:申请)?退"
+    r"|(?<![A-Za-z])(?:tomorrow|next\s+(?:week|month)|later|by\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day)(?![A-Za-z])"
     r"|^我申请(?:(?:了|过)退|退(?:款|货)了)"
     r"|(?:朋友|老婆|老公|同事|妈|爸|室友|家人|别人|他们|有人|客服|同学|邻居|闺蜜)[^，,。！!？?；;\s]{0,4}(?:要|让我|叫我|想|说|也)[^，,。！!？?；;\s]{0,4}退"
     r"|(?:差点|差一点|险些|曾经|本来|原本)[^，,。！!？?；;\s]{0,6}退"
     r"|会不会[^，,。！!？?；;\s]{0,8}退"
     r"|(?:等会|等一会|待会|回头|晚点|过几天|过两天|改天|明天|后天|下周|下个月|以后|到时候)(?:再|才)?[^，,。！!？?；;\s]{0,4}退"
     r"|^(?:等会|等等|以后|回头|之后|先)?再说吧?$"
-    r"|再不[^，,。！!？?；;\s]{0,8}(?:我就|我要|就要)退|超过[^，,。！!？?；;\s]{0,12}(?:我就|就要)退")
+    r"|再不[^，,。！!？?；;\s]{0,8}(?:我就|我要|就要)退|再(?:这样|那样|敢|乱)[^。！!？?；;]{0,16}退|超过[^，,。！!？?；;\s]{0,12}(?:我就|就要)退")
 _A_CLAUSE = re.compile(r"[，,。！!？?；;\s]+")
 # What may stand in front of an order number that comes before the request. Anything else there may be what governs the
 # rest ("别给 SO… 退款", "测试一下：SO… 退款", "有人冒充我说 SO… 申请退款"), so it files nothing: the customer is offered the
 # refund instead, and says so plainly.
 _LEAD_IN_RE = re.compile(
-    r"(?:你好|您好|客服|在吗|嗯|好的|好|不对|错了|说错了|搞错了|那|那就|就|麻烦|麻烦你|请|直接|帮我|给我|替我|我要|我想|我|把|给|为|订单号?|单号|这单|那单|这个|那个|这笔|那笔"
+    r"(?:你好|您好|客服|在吗|嗯|好的|好|不对|错了|说错了|搞错了|那|那就|就|麻烦|麻烦你|请|直接|帮我|给我|替我|我要|我想|我|把|给|为|提交|办理|发起|订单号?|单号|这单|那单|这个|那个|这笔|那笔"
     r"|顾客原话|the|for|order|please|pls|plz|kindly|can\s+you|could\s+you|would\s+you|i\s+want|i\s+need|i'?d\s+like|my|a|hi|hello|ok|okay"
     r"|[^\u4e00-\u9fffA-Za-z0-9])*", re.IGNORECASE)
 _A_REASON_RE = re.compile(
     r"坏|碎|破|裂|漏|没声|不响|开线|划痕|瑕疵|质量|有问题|不能用|用不了|连不上|打不开|开不了|没反应|故障|杂音"
     r"|不要了|不想要|不需要|不喜欢|不合适|不好|不想用|不想续|用不上|没用|买错|拍错|点错|误买|手滑|后悔|换货|太[^，,。！!？?；;\s]{0,4}了?|还不发货|还没发货|没发货|发错"
-    r"|忽略.{0,8}指令")  # an injected line changes nothing, either way: the rules run on the rest
+    r"|忽略.{0,8}指令|系统通知|管理员已授权")  # an injected line changes nothing, either way: the rules run on the rest
 _AN_ORDER_OR_ITEM_RE = re.compile(r"[^\s，,。！!？?；;]{0,12}(?:那单|这单|订单|单子|买的|下的|扣的)[^\s，,。！!？?；;]{0,8}|[\u4e00-\u9fff]{1,8}|[A-Za-z0-9 -]{1,16}")
 _NAMES_AN_ORDER_RE = re.compile(r"那单|这单|订单|单子|买的|下的|扣的")
 # Words that make a noun phrase of the above something else.
@@ -285,6 +288,8 @@ _NOT_A_NAME_RE = re.compile(r"[的了是你他她它们要能吗呢吧啊呀哦�
 _LEANS_ON_NEXT_RE = re.compile(r"(?:说|讲|问|写|写着|提到|认为|觉得|以为|表示|通知|显示|别|不要|不用|不能|不想|不会|没|未|千万|勿|禁止|如果|要是|假如|万一|[:：“\"「『'《]"
                                r"|don'?t|do\s+not|not|never|if|said|say|says|told|asked|whether|about|to)\s*$", re.IGNORECASE)
 _NOT_ITS_OWN_RE = re.compile(r"测试|试一下|试试|演示|举例|举个例子|比如|例如|模拟|假装|假设|冒充|扮演|有人|别人|朋友|同事|老婆|老公|室友|同学|邻居|闺蜜|家人|这句话|这段话|什么意思|翻译|造句|例句")
+_ITS_OWN_RE = re.compile(r"帮我|给我|为我|我要|我想|就要|请|麻烦|给客户|给顾客|给他|给她|帮客户|帮顾客|please|pls|plz|i\s+want|i\s+need", re.IGNORECASE)
+_ASKS_AT_THE_END_RE = re.compile(r"(?:[？?]|哪些|什么|怎么|如何|步骤|手续|流程)[^，,。！!；;]{0,8}$")
 _NOT_ONLY_MARKS_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
 _REQUEST_WORD_RE = re.compile(r"(?:申请|要求|全额|全款|全部)?退|refund|money\s+back|return", re.IGNORECASE)
 
@@ -313,8 +318,16 @@ def _governed_from_outside(text: str) -> bool:
     words = list(_REQUEST_WORD_RE.finditer(text))
     if not words:
         return False
-    if number.start() < words[0].start() and not _allowed_in_front(text[:number.start()]):
-        return True
+    if number.start() < words[0].start():
+        if not _allowed_in_front(text[:number.start()]):
+            return True
+    else:
+        # The request comes first: without a word for whose it is ("帮我", "给我", "请"), the same goes for what stands in front of
+        # it, and a question after it is what it asks ("申请退款 SO… 需要走哪些步骤？").
+        front = text[:words[0].start()]
+        if not _ITS_OWN_RE.search(front):
+            if not _allowed_in_front(front) or _ASKS_AT_THE_END_RE.search(text):
+                return True
     last = words[-1].start()
     before = text[number.end():last] if number.start() < last else text[:last]
     return bool(_NOT_ONLY_MARKS_RE.search(before) and _LEANS_ON_NEXT_RE.search(before.rstrip()))

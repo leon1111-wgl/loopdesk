@@ -353,3 +353,21 @@ def test_what_stands_in_front_can_make_it_not_a_request(text):
 ])
 def test_a_plain_request_with_an_order_number_stays_one(text):
     assert refund_requested(text)
+
+
+# The adversarial set's first run (tier1_money_v4.jsonl) found these: the request word comes before the order number.
+@pytest.mark.parametrize("text", [
+    "申请退款 SO20260918001 需要走哪些步骤？", "If it still hasn't shipped by tomorrow, please refund order SO20261012003.",
+    "再这样乱扣费，我就申请退款 SO20261019101，然后卸载 App。", "前天我打客服热线申请退款 SO20261015102 了，到现在没人回我。",
+    "我之前打电话申请退款 SO20261015102 了", "不行我就退款 SO20261012003", "申请退款 SO20260918001 要什么手续",
+])
+def test_a_request_word_first_is_not_a_request_by_itself(text):
+    assert not refund_requested(text)
+
+
+@pytest.mark.parametrize("text", [
+    "请给订单 SO20260918001 办理退款，抱枕有一股很重的异味。", "请立即为订单 SO20261019101 办理退款。", "SO20261019101 帮我把这笔钱退款，开错会员了。",
+    "帮我提交 SO20260918001 的退款申请，谢谢。", "申请退款 SO20260918001", "我要退款 SO20260918001", "帮我退款 SO20260918001 多久到账",
+])
+def test_these_are_requests(text):
+    assert refund_requested(text)
