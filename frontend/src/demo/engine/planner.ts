@@ -4,7 +4,7 @@
  * the answer from what they returned, so every fact in an answer comes from a tool or a quoted knowledge chunk.
  */
 import { M, T, pack, type TenantTool } from "./pack";
-import { asksHowLong, canDo, conditionalRefund, plainRequest } from "./reading";
+import { NO_ORDERS_HERE, TICKET_OFFER, asksHowLong, canDo, conditionalRefund, plainRequest } from "./reading";
 import { answerSentences } from "./retrieval";
 import { tenantTools } from "./tools";
 import {
@@ -107,7 +107,14 @@ export function refundQuestion(text: string): string {
   return question || "退款 到账 工作日";
 }
 
-export const faultReport = (text: string): boolean => M._FAULTY.test(text) && M._OWN.test(text) && !M._SELF_DAMAGE.test(text);
+// "坏了怎么办": a question about a fault, answered, and a ticket offered. Only reporting one opens one.
+const WHAT_TO_DO = /怎么办|咋办|怎么弄|怎么处理|如何处理|怎么解决|怎么修|能修吗|(?:能|可以)(?:退|换)|能不能(?:退|换)|可不可以(?:退|换)/;
+const asksAboutFault = (text: string) => M._FAULT_QUESTION.test(text) || WHAT_TO_DO.test(text);
+const FAULT_POLICY = "质量问题 退货 换货";
+const faultAsked = (text: string) => M._FAULTY.test(text) && WHAT_TO_DO.test(text) && !M._SELF_DAMAGE.test(text);
+const hasFaultPolicy = (tenant: string) => (pack.kb[tenant] ?? []).some((chunk) => chunk.text.includes("质量问题"));
+
+export const faultReport = (text: string): boolean => M._FAULTY.test(text) && M._OWN.test(text) && !M._SELF_DAMAGE.test(text) && !asksAboutFault(text);
 
 const thing = (words: string) => sub(/[^\p{L}\p{N}_]/u, "", sub(M._NOT_A_THING, "", sub(T.ORDER_ID_RE, "", words)));
 
@@ -145,6 +152,7 @@ function severalFaults(text: string): string[] {
 
 function faultIntents(text: string): [string[], string, string | null] {
   const [main, extra] = splitIntents(text);
+  if (WHAT_TO_DO.test(text)) return [[], main, extra];
   let faults = severalFaults(main);
   if (faults.length) return [faults, main, extra];
   faults = severalFaults(text);
@@ -152,10 +160,13 @@ function faultIntents(text: string): [string[], string, string | null] {
   return [[], main, extra];
 }
 
+// "我要查物流" is about their parcel; "怎么查物流" is about how.
+const LOOKS_UP_PARCEL = /^(?:我要|我想|想|帮我|请|麻烦)?(?:查询?|查看|看看?)(?:一下|下)?(?:我的)?(?:物流|快递|包裹)(?:信息|情况|进度)?吧?[。！!~～]*$/;
+
 export function aboutMyOrder(text: string): boolean {
   if (T.ORDER_ID_RE.test(text)) return false;
   if (refundWithdrawRequested(text)) return true;
-  if (M._LIST_MINE.test(text) || T.OTHER_ORDER.test(text)) return true;
+  if (M._LIST_MINE.test(text) || T.OTHER_ORDER.test(text) || LOOKS_UP_PARCEL.test(text)) return true;
   if (asksRefundStatus(text)) return M._OWN.test(text) || text.includes("单子") || M._MY_MONEY.test(text);
   if (mentionsRefund(text)) {
     const kept = sub(T.NEGATED_REFUND_RE, "，", text);
@@ -357,7 +368,7 @@ const ABOUT_REFUNDS = /退|到账|原路/;
 const OTHER_SUBJECT = /自动续费|续费|续订|订阅|积分|发票|密码|账号/;
 const asksBeyondRefunds = (text: string) => text.split(/[，,。！!？?；;~～\s]+/).some((c) => M._QUESTION_MARK.test(c) && !/退/.test(c));
 
-function mainCall(text: string, called: string[], results: Results, available: Set<string>, exclude: Set<string>): Call | null {
+function mainCall(text: string, called: string[], results: Results, available: Set<string>, exclude: Set<string>, tenant: string): Call | null {
   const can = (name: string) => available.has(name) && !called.includes(name);
   let orderIds = upperIds(text);
   if (wantsHuman(text) && can("handoff_to_human")) return ["handoff_to_human", { reason: text.slice(0, 120) }];
@@ -419,9 +430,9 @@ function mainCall(text: string, called: string[], results: Results, available: S
       }
       return null;
     }
-    const reported = !asksHowLong(text) && ((M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (!T.ORDER_ID_RE.test(text) && faultReport(text))
+    const reported = !asksHowLong(text) && !WHAT_TO_DO.test(text) && ((M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (!T.ORDER_ID_RE.test(text) && faultReport(text))
       || (M._FAULTY.test(text) && !M._NOT_FAULTY.test(text) && !M._SELF_DAMAGE.test(text) && !M._FAULT_QUESTION.test(text) && !mentionsRefund(text)));
-    const repair = M._REPAIR.test(text) && (M._FAULTY.test(text) || !M._ASKING.test(text.trim()));
+    const repair = M._REPAIR.test(text) && !WHAT_TO_DO.test(text) && (M._FAULTY.test(text) || !M._ASKING.test(text.trim()));
     if ((repair || reported) && !refundRequested(text)) {
       if (can("search_knowledge")) return ["search_knowledge", { query: "质量问题 退货 换货" }];
       if (can("create_ticket")) {
@@ -431,6 +442,7 @@ function mainCall(text: string, called: string[], results: Results, available: S
       return null;
     }
     if (M._SELF_DAMAGE.test(text)) return can("search_knowledge") ? ["search_knowledge", { query: X.SELF_DAMAGE_QUERY }] : null;
+    if (faultAsked(text) && !mentionsRefund(text) && hasFaultPolicy(tenant)) return can("search_knowledge") ? ["search_knowledge", { query: FAULT_POLICY }] : null;
     if (mentionsRefund(text)) {
       if (!order.refundable) return null;
       if (!refundRequested(text)) return can("search_knowledge") ? ["search_knowledge", { query: refundQuestion(text) }] : null;
@@ -470,13 +482,13 @@ function mainCall(text: string, called: string[], results: Results, available: S
 
   if (M._SELF_DAMAGE.test(text)) return can("search_knowledge") ? ["search_knowledge", { query: X.SELF_DAMAGE_QUERY }] : null;
 
-  if (!asksHowLong(text) && ((M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (faultReport(text) && !refundRequested(text)))) {
+  if (!asksHowLong(text) && !WHAT_TO_DO.test(text) && ((M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (faultReport(text) && !refundRequested(text)))) {
     if (can("search_knowledge")) return ["search_knowledge", { query: text }];
     if (can("create_ticket")) return ["create_ticket", { title: text.slice(0, 30), description: text, priority: M._URGENT.test(text) || OUTAGE.test(text) ? "high" : "normal" }];
     return null;
   }
 
-  if (!called.length && can("search_knowledge")) return ["search_knowledge", { query: text }];
+  if (!called.length && can("search_knowledge")) return ["search_knowledge", { query: faultAsked(text) && hasFaultPolicy(tenant) ? FAULT_POLICY : text }];
   return null;
 }
 
@@ -501,7 +513,7 @@ export function nextCall(text: string, called: string[], results: Results, avail
   if (wantsHuman(main) && available.has("handoff_to_human") && !called.includes("handoff_to_human")) return ["handoff_to_human", { reason: main.slice(0, 120) }];
   const plan = planCustom(main, tenantTools(tenant), called);
   if (plan && (plan.call || plan.missing || !extra)) return plan.call;
-  const call = plan ? null : faults.length ? faultCall(main, faults, called, results, available, exclude, !extra) : mainCall(main, called, results, available, exclude);
+  const call = plan ? null : faults.length ? faultCall(main, faults, called, results, available, exclude, !extra) : mainCall(main, called, results, available, exclude, tenant);
   if (call) return call;
   const searched = new Set((results.search_knowledge ?? []).map((r) => r.query));
   if (extra && available.has("search_knowledge") && !searched.has(extra)) return ["search_knowledge", { query: extra }];
@@ -509,9 +521,10 @@ export function nextCall(text: string, called: string[], results: Results, avail
 }
 
 // ---------------------------------------------------------------- answering
-function askWhich(text: string, listing: Output): string {
+function askWhich(text: string, listing: Output, tenant: string): string {
   if (listing.error) return `暂时查不到您的订单：${listing.error}。也可以直接告诉我订单号。`;
   const every: Output[] = listing.orders ?? [];
+  if (!every.length && !pack.orders[tenant]?.length) return `${NO_ORDERS_HERE}${canDo(tenant)}`;
   if (!every.length) return "没有查到您账号下的订单。如果是用其他账号下的单，请告诉我订单号。";
   const fitting = bestNamed(text, every, (o) => o.items ?? []);
   const orders = fitting.length > 1 ? fitting : every;
@@ -590,6 +603,7 @@ function opening(hit: Output): string[] {
 export function compose(input: string, allResults: Results, tenant: string, exclude: Set<string>): string {
   if (!Object.values(allResults).some((r) => r.length)) {
     const reply = smalltalk(input);
+    if (reply === X.GREETING_TEXT) return `请问有什么可以帮您？${canDo(tenant)}`;
     if (reply) return reply;
   }
   const other = otherQuestion(input);
@@ -613,7 +627,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   let listing = last("list_my_orders");
   if (listing && !results.get_order?.length && !results.create_ticket?.length) {
     if (exclude.size) listing = { ...listing, orders: (listing.orders ?? []).filter((o: Output) => !exclude.has(o.order_id)) };
-    parts.push(askWhich(text, listing!));
+    parts.push(askWhich(text, listing!, tenant));
   }
 
   const withdrawal = last("withdraw_refund_request");
@@ -674,11 +688,12 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   if (knowledge) {
     const query = (refund && !refundFailed) || progress ? "退款 到账 工作日"
       : selfDamage ? X.SELF_DAMAGE_QUERY
-      : eta || rush || ticket ? expandQuery(knowledge.query ?? text)
+      : eta || rush || ticket || knowledge.query === FAULT_POLICY ? expandQuery(knowledge.query ?? text)
       : expandQuery(inquiry ? refundQuestion(text) : text);
     if (!refundFailed) {
-      const plain = !(refund || ticket || progress || customParts.length || eta || rush || selfDamage || knowledge.chosen);
-      const limit = !plain && !knowledge.chosen ? 1 : inquiry ? 2 : 4;
+      const policy = knowledge.query === FAULT_POLICY;
+      const plain = !(refund || ticket || progress || customParts.length || eta || rush || selfDamage || knowledge.chosen || policy);
+      const limit = policy ? 2 : !plain && !knowledge.chosen ? 1 : inquiry ? 2 : 4;
       let sentences = plain ? answerSentences(tenant, inquiry ? refundQuestion(text) : sub(T.ORDER_ID_RE, " ", text), knowledge.results ?? [], limit) : extract(query, knowledge.results ?? [], limit);
       // About one order's refund: only what is about refunds, whatever else the message's other words brought up.
       if (inquiry && !extra && !asksBeyondRefunds(text) && !OTHER_SUBJECT.test(text)) sentences = sentences.filter((s) => ABOUT_REFUNDS.test(s));
@@ -704,6 +719,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
     if (T.NEGATED_REFUND_RE.test(normalizeWidth(text))) parts.push(`如需退款，可以直接回复“${oid} 申请退款”，这次只解答问题、不会为您发起退款。`);
     else parts.push(`如需现在申请退款，回复“${oid} 申请退款”即可，我马上为您提交。`);
   }
+  if (!ticket && !refund && !handoff && !inquiry && faultAsked(text)) parts.push(TICKET_OFFER);
   if (faults.length) {
     const things = faultTickets(text, faults, last("list_my_orders") ?? {}, results.get_order ?? [], exclude);
     const found = things.filter((t) => t.title.endsWith(" 换货/维修")).map((t) => t.title.slice(0, -" 换货/维修".length));

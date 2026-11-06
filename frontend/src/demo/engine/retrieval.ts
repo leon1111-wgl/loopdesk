@@ -4,7 +4,7 @@
  * word ("货到付款") is missing, coverage falls and the answer is a refusal, not a neighbouring policy.
  */
 import { pack, type KbChunk } from "./pack";
-import { answerFit, cannotAnswer, documentWords, isFiller, refundRuleWords, saidOtherwise, statesWhatIsAsked } from "./reading";
+import { answerFit, cannotAnswer, documentWords, isFiller, refundRuleWords, saidOtherwise, statesWhatIsAsked, verbAsked } from "./reading";
 import { canonicalQuery, expandQuery, splitSentences, tokenize } from "./text";
 
 const RRF_K = 60;
@@ -89,7 +89,7 @@ class TenantIndex {
 
   /** The words of a question to weigh: its own, less the everyday ones the vocabulary has read, plus what it read them as. */
   asked(text: string, base: string): string[] {
-    const said = saidOtherwise(text);
+    const said = saidOtherwise(text, (words) => this.inDocuments(words) !== "");
     const own = this.knownParts(tokenize(base)).filter((t) => (this.df.get(t) ?? 0) > 0 || !said.some((s) => s.includes(t)));
     const mapped = this.knownParts(tokenize(this.inDocuments(documentWords(text))));
     const specific = [...own, ...mapped].some((t) => (this.df.get(t) ?? 0) > 0 && !/退|申请/.test(t));
@@ -124,9 +124,12 @@ class TenantIndex {
     return (this.df.get(token) ?? 0) > 0;
   }
 
-  /** Of the words a phrase maps to, those this tenant's documents use. */
+  /** Of the words a phrase maps to, those this tenant's documents use. A piece of one they do not ("理由" of "七天无理由") is not that word. */
   inDocuments(words: string): string {
-    return tokenize(words).filter((t) => (this.df.get(t) ?? 0) > 0).join(" ");
+    return words.split(/\s+/).flatMap((word) => {
+      const tokens = tokenize(word);
+      return tokens.every((t) => this.isKnown(t)) || this.isKnown(word) ? tokens.filter((t) => this.isKnown(t)) : [];
+    }).join(" ");
   }
 
   /** A word the knowledge base never uses, read as the KB words inside it when only single characters are left over. */
@@ -248,7 +251,7 @@ interface Picked {
 
 const CUT_MARK = pack.texts.mock.CUT_MARK;
 const NOT_AN_ANSWER = /SYNTHETIC|虚构/;
-const LEANS_BACK = /^(?:这类|这些|这种|其|该)/;
+const LEANS_BACK = /^(?:这类|这些|这种|其|该|可(?!以)|在.{0,10}基础上)/;
 const COVERS = 0.34;
 const COVERS_DESPITE = 0.5;
 const COVERS_ITS_CLAUSE = 0.6;
@@ -288,11 +291,12 @@ function ranked(tenant: string, question: string, hits: SentenceHit[], oneQuesti
   const asked = [...new Set(index.asked(question, expandQuery(question)))];
   const total = asked.reduce((n, t) => n + index.weight(t), 0);
   if (!total) return [];
+  const verb = verbAsked(question, (word) => index.isKnown(word));
   const out: Picked[] = [];
   hits.forEach((hit, rank) => {
     const heading = new Set(tokenize(hit.heading ?? ""));
     sentencesOf(hit.text ?? "").forEach((sentence, pos) => {
-      if ([...sentence].length < 6 || NOT_AN_ANSWER.test(sentence) || sentence.endsWith(CUT_MARK) || (oneQuestion && cannotAnswer(question, sentence))) return;
+      if ([...sentence].length < 6 || NOT_AN_ANSWER.test(sentence) || sentence.endsWith(CUT_MARK) || (oneQuestion && cannotAnswer(question, sentence, hit.heading, verb))) return;
       const tokens = new Set(tokenize(sentence));
       const list = [...tokens];
       let direct = 0, context = 0;

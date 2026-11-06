@@ -468,8 +468,10 @@ export function overlapRecall(claim: string, evidence: string): number {
   return hit / claimTokens.size;
 }
 
+export const ANSWERS_IN_CHINESE = "This demo answers in Chinese, because its documents and orders are in Chinese, so I can't answer that in English. Try one of the examples below.";
+
 export function isRefusal(answer: string): boolean {
-  return REFUSAL.test(answer);
+  return REFUSAL.test(answer) || answer.includes(ANSWERS_IN_CHINESE);
 }
 
 const REFUSAL = new RegExp(pack.rules.outcome.REFUSAL_RE.source, pack.rules.outcome.REFUSAL_RE.flags);

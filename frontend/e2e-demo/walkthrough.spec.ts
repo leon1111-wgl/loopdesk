@@ -219,6 +219,38 @@ test.describe("a conversation", () => {
     expect(problems).toEqual([]);
   });
 
+  test("an English question gets an honest reply, and the examples under it work", async ({ page }) => {
+    const problems = watch(page);
+    await start(page, "customer@leon.demo");
+    await say(page, "can I get a refund?");
+    await expect(page.locator(".msg.assistant").last()).toContainText("This demo answers in Chinese");
+    const steps = page.locator(".next-steps button");
+    await expect(steps).toHaveCount(3);
+    await steps.filter({ hasText: "我的订单" }).click();
+    await expect(page.locator(".msg.assistant").last()).toContainText("SO20261012003");
+    expect(problems).toEqual([]);
+  });
+
+  test("asking after a ticket creates nothing, and the offer under it does", async ({ page }) => {
+    const problems = watch(page);
+    await start(page, "customer@iris.demo");
+    await say(page, "我的工单");
+    await expect(page.locator(".msg.assistant").last()).toContainText("不能查询已有工单");
+    await page.locator(".next-steps button").filter({ hasText: "帮我创建工单" }).click();
+    await expect(page.locator(".msg.assistant").last()).toContainText(/已为您创建工单 #\d+/);
+    expect(problems).toEqual([]);
+  });
+
+  test("a follow-up on the one order named files it", async ({ page }) => {
+    const problems = watch(page);
+    await start(page, "customer@leon.demo");
+    await say(page, "SO20260918001 能退吗");
+    await expect(page.locator(".msg.assistant").last()).toContainText("如需现在申请退款");
+    await say(page, "好的，帮我退");
+    await expect(page.locator(".msg.assistant").last()).toContainText(/订单 SO20260918001 的退款单 #\d+ 已受理/);
+    expect(problems).toEqual([]);
+  });
+
   test("an item is offered, a yes files it, and it can be asked about and taken back", async ({ page }) => {
     const problems = watch(page);
     await start(page, "customer@leon.demo");

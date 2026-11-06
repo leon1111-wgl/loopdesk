@@ -11,36 +11,39 @@ const VOCABULARY: [RegExp, string][] = [
   // shipping
   [/拍下|下单|付完款|付了款|买完/, "付款后"],
   [/(?:多久|几天|啥时候|什么时候|何时|多长时间).{0,4}发(?!票)|发货.{0,3}(?:快吗|要多久|多久)/, "发货时效 发货"],
-  [/(?<!退款|退钱|钱)(?:多久|几天|啥时候|什么时候).{0,3}(?:能)?(?:到|收到|送到)(?!账)|几天能到|要几天/, "预计 送达"],
+  [/(?<!(?:退款|退钱|退货|钱)[^，,。？?]{0,8})(?:(?:多久|几天|啥时候|什么时候).{0,3}(?:能)?(?:到|收到|送到)(?!账)|几天能到|要几天)/, "预计 送达"],
   [/大促|双十一|双11|618/, "大促 双十一 发货时效"],
   [/哪家快递|什么快递|啥快递|发什么快递|指定.{0,4}快递|顺丰|申通|圆通|中通/, "合作快递 指定快递公司"],
   [/运单号|物流轨迹|怎么查物流/, "运单号 物流轨迹"],
-  [/邮费|包邮|运费/, "运费 包邮"],
+  [/邮费|包邮|免运费|免邮|运费/, "运费 包邮"],
   [/香港|澳门|台湾|港澳|海外|国外/, "港澳台 海外地区 配送"],
   // refunds and returns
   [/不满意|不喜欢|不合适|买错|拍错|不想要|不要了/, "七天无理由退货"],
   [/收到之?后|到手|拿到/, "签收"],
   [/寄回|退回去|寄回去|退货.{0,3}(?:运费|邮费|快递费)|运费.{0,3}谁/, "寄回运费 买家承担"],
   [/摔|进水|自己弄|自己拆|我弄坏/, "人为损坏"],
-  [/瑕疵|破了|裂了|碎了|烂了|质量.{0,2}问题|质量不好|质量差/, "质量问题 退换"],
+  [/瑕疵|破了|裂了|碎了|烂了|质量.{0,2}问题|质量不好|质量差/, "质量问题 退换 退货 换货"],
   [/运费.{0,4}(?:谁|我出|我付|要我)/, "往返运费 寄回运费"],
   [/拍照|发照片|要照片|传图/, "上传 照片"],
   [/多少钱.{0,6}自动|自动退|秒退|小额/, "自动审核 退款"],
   [/人工审核|审核.{0,3}(?:多久|多长时间)|要审多久/, "人工审核时效"],
-  [/(?:几天|多少天|多久|多长时间).{0,6}(?:内|之内|以内|还)?.{0,4}(?:能|可以)退|退.{0,4}(?:期限|时间内)/, "七天无理由退货 扣费后 申请"],
-  [/(?:退款|退钱|钱).{0,4}(?:几天|多久|多长时间|啥时候|什么时候|哪天).{0,3}(?:到|回)/, "退款到账 到账 工作日"],
+  [/(?:几天|多少天|多久|多长时间).{0,6}(?:内|之内|以内|还)?.{0,4}(?:能|可以)退(?!回|款到账)|退.{0,4}(?:期限|时间内)/, "七天无理由退货 扣费后 申请"],
+  [/(?:退款|退钱|(?<!多少)钱).{0,6}(?:几天|多久|多长时间|啥时候|什么时候|哪天)/, "退款到账 到账 工作日"],
+  [/(?:钱|款).{0,3}(?:怎么退|退到哪|退回哪|退哪)|怎么退钱/, "原路退回 原支付方式"],
   // invoices, points, levels
   [/开票|开发票|要发票|开个发票|开张发票/, "申请发票 电子普通发票 开具"],
   [/抬头/, "发票抬头 修改"],
-  [/积分.{0,4}(?:怎么来|怎么得|怎么攒|怎么赚|怎么获)|攒积分|送积分/, "获得 积分"],
+  [/积分.{0,4}(?:怎么来|怎么得|怎么攒|怎么赚|怎么获)|(?:攒|赚|拿|得)积分|送积分/, "获得 积分"],
   [/(?:能|可以)?抵(?!扣)/, "抵扣"],
   [/积分.{0,6}(?:过期|到期|有效|多久)/, "积分有效期"],
-  [/升级|金卡/, "金卡会员 升级"],
+  [/升级|金卡/, "金卡 升级"],
   // suppliers
   [/入驻|供应商|供货|厂家|厂商|开店|合作/, "供应商 入驻 资质"],
   // membership and renewal
-  [/关掉|关了|关闭|停掉|不想续|不续了|不想(?:再)?自动|别再扣|怎么取消.{0,4}(?:续费|包月)/, "取消自动续费 管理自动续费"],
-  [/自动扣|老扣|一直扣|偷偷扣|每个?月.{0,2}扣|又扣/, "自动续费 扣费"],
+  [/(?:关掉|关了|关闭|停掉)(?!.{0,4}青少年)|不想续|不续了|不想(?:再)?自动|别再扣|怎么取消.{0,4}(?:续费|包月)/, "取消自动续费 管理自动续费"],
+  [/自动扣|老扣|一直扣|偷偷扣|每个?月.{0,2}扣|又扣|还(?:会|要|在)?扣|扣钱|(?:什么时候|啥时候|哪天|几号)扣/, "自动续费 扣费 续期"],
+  [/(?<!退[^，,。？?]{0,8})(?:权益|福利|好处|特权)(?!.{0,8}失效)|会员.{0,6}(?:有什么用|有啥用)/, "会员类型 曲库 无广告 无损音质 享受"],
+  [/(?:普通|豪华|会员).{0,8}(?:区别|不同|差别|差异)/, "普通会员 豪华会员 无损音质 曲库"],
   [/苹果|iphone|ipad|ios|app\s*store/i, "App Store iPhone Apple ID"],
   [/提醒|通知我|提前说/, "扣费前 提醒"],
   [/取消.{0,6}(?:还能|还可以|能用|有效|到期)/, "取消自动续费 会员期 仍然有效"],
@@ -64,6 +67,7 @@ const VOCABULARY: [RegExp, string][] = [
   [/偷偷充|误充|乱充/, "误充值 监护人"],
   // albums
   [/专辑.{0,8}(?:送|赠)|送给.{0,4}(?:朋友|好友)/, "赠送 数字专辑"],
+  [/(?:专辑|单曲).{0,8}(?:买错|后悔|不想要|不要了|不喜欢)/, "虚拟内容 不支持退款"],
   [/买了两次|买重复|重复买|扣了两次/, "重复购买"],
   // account
   [/换手机|换号码|改手机|手机号换|换绑/, "换绑手机号"],
@@ -84,7 +88,7 @@ const VOCABULARY: [RegExp, string][] = [
 ];
 
 // Words that carry how something is said, not what it is about.
-const FILLERS = new Set("大概 大约 之后 以后 然后 的话 要是 如果 想来 还是 现在 目前 一般 通常 可能 应该 就是 还有 比如 那么 这么 这样 那样 非常 特别 比较 有点 半天 彻底 有人 不够 一下 一点 一些 别人 自己 咱们 我们 他们 平台 知道 想问 请问 问下 问问 谢谢 麻烦 感觉 其实 真的 到底 究竟 而且 但是 不过 所以 因为 怎么样 找到 没找到 一个月 一年 刚才 刚刚 昨天 今天 明天 几天 几次 回来 回去 另外 资料 东西 收到 期间 期限 时候 时间 情况 办法 地方 这种 那种 过了 限制 区别 划算 值不值 室友 朋友 同事 老婆 老公 听说 假的 真的假的 直接 不是".split(" "));
+const FILLERS = new Set("大概 大约 之后 以后 然后 的话 要是 如果 想来 还是 现在 目前 一般 通常 可能 应该 就是 还有 比如 那么 这么 这样 那样 非常 特别 比较 有点 半天 彻底 有人 不够 一下 一点 一些 别人 自己 咱们 我们 他们 平台 知道 想问 请问 问下 问问 谢谢 麻烦 感觉 其实 真的 到底 究竟 而且 但是 不过 所以 因为 怎么样 找到 没找到 一个月 一年 刚才 刚刚 昨天 今天 明天 几天 几次 回来 回去 另外 资料 东西 收到 期间 期限 时候 时间 情况 办法 地方 这种 那种 过了 限制 区别 划算 值不值 室友 朋友 同事 老婆 老公 听说 假的 真的假的 直接 不是 开会 才能".split(" "));
 export const isFiller = (word: string): boolean => FILLERS.has(word);
 
 // "能退吗" with nothing else to go on is about the refund rules; "数字专辑能退吗" is about digital albums.
@@ -95,9 +99,12 @@ export function documentWords(text: string): string {
   return VOCABULARY.filter(([phrase]) => phrase.test(text)).map(([, words]) => words).join(" ");
 }
 
-/** The parts of a question the vocabulary already read: said in everyday words, so not missing from the documents. */
-export function saidOtherwise(text: string): string[] {
-  return VOCABULARY.map(([phrase]) => phrase.exec(text)?.[0]).filter((said): said is string => Boolean(said));
+/**
+ * The parts of a question the vocabulary already read: said in everyday words, so not missing from the documents. Only where the
+ * documents use what it reads them as: "升级" means something in a shop with a gold card, and in a music app it names what is not there.
+ */
+export function saidOtherwise(text: string, inDocuments: (words: string) => boolean): string[] {
+  return VOCABULARY.filter(([, words]) => inDocuments(words)).map(([phrase]) => phrase.exec(text)?.[0]).filter((said): said is string => Boolean(said));
 }
 
 /** The kind of fact a question asks for, and what a sentence stating that kind of fact looks like. */
@@ -114,10 +121,49 @@ const STATES_MONEY = /\d+(?:\.\d+)?\s*(?:元|块)|[¥￥]\d/;
 
 const ASKS_COUNT = /(?:多少|几)(人|首|张|台|次|积分)/;
 
-/** "多少钱" is not answered by a sentence with no price in it, nor "多少人" by one with no people, however many words they share. */
-export function cannotAnswer(question: string, sentence: string): boolean {
+// What refunds are about, in a question and in a section of the documents.
+const MENTIONS_REFUND = /退款|退钱|退货|退费/;
+const REFUND_SECTION = /退款/;
+const NEAR_REFUNDS = /退|到账|原路|钱|审核|扣|重复|两次|买错|拍错|不想要|不要了|不喜欢|后悔|虚拟|失效/;
+// A way of doing something: what can, must or will be done, or where. "怎么算" and "怎么收费" ask for a rule, not a way.
+const ASKS_HOW = /怎么|怎样|如何|咋(?!办)/;
+const NOT_A_WAY = /怎么(?:办|样|算|收费|收|回事|定|说)|怎样算|如何(?:算|收费)|咋(?:算|样|回事)/;
+const STATES_A_WAY = /可|(?<!不)能|需|将|按|由|请|满|支持|进入|点击|提交|通过|“/;
+// How to join, in a sentence of its own: only a step says that, not a sentence that happens to mention members or signing up.
+const TO_JOIN = /^(?:请问)?(?:我(?:要|想)|想要?|要|帮我|给我)?(?:怎么|怎样|如何|咋)?(?:才能|样才能)?(?:开通?|购买|买|办理?|成为|加入)(?:个|一个)?(?:普通|豪华)?(?:会员|自动续费|连续包月)[呢啊呀吗]?[。？?！!]*$|^(?:普通|豪华)?会员(?:要|该)?(?:怎么|怎样|如何|咋)(?:才能)?(?:开通?|购买|买|办理?)[呢啊呀]?[。？?！!]*$/;
+const A_STEP = /进入|点击|页面/;
+const THROUGH_APPLE = /苹果|iphone|ipad|ios|app\s*store/i;
+
+/**
+ * Whether a sentence cannot be what was asked for, however many words they share. "多少钱" is not answered by a sentence with no
+ * price in it, nor "多少人" by one with no people; refunds are not answered from the shipping rules, nor anything else from the refund
+ * rules; "怎么" is not answered by a sentence that states no way, nor by one that does not say what is to be done: a word of one
+ * character is no word to the search, so "怎么买专业版" would be about 专业版 alone.
+ */
+export function cannotAnswer(question: string, sentence: string, heading = "", verb = ""): boolean {
   const unit = ASKS_COUNT.exec(question)?.[1];
-  return (ASKS_MONEY.test(question) && !STATES_MONEY.test(sentence)) || (unit !== undefined && !sentence.includes(unit));
+  if ((ASKS_MONEY.test(question) && !STATES_MONEY.test(sentence)) || (unit !== undefined && !sentence.includes(unit))) return true;
+  const section = heading.split(">").at(-1) ?? "";
+  if (MENTIONS_REFUND.test(question) && !/退|到账|原路/.test(`${sentence} ${section}`)) return true;
+  if (REFUND_SECTION.test(section) && !NEAR_REFUNDS.test(question)) return true;
+  // A charge is about charges, and the App Store's way of cancelling only if that is where it was bought.
+  if (/扣/.test(question) && (!/扣/.test(sentence) || (/App Store/.test(sentence) && !THROUGH_APPLE.test(question)))) return true;
+  if (/开通/.test(question) && !/取消/.test(question) && /取消/.test(sentence)) return true;
+  if (TO_JOIN.test(question) && !A_STEP.test(sentence)) return true;
+  if (ASKS_HOW.test(question) && !NOT_A_WAY.test(question) && !STATES_A_WAY.test(sentence)) return true;
+  return !sentence.includes(verb);
+}
+
+const LIGHT_VERB = /^(?:用|使用|看|查|算|收|听|知道|才能|能|成为)$/;
+
+/** What "怎么 V O" asks to do, when O is a word of the documents: not what the vocabulary already read it as. */
+export function verbAsked(question: string, isKnown: (word: string) => boolean): string {
+  const said = /(?:怎么|怎样|如何|咋)(?:样|才能|才可以)?([一-鿿]{2,8})/.exec(question)?.[1];
+  if (!said || NOT_A_WAY.test(question)) return "";
+  let verb = said.length <= 4 && isKnown(said) ? said : "";
+  for (let i = 1; !verb && i <= 2 && i < said.length; i++) if (isKnown(said.slice(i))) verb = said.slice(0, i);
+  if (!verb || LIGHT_VERB.test(verb)) return "";
+  return VOCABULARY.some(([phrase, words]) => phrase.exec(question)?.[0].includes(verb) && !words.includes(verb)) ? "" : verb;
 }
 
 /** Whether a question asks for a kind of fact this sentence states. */
@@ -241,26 +287,42 @@ const CAN_DO: Record<string, string> = {
 
 const NEXT_STEPS: Record<string, string[]> = {
   leon: ["我的订单有哪些", "七天无理由退货怎么算", "转人工"],
-  echo: ["我的订单有哪些", "怎么取消自动续费", "转人工"],
+  echo: ["我的订单有哪些", "会员多少钱", "怎么取消自动续费", "转人工"],
   iris: ["工单多久有人响应", "专业版有多少存储空间", "转人工"],
 };
 
-const WHAT_IT_IS = /你是谁|你是什么|你是啥|你是机器人|你是真人|你是人工|你是ai|你能干|你能做|能帮我干|能帮我做|能干啥|能干什么|能做什么|能做啥|会干啥|会什么|有什么功能|有啥功能|你可以做/i;
+const WHAT_IT_IS = /你们?是谁|你是什么|你是啥|你们?是(?:机器人|真人|人工|ai)|你能干|你能做|能帮我干|能帮我做|能干啥|能干什么|能做什么|能做啥|会干啥|会什么|有什么功能|有啥功能|你可以做/i;
 export const asksWhatItIs = (text: string): boolean => WHAT_IT_IS.test(text);
 
+/** "你们是机器人吗" asks what this is, not for a person. */
+export const asksIfHuman = (text: string): boolean => /^(?:请问)?(?:你们?)?是(?:不是)?(?:真人|机器人|人工|ai|人)(?:吗|么|嘛|吧|啊|呀)?[？?。！!~～\s]*$/i.test(text);
+
 /** "先别退了，我再想想": holding off, with nothing filed. */
-export const holdsOff = (text: string): boolean => text.length <= 16 && !text.includes("撤回") && /先别退|先不退|不退了|不退款了|别退了|不想退了|再想想|再考虑|还没想好/.test(text);
+export const holdsOff = (text: string): boolean => text.length <= 16 && !text.includes("撤回") && /先别退|先不退|不退了|不退款了|别退了|不想退了|再想想|再考虑|还没想好|^(?:那|那就|就|我)?不退款?吧?[。！!~～]*$/.test(text);
 
 export const NOTHING_FILED = "好的，没有提交退款申请。想好了随时告诉我订单号。";
 
-/** Words but no Chinese and no order number: the documents and orders here are Chinese, and this page does not translate. */
-export const inEnglish = (text: string): boolean => !/[一-鿿]/.test(text) && !/\bso\d/i.test(text) && (text.match(/[a-z]{2,}/gi) ?? []).length >= 2;
+/** "嗯", "知道了": nothing to answer, and nothing to act on. */
+export const onlyAcknowledges = (text: string): boolean => /\S/.test(text) && /^(?:(?:嗯+|恩+|哦+|噢+|喔+|好的?|行|ok|okay)[，, ]*)*(?:知道了?|知道啦|明白了?|了解了?|懂了|收到了?|晓得了|清楚了)?[。！!~～ ]*$/i.test(text);
 
-export const ANSWERS_IN_CHINESE = "This demo answers in Chinese, because its documents and orders are in Chinese, so I can't answer that in English. Try one of the examples below.（知识库中没有找到相关依据）";
+// A customer's own tickets: this demo keeps none to look up, and asking after them is not asking for a new one.
+const ASKS_TICKETS = /我的工单|(?:查|看|找)(?:一下|下|看)?(?:我的|之前的|那个)?工单|工单.{0,6}(?:进度|状态|到哪|怎么样|处理|结果|回复)/;
+const ABOUT_TICKETS_IN_GENERAL = /创建|新建|提交?|开(?:一个|个)?工单|建(?:一个|个)?工单|多久|多长时间|时效|什么时候|啥时候/;
+export const asksAboutTickets = (text: string): boolean => ASKS_TICKETS.test(text) && !ABOUT_TICKETS_IN_GENERAL.test(text);
+export const NO_TICKET_LOOKUP = "这个演示不能查询已有工单的进度。需要新建的话，回复“帮我创建工单”，我来提交。";
+export const NEW_TICKET = "帮我创建工单";
+export const TICKET_OFFER = "如需登记工单，回复“帮我创建工单”，我来提交。";
+
+/** Iris sells no orders: it says so, and what it can do instead. */
+export const NO_ORDERS_HERE = "这里没有订单，也不能在线退款。";
+
+/** Words but no Chinese and no order number: the documents and orders here are Chinese, and this page does not translate. */
+export { ANSWERS_IN_CHINESE } from "./text";
+export const inEnglish = (text: string): boolean => !/[一-鿿]/.test(text) && !/\bso\d/i.test(text) && (text.match(/[a-z]{2,}/gi) ?? []).length >= 2;
 
 export const canDo = (tenant: string): string => CAN_DO[tenant] ?? "";
 /** A sentence of ours about what the assistant does: nothing to check against the evidence. */
-export const isCanDo = (sentence: string): boolean => /^(?:如超过到账时效|回复订单号|如需查询这一单|This demo answers)/.test(sentence) || Object.values(CAN_DO).some((line) => line.startsWith(sentence));
+export const isCanDo = (sentence: string): boolean => /^(?:如超过到账时效|回复订单号|如需查询这一单|如需登记工单|这里没有订单|感谢您的咨询|This demo answers)/.test(sentence) || Object.values(CAN_DO).some((line) => line.startsWith(sentence));
 /** A number was given, so the rules still apply to it, and the message's other words are answered first. */
 export const NOT_GRANTED = "对话里的指令或身份说明不会改变规则，退款也不能跳过审核，这部分我无法处理。";
 export const nextSteps = (tenant: string): string[] => NEXT_STEPS[tenant] ?? [];

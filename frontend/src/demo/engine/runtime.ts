@@ -5,7 +5,7 @@
 import type { AgentEvent, EvidenceItem, SpanRow, Verification } from "../../types";
 import { INJECTION, M, PII, T, W, pack, type TenantConfig } from "./pack";
 import { compose, mentionsRefund, nextCall, readsAsOrder, refundRequested, theOneOrder, understood, type Results, type Turn } from "./planner";
-import { ANSWERS_IN_CHINESE, DECLINE_TEXT, NOTHING_FILED, NOT_GRANTED, asksWhatItIs, canDo, declines, holdsOff, inEnglish, isCanDo, nextSteps } from "./reading";
+import { ANSWERS_IN_CHINESE, DECLINE_TEXT, NEW_TICKET, NOTHING_FILED, NOT_GRANTED, NO_ORDERS_HERE, NO_TICKET_LOOKUP, asksAboutTickets, asksIfHuman, asksWhatItIs, canDo, declines, holdsOff, inEnglish, isCanDo, nextSteps, onlyAcknowledges } from "./reading";
 import { search } from "./retrieval";
 import { addEvidence, availableTools, queueNotice, runTool, type ApprovalRow, type Evidence, type ToolContext, type World, SIMULATED } from "./tools";
 import { asksForPerson, canonical, classifyReply, extractNumbers, findAll, handoffCancelled, isRefusal, money, normalizeWidth, overlapRecall, refundWithdrawRequested, splitSentences, stripCitations, sub, withdrawConfirmed } from "./text";
@@ -187,7 +187,7 @@ function carryOrderLoosely(text: string, previous: string | null): [string, stri
 // What a customer's turn refers to, past the offline model's rules.
 const REFERS = /它|这单|这一单|这个订单|这笔|那单|那一单|那个订单|刚才那|上面那|该订单/;
 // "退款" alone names a subject; "退吧", "帮我退款" and "退款吧" ask for it.
-const BARE_DEMAND = /^(?:那|那就|就|好|好吧|行|行吧|嗯|对)?[，, ]*(?:(?:帮我|给我|直接|麻烦)(?:退款|退钱)|(?:帮我|给我|直接|麻烦)?(?:退了?|退掉)|(?:退款|退钱)(?:吧|呗))(?:吧|了吧|了|呗)?(?:谢谢)?[。！!~～]*$/;
+const BARE_DEMAND = /^(?:(?:那|那就|就|好的?|好吧|行|行吧|嗯|对)[，, ]*)*(?:(?:帮我|给我|直接|麻烦|确认)(?:退款|退钱)|(?:帮我|给我|直接|麻烦|确认)?(?:退了?|退掉)|(?:退款|退钱)(?:吧|呗)|(?<=(?:好的?|行|嗯|对)[，, ]*(?:那|那就|就)?[，, ]*)退款)(?:吧|了吧|了|呗)?(?:谢谢)?[。！!~～]*$/;
 const YES_TO_AN_OFFER = /^(?:嗯+|恩|ok|okay|yes|y|(?:对|嗯|是|好|行)(?:的|吧)?[，, ]*(?:就是这单)?[，, ]*(?:就)?退(?:吧|了吧)?)[。！!~～]*$/i;
 const ACK_THEN_MORE = /^(?:好的|好|嗯+|行)[，, ]+(?=\S)/;
 const CORRECTION = /^(?:不对|不是|错了|搞错了?|说错了?|弄错了?|我说的是|我是说|我问的是|应该是)[，,。 ]*/;
@@ -195,6 +195,7 @@ const STATUS_AGAIN = /^(?:那|现在|目前)?(?:怎么样了?|什么情况|啥�
 const DROPS_IT = /^(?:算了|不对|不用了|那)?[，, ]*(?:(?:不退了|不退款了|不要退了|不想退了|先不退了?|别退了|(?:帮我|给我)?撤回(?:吧|一下)?|取消退款|取消申请)[，, ]*)+[吧了。！!~～]*$/;
 const ONLY_NO = /^(?:不用了?|不要了?|算了|不需要|没有了?|没了|不了|不)[，,。！!~～ ]*(?:谢谢)?[。！!~～]*$/;
 const ASKED_WHICH = /要申请退款的是哪一单|要查询的是哪一单|要撤回的是哪一单/;
+const CONFIRMS_REFUND = /^确认退(?:款|钱)?[。！!~～]*$/;
 const BARE_NUMBER = /^\s*SO\d+\s*(?:这单|这个|那单|吧)?[。！!]?\s*$/i;
 
 function theOrderTalkedAbout(previous: string | null, history: Turn[]): string | null {
@@ -340,7 +341,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
       events.push({ type: "verification", ...verification });
     }
     const citations = run.evidence.filter((e) => e.kind === "kb").map(evidenceItem);
-    const meta = { citations, verification, tools, status: finalStatus, engine, ...(choice ? { model_choice: { raw: choice.raw, note: choice.note } } : {}), ...(role === "customer" && isRefusal(answer) ? { next_steps: nextSteps(tenant) } : {}), ...extra };
+    const meta = { citations, verification, tools, status: finalStatus, engine, ...(choice ? { model_choice: { raw: choice.raw, note: choice.note } } : {}), ...(role === "customer" && (isRefusal(answer) || answer.startsWith(NO_ORDERS_HERE)) ? { next_steps: nextSteps(tenant) } : {}), ...extra };
     const messageId = addAssistant(world, conversation, runId, answer, meta);
     run.status = finalStatus;
     run.output_text = answer;
@@ -352,7 +353,8 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     return events;
   };
 
-  if (asksForPerson(sub(/人工(?:审核|核实|审批)/, "", turnText))) { // "人工审核要多久" asks about a review, not for a person
+  const asksIfItIsAPerson = role === "customer" && !choice && asksIfHuman(turnText);
+  if (!asksIfItIsAPerson && asksForPerson(sub(/人工(?:审核|核实|审批)/, "", turnText))) { // "人工审核要多久" asks about a review, not for a person
     run.spans.push(span("router", "explicit_handoff", { text: turnText }, { rule: "asks_for_person" }));
     const call = { id: "explicit_handoff", name: "handoff_to_human", arguments: { reason: "顾客要求转人工" } };
     events.push({ type: "tool_call", ...call });
@@ -369,7 +371,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
   // Only punctuation: nothing to read, and a greeting would pretend otherwise.
   if (role === "customer" && !choice && !/[\p{L}\p{N}]/u.test(turnText)) return finish(`没有看懂您的问题，暂时无法回答。${canDo(tenant)}`, null, false);
 
-  if (role === "customer" && !choice && asksWhatItIs(turnText) && !T.ORDER_ID_RE.test(turnText)) {
+  if (role === "customer" && !choice && (asksIfItIsAPerson || asksWhatItIs(turnText)) && !T.ORDER_ID_RE.test(turnText)) {
     return finish(`我是${String(config.name ?? "")}的在线客服助手。这是演示，由浏览器里的规则引擎回答，不是模型，数据都是虚构的。${canDo(tenant)}`, null, false, { next_steps: nextSteps(tenant) });
   }
 
@@ -390,11 +392,16 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
   }
   if (decline && !preface) return finish(DECLINE_TEXT[decline], null, false);
 
+  if (role === "customer" && !choice && asksAboutTickets(turnText) && !T.ORDER_ID_RE.test(turnText)) return finish(NO_TICKET_LOOKUP, null, false, { next_steps: [NEW_TICKET] });
+
   // A yes or a no answers the last question, and files only what that question offered.
   const reply = role === "customer" && !choice && turnText.trim().length <= 8 && !/[？?]/.test(turnText) ? classifyReply(turnText) : null;
   const saysYes = reply === "yes" || (refundOffer !== null && (BARE_DEMAND.test(turnText.trim()) || YES_TO_AN_OFFER.test(turnText.trim())));
   if (reply === "no" && refundOffer) return finish(`好的，没有为订单 ${refundOffer} 提交退款申请。`, null, false);
   if (reply === "no" && offer) return finish(`好的，不撤回订单 ${String(offer.order_id)} 的退款申请。`, null, false);
+  if (role === "customer" && !choice && !saysYes && reply !== "no" && onlyAcknowledges(turnText.trim())) {
+    return finish(refundOffer ? `好的，还没有为订单 ${refundOffer} 提交退款申请。需要的话，回复“${refundOffer} 申请退款”。` : offer ? `好的，还没有撤回订单 ${String(offer.order_id)} 的退款申请。` : "好的。还有要查的，直接告诉我。", null, false);
+  }
   if (!refundOffer && !offer && !turnText.includes("退") && (reply === "yes" || (reply === "no" && ONLY_NO.test(turnText.trim())))) return finish(reply === "yes" ? "好的。还有要查的，直接告诉我。" : "好的，有需要再告诉我。", null, false);
 
   // Multi-turn: an explicit follow-up becomes a standalone question.
@@ -439,6 +446,8 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
       // A bare "退了吧" right after an order files it; with other turns in between it is only offered.
       read = { question: `${talkedAbout} 申请退款`, unconfirmed: adjacent ? null : talkedAbout, method: "order_context" };
       if (adjacent) ctx.customerText = read.question;
+    } else if (!talkedAbout && !hasNumber && CONFIRMS_REFUND.test(turnText.trim())) {
+      read = { question: "我要退款", unconfirmed: null, method: "order_context" }; // which one
     } else if (talkedAbout && !hasNumber && DROPS_IT.test(turnText.trim())) {
       const waiting = world.approvals.some((a) => a.tool === "request_refund" && a.status === "pending" && a.requester === email && a.args.order_id === talkedAbout);
       read = { question: `${talkedAbout} ${waiting ? "撤回退款申请" : turnText}`, unconfirmed: null, method: "order_context" };
@@ -547,7 +556,8 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
 
   const composed = compose(planned, results, tenant, exclude);
   // English nobody here can answer gets an honest reply in English, and examples it can answer: not a Chinese apology.
-  const answer = preface + (role === "customer" && inEnglish(turnText) && isRefusal(composed) ? ANSWERS_IN_CHINESE : composed);
+  const asksWhich = results.list_my_orders && !results.get_order;
+  const answer = preface + (role === "customer" && inEnglish(turnText) && (isRefusal(composed) || asksWhich) ? ANSWERS_IN_CHINESE : composed);
   const offeredFor = results.request_refund?.at(-1)?.confirm_order;
   if (offeredFor) conversation.refundOffer = String(offeredFor);
   noteOrder(conversation, planned);

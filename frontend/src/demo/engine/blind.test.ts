@@ -7,7 +7,7 @@ import { scoreCase, type GateCase } from "./gate-harness";
  * committed before they were measured. All three have been read since, so they are floors against regressions now: what they
  * measured the first time is in docs/EVALUATION.md. BLIND_REPORT=dir writes the per-case results.
  */
-const FLOORS = { "tier1_blind.jsonl": { all: 65, money: 23 }, "tier1_blind_v2.jsonl": { all: 69, money: 29 }, "tier1_blind_v3.jsonl": { all: 70, money: 28 }, "tier1_money_v4.jsonl": { all: 39, money: 39 } };
+const FLOORS = { "tier1_blind.jsonl": { all: 65, money: 23 }, "tier1_blind_v2.jsonl": { all: 69, money: 29 }, "tier1_blind_v3.jsonl": { all: 71, money: 28 }, "tier1_money_v4.jsonl": { all: 39, money: 39 } };
 
 type BlindCase = GateCase & { tenant: string; kind: string };
 
