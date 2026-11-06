@@ -4,7 +4,7 @@
  * the answer from what they returned, so every fact in an answer comes from a tool or a quoted knowledge chunk.
  */
 import { M, T, pack, type TenantTool } from "./pack";
-import { NO_ORDERS_HERE, TICKET_OFFER, asksHowLong, canDo, conditionalRefund, plainRequest } from "./reading";
+import { NOT_FOR_A_PERSON, NO_ORDERS_HERE, TICKET_OFFER, asksHowLong, canDo, conditionalRefund, lostParcel, plainRequest } from "./reading";
 import { answerSentences } from "./retrieval";
 import { tenantTools } from "./tools";
 import {
@@ -106,6 +106,10 @@ export function refundQuestion(text: string): string {
   if (question && !/[一-鿿]/.test(question)) return M._EN_TIMING.test(question) ? "退款 到账 工作日" : "七天无理由退货 质量问题 退换";
   return question || "退款 到账 工作日";
 }
+
+// "工单规则" names tickets; "帮我提个工单" asks for one, and a fault word reports one.
+const CREATES_TICKET = /(?:创建|新建|提交?|开|建|登记|要|来)(?:一个|一张|个|张|下)?工单/;
+const ticketSaid = (text: string) => M._TICKET.test(sub(/工单/, "", text)) || CREATES_TICKET.test(text);
 
 // "坏了怎么办": a question about a fault, answered, and a ticket offered. Only reporting one opens one.
 const WHAT_TO_DO = /怎么办|咋办|怎么弄|怎么处理|如何处理|怎么解决|怎么修|能修吗|(?:能|可以)(?:退|换)|能不能(?:退|换)|可不可以(?:退|换)/;
@@ -255,16 +259,19 @@ function pickMyOrder(text: string, listing: Output, exclude: Set<string>): strin
 }
 
 // "人工审核要多久" asks about a review, not for a person.
-export const wantsHuman = (text: string): boolean => M._HANDOFF.test(sub(/人工(?:审核|核实|审批)/, "", sub(M._IF_COMPLAIN, "", sub(M._NEGATED_HANDOFF, "", text))));
+export const wantsHuman = (text: string): boolean => M._HANDOFF.test(sub(NOT_FOR_A_PERSON, "", sub(M._IF_COMPLAIN, "", sub(M._NEGATED_HANDOFF, "", text))));
 
 function chasing(text: string): boolean {
   const rest = sub(T.ORDER_ID_RE, "", text).replace(/[\s，,。.！!？?~～]+/g, "");
   return M._CHASE.test(text) || fullMatch(M._CHASE_SHORT, rest);
 }
 
+// "你好，我想咨询一下": an opening with nothing asked yet. Words that say what about make it a question.
+const OPENER = /^(?:(?:你好|您好|hi|hello|hey|嗨|哈喽|在吗|在不在|在么|有人吗|客服|亲|请问|麻烦|打扰(?:了|一下)?|不好意思)[呀啊吗呢嘛！!。.，,？?~～\s]*)*我?(?:想|要|有)?(?:个|一个|点|几个)?(?:咨询|问|请教|了解)?(?:一下|下|个|点|几个)?(?:问题|事情?)?(?:想问|要问|想咨询|咨询)?(?:一下|下)?(?:吗|呀|啊)?[！!。.，,？?~～\s]*$/i;
+
 export function smalltalk(text: string): string | null {
   const stripped = text.trim();
-  if (!stripped || fullMatch(M._GREETING, stripped)) return X.GREETING_TEXT;
+  if (!stripped || fullMatch(M._GREETING, stripped) || OPENER.test(stripped)) return X.GREETING_TEXT;
   const [cancelled, rest] = handoffCancelled(stripped);
   if (cancelled && !rest) return X.NO_HANDOFF_TEXT;
   return fullMatch(M._THANKS, stripped) ? X.THANKS_TEXT : null;
@@ -430,7 +437,7 @@ function mainCall(text: string, called: string[], results: Results, available: S
       }
       return null;
     }
-    const reported = !asksHowLong(text) && !WHAT_TO_DO.test(text) && ((M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (!T.ORDER_ID_RE.test(text) && faultReport(text))
+    const reported = !asksHowLong(text) && !WHAT_TO_DO.test(text) && ((ticketSaid(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (!T.ORDER_ID_RE.test(text) && faultReport(text))
       || (M._FAULTY.test(text) && !M._NOT_FAULTY.test(text) && !M._SELF_DAMAGE.test(text) && !M._FAULT_QUESTION.test(text) && !mentionsRefund(text)));
     const repair = M._REPAIR.test(text) && !WHAT_TO_DO.test(text) && (M._FAULTY.test(text) || !M._ASKING.test(text.trim()));
     if ((repair || reported) && !refundRequested(text)) {
@@ -460,7 +467,7 @@ function mainCall(text: string, called: string[], results: Results, available: S
     }
     if (M._NOT_RECEIVED.test(text)) {
       if (can("track_shipment")) return ["track_shipment", { order_id: orderId }];
-      if (can("create_ticket")) return ["create_ticket", { title: `${orderId} 显示签收但未收到`, description: text, priority: "high" }];
+      if (can("create_ticket") && !WHAT_TO_DO.test(text)) return ["create_ticket", { title: `${orderId} 显示签收但未收到`, description: text, priority: "high" }];
       return null;
     }
     if (M._CHANGE_INFO.test(text)) {
@@ -482,7 +489,7 @@ function mainCall(text: string, called: string[], results: Results, available: S
 
   if (M._SELF_DAMAGE.test(text)) return can("search_knowledge") ? ["search_knowledge", { query: X.SELF_DAMAGE_QUERY }] : null;
 
-  if (!asksHowLong(text) && !WHAT_TO_DO.test(text) && ((M._TICKET.test(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (faultReport(text) && !refundRequested(text)))) {
+  if (!asksHowLong(text) && !WHAT_TO_DO.test(text) && ((ticketSaid(text) && (M._REPORTED.test(text) || !M._ASKING.test(text.trim()))) || (faultReport(text) && !refundRequested(text)))) {
     if (can("search_knowledge")) return ["search_knowledge", { query: text }];
     if (can("create_ticket")) return ["create_ticket", { title: text.slice(0, 30), description: text, priority: M._URGENT.test(text) || OUTAGE.test(text) ? "high" : "normal" }];
     return null;
@@ -719,7 +726,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
     if (T.NEGATED_REFUND_RE.test(normalizeWidth(text))) parts.push(`如需退款，可以直接回复“${oid} 申请退款”，这次只解答问题、不会为您发起退款。`);
     else parts.push(`如需现在申请退款，回复“${oid} 申请退款”即可，我马上为您提交。`);
   }
-  if (!ticket && !refund && !handoff && !inquiry && faultAsked(text)) parts.push(TICKET_OFFER);
+  if (!ticket && !refund && !handoff && !inquiry && (faultAsked(text) || lostParcel(text))) parts.push(TICKET_OFFER);
   if (faults.length) {
     const things = faultTickets(text, faults, last("list_my_orders") ?? {}, results.get_order ?? [], exclude);
     const found = things.filter((t) => t.title.endsWith(" 换货/维修")).map((t) => t.title.slice(0, -" 换货/维修".length));

@@ -4,7 +4,7 @@
  * word ("货到付款") is missing, coverage falls and the answer is a refusal, not a neighbouring policy.
  */
 import { pack, type KbChunk } from "./pack";
-import { answerFit, cannotAnswer, documentWords, isFiller, refundRuleWords, saidOtherwise, statesWhatIsAsked, verbAsked } from "./reading";
+import { answerFit, cannotAnswer, documentWords, isFiller, namesNoTopic, refundRuleWords, saidOtherwise, statesWhatIsAsked, verbAsked } from "./reading";
 import { canonicalQuery, expandQuery, splitSentences, tokenize } from "./text";
 
 const RRF_K = 60;
@@ -83,6 +83,7 @@ class TenantIndex {
   weight(token: string): number {
     if (/^\d+$/.test(token)) return 0;
     const idf = this.idf(token);
+    if (namesNoTopic(token)) return idf * 0.1;
     if ((this.df.get(token) ?? 0) > 0) return idf;
     return idf * (isFiller(token) ? 0.1 : 0.8);
   }
@@ -161,7 +162,7 @@ class TenantIndex {
         }
       }
       if (run) leftovers.push(run);
-      out.push(...(parts.length && leftovers.every((x) => x.length === 1) ? parts : [t]));
+      out.push(...(parts.length && leftovers.every((x) => x.length === 1 || isFiller(x)) ? parts : [t]));
     }
     return out;
   }
@@ -288,7 +289,9 @@ function sayTheWhole(asked: string[], word: string): boolean {
 
 function ranked(tenant: string, question: string, hits: SentenceHit[], oneQuestion = true): Picked[] {
   const index = indexOf(tenant);
-  const asked = [...new Set(index.asked(question, expandQuery(question)))];
+  // The synonyms a search adds count only where the documents use them: "退货" in a music app was never asked about.
+  const own = new Set(index.asked(question, question));
+  const asked = [...new Set(index.asked(question, expandQuery(question)))].filter((t) => index.isKnown(t) || own.has(t));
   const total = asked.reduce((n, t) => n + index.weight(t), 0);
   if (!total) return [];
   const verb = verbAsked(question, (word) => index.isKnown(word));
@@ -317,7 +320,7 @@ const quoted = (p: Picked) => `${p.sentence.replace(/[。；;…]+$/, "")}[${p.r
 
 function unknownWord(tenant: string, question: string): boolean {
   const index = indexOf(tenant);
-  return index.asked(question, expandQuery(question)).some((t) => !index.isKnown(t) && !isFiller(t) && !/^\d+$/.test(t));
+  return index.asked(question, question).some((t) => !index.isKnown(t) && !isFiller(t) && !/^\d+$/.test(t));
 }
 
 /** The sentences that answer a question: the best for each of its clauses that says something of its own, then the best overall. */

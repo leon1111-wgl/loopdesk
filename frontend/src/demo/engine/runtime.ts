@@ -5,7 +5,7 @@
 import type { AgentEvent, EvidenceItem, SpanRow, Verification } from "../../types";
 import { INJECTION, M, PII, T, W, pack, type TenantConfig } from "./pack";
 import { compose, mentionsRefund, nextCall, readsAsOrder, refundRequested, theOneOrder, understood, type Results, type Turn } from "./planner";
-import { ANSWERS_IN_CHINESE, DECLINE_TEXT, NEW_TICKET, NOTHING_FILED, NOT_GRANTED, NO_ORDERS_HERE, NO_TICKET_LOOKUP, asksAboutTickets, asksIfHuman, asksWhatItIs, canDo, declines, holdsOff, inEnglish, isCanDo, nextSteps, onlyAcknowledges } from "./reading";
+import { ANSWERS_IN_CHINESE, DECLINE_TEXT, NEW_TICKET, NOTHING_FILED, NOT_FOR_A_PERSON, NOT_GRANTED, NO_ORDERS_HERE, NO_TICKET_LOOKUP, asksAboutTickets, asksIfHuman, asksWhatItIs, canDo, declines, holdsOff, inEnglish, isCanDo, nextSteps, onlyAcknowledges } from "./reading";
 import { search } from "./retrieval";
 import { addEvidence, availableTools, queueNotice, runTool, type ApprovalRow, type Evidence, type ToolContext, type World, SIMULATED } from "./tools";
 import { asksForPerson, canonical, classifyReply, extractNumbers, findAll, handoffCancelled, isRefusal, money, normalizeWidth, overlapRecall, refundWithdrawRequested, splitSentences, stripCitations, sub, withdrawConfirmed } from "./text";
@@ -354,7 +354,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
   };
 
   const asksIfItIsAPerson = role === "customer" && !choice && asksIfHuman(turnText);
-  if (!asksIfItIsAPerson && asksForPerson(sub(/人工(?:审核|核实|审批)/, "", turnText))) { // "人工审核要多久" asks about a review, not for a person
+  if (!asksIfItIsAPerson && asksForPerson(sub(NOT_FOR_A_PERSON, "", turnText))) {
     run.spans.push(span("router", "explicit_handoff", { text: turnText }, { rule: "asks_for_person" }));
     const call = { id: "explicit_handoff", name: "handoff_to_human", arguments: { reason: "顾客要求转人工" } };
     events.push({ type: "tool_call", ...call });

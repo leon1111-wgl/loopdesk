@@ -11,7 +11,7 @@ const VOCABULARY: [RegExp, string][] = [
   // shipping
   [/拍下|下单|付完款|付了款|买完/, "付款后"],
   [/(?:多久|几天|啥时候|什么时候|何时|多长时间).{0,4}发(?!票)|发货.{0,3}(?:快吗|要多久|多久)/, "发货时效 发货"],
-  [/(?<!(?:退款|退钱|退货|钱)[^，,。？?]{0,8})(?:(?:多久|几天|啥时候|什么时候).{0,3}(?:能)?(?:到|收到|送到)(?!账)|几天能到|要几天)/, "预计 送达"],
+  [/(?<!(?:退款|退钱|退货|退了|退的|钱)[^，,。？?]{0,8})(?:(?:多久|几天|啥时候|什么时候).{0,3}(?:能)?(?:到|收到|送到)(?!账)|几天能到|要几天)/, "预计 送达"],
   [/大促|双十一|双11|618/, "大促 双十一 发货时效"],
   [/哪家快递|什么快递|啥快递|发什么快递|指定.{0,4}快递|顺丰|申通|圆通|中通/, "合作快递 指定快递公司"],
   [/运单号|物流轨迹|怎么查物流/, "运单号 物流轨迹"],
@@ -26,9 +26,9 @@ const VOCABULARY: [RegExp, string][] = [
   [/运费.{0,4}(?:谁|我出|我付|要我)/, "往返运费 寄回运费"],
   [/拍照|发照片|要照片|传图/, "上传 照片"],
   [/多少钱.{0,6}自动|自动退|秒退|小额/, "自动审核 退款"],
-  [/人工审核|审核.{0,3}(?:多久|多长时间)|要审多久/, "人工审核时效"],
+  [/人工审核?|审核.{0,3}(?:多久|多长时间)|要审多久/, "人工审核时效"],
   [/(?:几天|多少天|多久|多长时间).{0,6}(?:内|之内|以内|还)?.{0,4}(?:能|可以)退(?!回|款到账)|退.{0,4}(?:期限|时间内)/, "七天无理由退货 扣费后 申请"],
-  [/(?:退款|退钱|(?<!多少)钱).{0,6}(?:几天|多久|多长时间|啥时候|什么时候|哪天)/, "退款到账 到账 工作日"],
+  [/(?:退款|退钱|退了|退的|(?<!多少)钱).{0,6}(?:几天|多久|多长时间|啥时候|什么时候|哪天)/, "退款到账 到账 工作日"],
   [/(?:钱|款).{0,3}(?:怎么退|退到哪|退回哪|退哪)|怎么退钱/, "原路退回 原支付方式"],
   // invoices, points, levels
   [/开票|开发票|要发票|开个发票|开张发票/, "申请发票 电子普通发票 开具"],
@@ -42,7 +42,7 @@ const VOCABULARY: [RegExp, string][] = [
   // membership and renewal
   [/(?:关掉|关了|关闭|停掉)(?!.{0,4}青少年)|不想续|不续了|不想(?:再)?自动|别再扣|怎么取消.{0,4}(?:续费|包月)/, "取消自动续费 管理自动续费"],
   [/自动扣|老扣|一直扣|偷偷扣|每个?月.{0,2}扣|又扣|还(?:会|要|在)?扣|扣钱|(?:什么时候|啥时候|哪天|几号)扣/, "自动续费 扣费 续期"],
-  [/(?<!退[^，,。？?]{0,8})(?:权益|福利|好处|特权)(?!.{0,8}失效)|会员.{0,6}(?:有什么用|有啥用)/, "会员类型 曲库 无广告 无损音质 享受"],
+  [/(?<!退[^，,。？?]{0,8})(?:权益|福利|好处|特权)(?!.{0,8}失效)|会员.{0,6}(?:有什么用|有啥用|规则|政策|介绍|说明)/, "会员类型 曲库 无广告 无损音质 享受"],
   [/(?:普通|豪华|会员).{0,8}(?:区别|不同|差别|差异)/, "普通会员 豪华会员 无损音质 曲库"],
   [/苹果|iphone|ipad|ios|app\s*store/i, "App Store iPhone Apple ID"],
   [/提醒|通知我|提前说/, "扣费前 提醒"],
@@ -56,7 +56,7 @@ const VOCABULARY: [RegExp, string][] = [
   [/下多少|能下|下歌|下几首|下载量|离线/, "最多下载 下载 离线收听"],
   [/一个月|每个月/, "每月"],
   [/导出|转格式|mp3|拷出来|传到电脑/i, "导出 格式"],
-  [/变灰|灰色|下架|放不了|听不了/, "变灰 版权"],
+  [/变灰|灰色|灰了|下架|放不了|听不了/, "变灰 版权"],
   [/搜不到|找不到.{0,3}歌|没有这首|没这首/, "求歌 曲库"],
   // coins and minors
   [/(?:^|[^a-z])币/i, "Echo币"],
@@ -75,7 +75,7 @@ const VOCABULARY: [RegExp, string][] = [
   [/后悔|反悔|撤回|找回|恢复/, "撤销"],
   [/清掉|清零|清了|没了|还在吗|还有吗/, "清空"],
   [/封号|封了|被封|解封/, "封禁 申诉"],
-  [/几台|几个设备|同时登|挤下线|被踢|多少设备/, "设备 同时在线"],
+  [/(?<!专辑.{0,10})(?:几台|几个设备|多少设备)|同时登|挤下线|被踢/, "设备 同时在线"],
   [/验证码|密码/, "验证码 登录密码"],
   // Iris
   [/空间|容量|多少g\b|多大/i, "存储空间"],
@@ -84,12 +84,14 @@ const VOCABULARY: [RegExp, string][] = [
   [/稳定|可用率|宕机|赔/, "可用性 补偿"],
   [/打不开|全挂|挂了|崩了|彻底|整个.{0,4}(?:不能|用不了|打不开)|完全/, "P1级故障 服务完全不可用"],
   [/部分功能|有些功能|个别功能/, "P2级故障 部分功能异常"],
-  [/(?:多久|多长时间|啥时候|什么时候).{0,6}(?:回|理|响应|处理)|有人(?:回|理|管)/, "响应 工单响应时效"],
+  [/(?:多久|多长时间|啥时候|什么时候).{0,6}(?:回复?|理|响应|处理)|有人(?:回复?|理|管)/, "响应 工单响应时效"],
 ];
 
 // Words that carry how something is said, not what it is about.
-const FILLERS = new Set("大概 大约 之后 以后 然后 的话 要是 如果 想来 还是 现在 目前 一般 通常 可能 应该 就是 还有 比如 那么 这么 这样 那样 非常 特别 比较 有点 半天 彻底 有人 不够 一下 一点 一些 别人 自己 咱们 我们 他们 平台 知道 想问 请问 问下 问问 谢谢 麻烦 感觉 其实 真的 到底 究竟 而且 但是 不过 所以 因为 怎么样 找到 没找到 一个月 一年 刚才 刚刚 昨天 今天 明天 几天 几次 回来 回去 另外 资料 东西 收到 期间 期限 时候 时间 情况 办法 地方 这种 那种 过了 限制 区别 划算 值不值 室友 朋友 同事 老婆 老公 听说 假的 真的假的 直接 不是 开会 才能".split(" "));
+const FILLERS = new Set("大概 大约 之后 以后 然后 的话 要是 如果 想来 还是 现在 目前 一般 通常 可能 应该 就是 还有 比如 那么 这么 这样 那样 非常 特别 比较 有点 半天 彻底 有人 不够 一下 一点 一些 别人 自己 咱们 我们 他们 平台 知道 想问 请问 问下 问问 谢谢 麻烦 感觉 其实 真的 到底 究竟 而且 但是 不过 所以 因为 怎么样 找到 没找到 一个月 一年 刚才 刚刚 昨天 今天 明天 几天 几次 回来 回去 另外 资料 东西 收到 期间 期限 时候 时间 情况 办法 地方 这种 那种 过了 限制 区别 划算 值不值 室友 朋友 同事 老婆 老公 听说 假的 真的假的 直接 不是 开会 才能 规则 规定 政策 说明 介绍 详情 方式 方法 途径 渠道 流程 步骤 卡上 卡里".split(" "));
 export const isFiller = (word: string): boolean => FILLERS.has(word);
+/** "下载规则" asks about downloads: the word for a rule names no topic, even where a document happens to use it. */
+export const namesNoTopic = (word: string): boolean => /^(?:规则|规定|政策|说明|介绍|详情)$/.test(word);
 
 // "能退吗" with nothing else to go on is about the refund rules; "数字专辑能退吗" is about digital albums.
 const ANY_REFUND = /(?<!年费|月费|会员费|年卡|包月|单月)(?:可以.{0,4}退(?!回)|能.{0,4}退(?!回)|退不退)/;
@@ -124,15 +126,20 @@ const ASKS_COUNT = /(?:多少|几)(人|首|张|台|次|积分)/;
 // What refunds are about, in a question and in a section of the documents.
 const MENTIONS_REFUND = /退款|退钱|退货|退费/;
 const REFUND_SECTION = /退款/;
-const NEAR_REFUNDS = /退|到账|原路|钱|审核|扣|重复|两次|买错|拍错|不想要|不要了|不喜欢|后悔|虚拟|失效/;
+const NEAR_REFUNDS = /退|到账|原路|钱|审|扣|重复|两次|买错|拍错|不想要|不要了|不喜欢|后悔|虚拟|失效/;
 // A way of doing something: what can, must or will be done, or where. "怎么算" and "怎么收费" ask for a rule, not a way.
 const ASKS_HOW = /怎么|怎样|如何|咋(?!办)/;
-const NOT_A_WAY = /怎么(?:办|样|算|收费|收|回事|定|说)|怎样算|如何(?:算|收费)|咋(?:算|样|回事)/;
+const NOT_A_WAY = /怎么(?:办|样|算|收费|收|回事|定|说)|怎样算|如何(?:算|收费)|咋(?:算|样|回事)|(?:怎么|咋)[^，,。？?]{0,6}了[呢啊呀]?[。？?！!]*$/;
 const STATES_A_WAY = /可|(?<!不)能|需|将|按|由|请|满|支持|进入|点击|提交|通过|“/;
 // How to join, in a sentence of its own: only a step says that, not a sentence that happens to mention members or signing up.
 const TO_JOIN = /^(?:请问)?(?:我(?:要|想)|想要?|要|帮我|给我)?(?:怎么|怎样|如何|咋)?(?:才能|样才能)?(?:开通?|购买|买|办理?|成为|加入)(?:个|一个)?(?:普通|豪华)?(?:会员|自动续费|连续包月)[呢啊呀吗]?[。？?！!]*$|^(?:普通|豪华)?会员(?:要|该)?(?:怎么|怎样|如何|咋)(?:才能)?(?:开通?|购买|买|办理?)[呢啊呀]?[。？?！!]*$/;
 const A_STEP = /进入|点击|页面/;
 const THROUGH_APPLE = /苹果|iphone|ipad|ios|app\s*store/i;
+
+const ASKS_IF_REFUNDABLE = /(?:能|可以|可不可以)退(?!回)/;
+
+/** A parcel gone missing: what happened is the question, and the shipping rules around it do not answer that. */
+export const lostParcel = (text: string): boolean => /丢|被偷|被拿走|冒领/.test(text);
 
 /**
  * Whether a sentence cannot be what was asked for, however many words they share. "多少钱" is not answered by a sentence with no
@@ -149,6 +156,8 @@ export function cannotAnswer(question: string, sentence: string, heading = "", v
   // A charge is about charges, and the App Store's way of cancelling only if that is where it was bought.
   if (/扣/.test(question) && (!/扣/.test(sentence) || (/App Store/.test(sentence) && !THROUGH_APPLE.test(question)))) return true;
   if (/开通/.test(question) && !/取消/.test(question) && /取消/.test(sentence)) return true;
+  if (lostParcel(question) && !lostParcel(sentence)) return true;
+  if (ASKS_IF_REFUNDABLE.test(question) && !/退/.test(sentence)) return true;
   if (TO_JOIN.test(question) && !A_STEP.test(sentence)) return true;
   if (ASKS_HOW.test(question) && !NOT_A_WAY.test(question) && !STATES_A_WAY.test(sentence)) return true;
   return !sentence.includes(verb);
@@ -158,6 +167,9 @@ const LIGHT_VERB = /^(?:用|使用|看|查|算|收|听|知道|才能|能|成为)
 
 /** What "怎么 V O" asks to do, when O is a word of the documents: not what the vocabulary already read it as. */
 export function verbAsked(question: string, isKnown: (word: string) => boolean): string {
+  // "积分能退吗" is about 积分, not about refunds in general.
+  const subject = /^([一-鿿A-Za-z0-9]{2,6})(?:能|可以|可不可以)退(?!回)/.exec(question)?.[1];
+  if (subject) return isKnown(subject) ? subject : "";
   const said = /(?:怎么|怎样|如何|咋)(?:样|才能|才可以)?([一-鿿]{2,8})/.exec(question)?.[1];
   if (!said || NOT_A_WAY.test(question)) return "";
   let verb = said.length <= 4 && isKnown(said) ? said : "";
@@ -291,14 +303,17 @@ const NEXT_STEPS: Record<string, string[]> = {
   iris: ["工单多久有人响应", "专业版有多少存储空间", "转人工"],
 };
 
-const WHAT_IT_IS = /你们?是谁|你是什么|你是啥|你们?是(?:机器人|真人|人工|ai)|你能干|你能做|能帮我干|能帮我做|能干啥|能干什么|能做什么|能做啥|会干啥|会什么|有什么功能|有啥功能|你可以做/i;
+const WHAT_IT_IS = /你们?是谁|你是什么|你是啥|你们?是(?:机器人|真人|人工|ai)|你能干|你能做|能帮我干|能帮我做|你可以做|(?:^|[，,\s]|你们?)(?:都|还)?(?:能干啥|能干什么|能做什么|能做啥|会干啥|会什么|有什么功能|有啥功能)/i;
 export const asksWhatItIs = (text: string): boolean => WHAT_IT_IS.test(text);
+
+/** "人工审核要多久" asks about a review, not for a person. */
+export const NOT_FOR_A_PERSON = /人工(?:审核?|核实|审批)/;
 
 /** "你们是机器人吗" asks what this is, not for a person. */
 export const asksIfHuman = (text: string): boolean => /^(?:请问)?(?:你们?)?是(?:不是)?(?:真人|机器人|人工|ai|人)(?:吗|么|嘛|吧|啊|呀)?[？?。！!~～\s]*$/i.test(text);
 
 /** "先别退了，我再想想": holding off, with nothing filed. */
-export const holdsOff = (text: string): boolean => text.length <= 16 && !text.includes("撤回") && /先别退|先不退|不退了|不退款了|别退了|不想退了|再想想|再考虑|还没想好|^(?:那|那就|就|我)?不退款?吧?[。！!~～]*$/.test(text);
+export const holdsOff = (text: string): boolean => text.length <= 16 && !text.includes("撤回") && /先别退|先不退|不退了|不退款了|别退了|不想退了|再想想|再考虑|还没想好|^(?:那|那就|就|我)?不退款?吧?[。！!~～]*$|^(?:(?:不好|好的?|那|算了|嗯|行)[，, ]*)*(?:别|不要|不用|不必)(?:帮我|给我)?退(?:款|钱|货)?(?:了|吧)?[。！!~～]*$/.test(text);
 
 export const NOTHING_FILED = "好的，没有提交退款申请。想好了随时告诉我订单号。";
 
@@ -318,7 +333,8 @@ export const NO_ORDERS_HERE = "这里没有订单，也不能在线退款。";
 
 /** Words but no Chinese and no order number: the documents and orders here are Chinese, and this page does not translate. */
 export { ANSWERS_IN_CHINESE } from "./text";
-export const inEnglish = (text: string): boolean => !/[一-鿿]/.test(text) && !/\bso\d/i.test(text) && (text.match(/[a-z]{2,}/gi) ?? []).length >= 2;
+const ONE_ENGLISH_WORD = /^(?:help|refund|refunds|order|orders|shipping|delivery|return|returns|invoice|price|prices|cancel|support|human|agent|question|menu|start)[.!?]*$/i;
+export const inEnglish = (text: string): boolean => !/[一-鿿]/.test(text) && !/\bso\d/i.test(text) && ((text.match(/[a-z]{2,}/gi) ?? []).length >= 2 || ONE_ENGLISH_WORD.test(text.trim()));
 
 export const canDo = (tenant: string): string => CAN_DO[tenant] ?? "";
 /** A sentence of ours about what the assistant does: nothing to check against the evidence. */

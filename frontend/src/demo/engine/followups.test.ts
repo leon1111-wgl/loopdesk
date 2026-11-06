@@ -673,3 +673,101 @@ describe("what a reviewer's visitors hit", () => {
     });
   });
 });
+
+describe("the demo's own menu", () => {
+  const N = "SO20260918001";
+  const tickets = (engine: DemoEngine) => engine.world.tickets.filter((t) => t.kind !== "handoff").length;
+
+  it.each(["退了之后多久到卡上", "退了多久到账", "退的钱几天到卡里", "钱退了几天能到"])("%s is about the money coming back, not the parcel", (turn) => {
+    const { text } = talk(EMMA, turn);
+    expect(text).toContain("工作日");
+    expect(text).not.toContain("送达");
+  });
+
+  it.each(["快递丢了怎么办", "包裹丢了怎么办", "快递丢了", "东西寄丢了怎么办", "快递被偷了怎么办"])("%s: loss is not in the documents, so it says so and offers a ticket or a person", (turn) => {
+    const { text, meta, engine } = talk(EMMA, turn);
+    expect(isRefusal(text)).toBe(true);
+    expect(text).not.toMatch(/\[\d+\]/);
+    expect(text).toContain("帮我创建工单");
+    expect(meta.next_steps).toContain("转人工");
+    expect(tickets(engine)).toBe(0);
+  });
+
+  it.each(["你好，我想咨询一下", "您好，请问一下", "我想咨询一下", "你好 我有个问题", "在吗，问个事", "有个问题想问一下", "你好，打扰一下", "咨询一下", "请问"])("%s greets, as 你好 does", (turn) => {
+    expect(talk(EMMA, turn).text).toBe(talk(EMMA, "你好").text);
+    expect(talk(NOAH, turn).text).toBe(talk(NOAH, "你好").text);
+  });
+
+  it.each(["你好，我想咨询一下退款多久到账", "您好，请问退款多久到账"])("%s is still a question", (turn) => {
+    expect(talk(EMMA, turn).text).toContain("工作日");
+  });
+
+  it.each([[EMMA, "help"], [LILY, "help"], [NOAH, "help"], [EMMA, "refund"], [EMMA, "help me"]])("%s %s gets the English reply and examples", (email, turn) => {
+    const { text, meta } = talk(email, turn);
+    expect(text).toContain("This demo answers in Chinese");
+    expect(text).not.toMatch(/[一-鿿]/);
+    expect(meta.next_steps?.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it.each(["不好，别帮我退", "不用帮我退", "不要退了", "别帮我退", "不要帮我退款", "不用退了", "别退"])("after a refund question, %s says nothing was filed", (turn) => {
+    const { text, refunds, waiting } = talk(EMMA, `${N} 能退吗`, turn);
+    expect(text).toContain("没有提交退款申请");
+    expect(refunds + waiting).toBe(0);
+  });
+
+  it("a question about not refunding is still a question", () => {
+    expect(talk(EMMA, `${N} 能退吗`, "不用退货的话运费怎么算").text).toContain("运费");
+  });
+
+  it.each([[LILY, "币能干啥", "直播打赏"], [EMMA, "积分能干啥", "抵扣"], [NOAH, "专业版有什么功能", "专业版"]])("%s %s is about that subject, not about the assistant", (email, turn, expected) => {
+    const { text } = talk(email, turn);
+    expect(text).toContain(expected);
+    expect(text).not.toContain("在线客服助手");
+  });
+
+  it.each(["你们能干啥", "能做什么", "你有什么功能", "你们有什么功能"])("%s is still about the assistant", (turn) => {
+    expect(talk(EMMA, turn).text).toContain("在线客服助手");
+  });
+
+  it.each(["退款要等人工审吗", "人工审要多久", "人工审核要多久"])("%s asks about a review, not for a person", (turn) => {
+    const { text, engine } = talk(EMMA, turn);
+    expect(text).toContain("人工审核");
+    expect(engine.world.tickets.length).toBe(0);
+  });
+
+  it.each(["积分能退吗", "运费能退吗"])("%s does not call a passage the answer without the rule that applies", (turn) => {
+    expect(talk(EMMA, turn).refunds).toBe(0);
+  });
+
+  it.each([[LILY, "下载规则", "下载"], [LILY, "下载的规则", "下载"], [LILY, "Echo币规则", "Echo币"], [LILY, "Echo币的规则", "Echo币"], [LILY, "自动续费的规则", "自动续费"], [EMMA, "发票规则", "发票"], [EMMA, "配送规则", "配送"], [EMMA, "积分的规则", "积分"], [NOAH, "数据导出规则", "导出"]])("%s %s: the capability text's own words are answered", (email, turn, expected) => {
+    const { text } = talk(email, turn);
+    expect(text).toMatch(/\[\d+\]/);
+    expect(text).toContain(expected);
+  });
+
+  it.each(["工单规则", "工单", "工单说明", "工单优先级"])("Iris: %s names tickets and creates none", (turn) => {
+    expect(tickets(talk(NOAH, turn).engine)).toBe(0);
+  });
+
+  it.each(["帮我提个工单", "创建工单", "提交工单", "我要开工单", "帮我开一张工单", "新建工单"])("Iris: %s creates one", (turn) => {
+    expect(tickets(talk(NOAH, turn).engine)).toBe(1);
+  });
+
+  it("asking what to do about a lost parcel on one order reads it and offers, and reporting it opens a ticket", () => {
+    const asked = talk(EMMA, "SO20261008002 快递丢了怎么办");
+    expect(tickets(asked.engine)).toBe(0);
+    expect(asked.text).toContain("AT1402938475");
+    expect(asked.text).toContain("帮我创建工单");
+    expect(tickets(talk(EMMA, "SO20261008002 快递丢了").engine)).toBe(1);
+  });
+
+  it("whether something can be refunded is answered about that thing", () => {
+    expect(talk(EMMA, "积分能退吗").text).toContain("积分");
+    expect(talk(EMMA, "积分能退吗").text).not.toContain("七天无理由");
+    expect(isRefusal(talk(EMMA, "发票能退吗").text)).toBe(true);
+    expect(talk(LILY, "专辑能退吗").text).toContain("不支持退款");
+    expect(talk(EMMA, "定制商品能退吗").text).toContain("定制商品");
+    expect(talk(EMMA, "能退吗").text).toContain("七天无理由");
+    expect(talk(EMMA, "杯子能退吗").text).toContain("七天无理由");
+  });
+});
