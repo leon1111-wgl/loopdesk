@@ -49,9 +49,10 @@ function thenRefundTiming(text: string): [string, string] | null {
 const ASKS_SOMETHING = /吗|呢|多少|多久|几天|怎么|如何|能不能|可不可以|可以|咋|在哪|谁/;
 const MY_POINTS = /积分(?:还有|还剩|余额|一共|有)多少|有多少积分|我的积分|查积分/;
 const ARRIVAL = /(?:什么时候|多久|几天|啥时候|何时)(?:能|才能)?(?:到|送到|收到)(?!账)/;
+const HAS_IT_COME = /到了吗|到了没|到没到|收到了吗/;
 const WHO_SIGNED = /谁签|谁收|签收了吗|签收没|有人签|有人收/;
 // The money coming back ("这笔钱什么时候到") is not the parcel coming.
-const wantsTracking = (text: string) => !/钱|款/.test(text) && (M._SHIPMENT.test(text) || ARRIVAL.test(text) || WHO_SIGNED.test(text));
+const wantsTracking = (text: string) => !/钱|款/.test(text) && (M._SHIPMENT.test(text) || ARRIVAL.test(text) || WHO_SIGNED.test(text) || HAS_IT_COME.test(text));
 const OUTAGE = /彻底|完全|全部|整个/;
 
 /** "SO… 到哪了 能开发票吗": a question about the order, and one that is not about it. */
@@ -664,7 +665,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
       : expandQuery(inquiry ? refundQuestion(text) : text);
     if (!refundFailed) {
       const plain = !(refund || ticket || progress || customParts.length || eta || rush || selfDamage || knowledge.chosen);
-      const limit = !plain && !knowledge.chosen ? 1 : inquiry ? 2 : 3;
+      const limit = !plain && !knowledge.chosen ? 1 : inquiry ? 2 : 4;
       let sentences = plain ? answerSentences(tenant, inquiry ? refundQuestion(text) : sub(T.ORDER_ID_RE, " ", text), knowledge.results ?? [], limit) : extract(query, knowledge.results ?? [], limit);
       // About one order's refund: only what is about refunds, whatever else the message's other words brought up.
       if (inquiry && !extra && !asksBeyondRefunds(text) && !OTHER_SUBJECT.test(text)) sentences = sentences.filter((s) => ABOUT_REFUNDS.test(s));
@@ -680,7 +681,8 @@ export function compose(input: string, allResults: Results, tenant: string, excl
       if (!sentences.length && knowledge.chosen) sentences = (knowledge.results ?? []).flatMap((hit: Output) => opening(hit));
       const asked = orders.length === 1 && !inquiry && !mentionsRefund(text) && !(eta || rush || ticket) ? orderQuestion(text) : "";
       if (sentences.length) parts.push(...sentences);
-      else if (asked) parts.push(`关于“${asked}”，知识库中没有找到相关依据。`);
+      // What is asked about the order's own item was answered by its record: saying there is no basis would contradict that.
+      else if (asked && !(orders[0]?.items ?? []).some((item: Output) => namesItem(asked, item.name ?? ""))) parts.push(`关于“${asked}”，知识库中没有找到相关依据。`);
       else if (!parts.length && !ticket) parts.push(knowledge.error ? X.SEARCH_DOWN : `${X.REFUSAL}${canDo(tenant)}`);
     }
   }
@@ -725,7 +727,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
 // such a guess: a refund demand is offered back ("需要为订单 … 申请退款吗"), everything else only reads.
 const LIST_ORDERS = /(?:下了|下过|买了|买过|下的|买的).{0,4}(?:哪些|什么|啥)|(?:哪些|什么).{0,3}(?:订单|单子)|最近.{0,4}(?:订单|单子|下的单)|有几个?(?:订单|单子)/;
 const ORDER_NUMBER = /订单号|单号|哪一?单|什么单/;
-const TRACKING = /运单|快递|物流|到哪|发货了吗|发了没|发货没|到了吗|到了没|到没到|收到了吗/;
+const TRACKING = /运单|快递|物流|到哪|发货了吗|发了没|发货没/;
 const STATUS = /状态|怎么样了|开通了吗|生效了吗|查一下|看一下|看看/;
 const PRICE = /(?:[¥￥]\s*)?(\d+(?:\.\d+)?)\s*(?:元|块)?/g;
 

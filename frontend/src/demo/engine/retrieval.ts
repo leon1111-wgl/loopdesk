@@ -4,7 +4,7 @@
  * word ("货到付款") is missing, coverage falls and the answer is a refusal, not a neighbouring policy.
  */
 import { pack, type KbChunk } from "./pack";
-import { answerFit, cannotAnswer, documentWords, isFiller, saidOtherwise, statesWhatIsAsked } from "./reading";
+import { answerFit, cannotAnswer, documentWords, isFiller, refundRuleWords, saidOtherwise, statesWhatIsAsked } from "./reading";
 import { canonicalQuery, expandQuery, splitSentences, tokenize } from "./text";
 
 const RRF_K = 60;
@@ -91,7 +91,9 @@ class TenantIndex {
   asked(text: string, base: string): string[] {
     const said = saidOtherwise(text);
     const own = this.knownParts(tokenize(base)).filter((t) => (this.df.get(t) ?? 0) > 0 || !said.some((s) => s.includes(t)));
-    return [...own, ...this.knownParts(tokenize(this.inDocuments(documentWords(text))))];
+    const mapped = this.knownParts(tokenize(this.inDocuments(documentWords(text))));
+    const specific = [...own, ...mapped].some((t) => (this.df.get(t) ?? 0) > 0 && !/退|申请/.test(t));
+    return [...own, ...mapped, ...(specific ? [] : this.knownParts(tokenize(this.inDocuments(refundRuleWords(text)))))];
   }
 
   bm25(tokens: string[], allowed: Set<string>): [number, number][] {
@@ -207,7 +209,7 @@ export function search(tenant: string, asked: string, allowed: Set<string>, topK
   const index = indexOf(tenant);
   const known = index.inDocuments(documentWords(asked));
   const gateTokens = index.asked(asked, canonicalQuery(asked));
-  const query = `${expandQuery(asked)} ${known}`;
+  const query = `${expandQuery(asked)} ${known} ${index.inDocuments(refundRuleWords(asked))}`;
   const queryTokens = index.asked(asked, expandQuery(asked));
   const bm25 = index.bm25(queryTokens, allowed);
   const vec = index.vector(features(query), allowed);

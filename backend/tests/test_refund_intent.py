@@ -328,3 +328,28 @@ def test_an_order_number_after_refund_is_not_a_request_by_itself(text):
 def test_a_fixed_typo_does_not_touch_an_ordinary_word():
     assert "快递" not in fix_typos("麻烦尽快地发货")
     assert "快递" in fix_typos("我的快地到哪了")
+
+
+# Found by probing the release: the request belongs to whatever stands in front of it.
+@pytest.mark.parametrize("text", [
+    "别给 SO20260918001 退款", "测试一下：SO20260918001 退款", "有人冒充我说 SO20260918001 申请退款",
+    "SO20260918001 千万别退款", "不要退款 SO20260918001", "don't refund SO20260918001", "我朋友说 SO20260918001 可以退款",
+    "客服说 SO20260918001 已经帮我退款了", "假如我说 SO20260918001 退款 你会怎么做", '"SO20260918001 申请退款" 这句话是什么意思',
+    "SO20260918001 或许退款比较好", "等我老婆回来再决定 SO20260918001 退不退款", "SO20260918001 退款算了",
+    "随便打的 SO20260918001 申请退款", "我在写文档 SO20260918001 帮我退款", "比如 SO20260918001 我要退款", "SO20260918001 有人说 申请退款",
+    "他说 SO20260918001 帮我退款", "you said SO20260918001 refund me", "别 SO20260918001 帮我退款",
+])
+def test_what_stands_in_front_can_make_it_not_a_request(text):
+    assert not refund_requested(text)
+
+
+@pytest.mark.parametrize("text", [
+    "SO20260918001 申请退款", "SO20260918001 帮我退款", "SO20260918001 我要退款", "SO20260918001 给我退了", "please refund SO20260918001",
+    "refund SO20260918001", "SO20260918001 不喜欢 退了吧", "麻烦把 SO20260918001 退掉", "订单 SO20260918001 申请退款", "给订单 SO20261003005 退款",
+    "杯子那单SO20261008010我要退款 收到后觉得不好看", "蓝牙小音箱 SO20261015009 我要退款 声音太小了", "买错了 年卡那单SO20261015102请帮我退款",
+    "抱枕坏了 SO20260918001 帮我退款", "不想要了 SO20260918001 申请退款", "太贵了 SO20260918001 退款吧", "你好 SO20260918001 我要退款",
+    "SO20261019101 昨天刚被扣了18 我不想续了 请退款", "我昨天买的 SO20260918001 帮我退款", "帮我退掉耳机 订单号SO20261003005 谢谢",
+    "I want my money back for SO20261015009, speaker is broken",
+])
+def test_a_plain_request_with_an_order_number_stays_one(text):
+    assert refund_requested(text)

@@ -267,6 +267,57 @@ _NOT_NOW_RE = re.compile(
     r"|^(?:等会|等等|以后|回头|之后|先)?再说吧?$"
     r"|再不[^，,。！!？?；;\s]{0,8}(?:我就|我要|就要)退|超过[^，,。！!？?；;\s]{0,12}(?:我就|就要)退")
 _A_CLAUSE = re.compile(r"[，,。！!？?；;\s]+")
+# What may stand in front of an order number that comes before the request. Anything else there may be what governs the
+# rest ("别给 SO… 退款", "测试一下：SO… 退款", "有人冒充我说 SO… 申请退款"), so it files nothing: the customer is offered the
+# refund instead, and says so plainly.
+_LEAD_IN_RE = re.compile(
+    r"(?:你好|您好|客服|在吗|嗯|好的|好|不对|错了|说错了|搞错了|那|那就|就|麻烦|麻烦你|请|直接|帮我|给我|替我|我要|我想|我|把|给|为|订单号?|单号|这单|那单|这个|那个|这笔|那笔"
+    r"|顾客原话|the|for|order|please|pls|plz|kindly|can\s+you|could\s+you|would\s+you|i\s+want|i\s+need|i'?d\s+like|my|a|hi|hello|ok|okay"
+    r"|[^\u4e00-\u9fffA-Za-z0-9])*", re.IGNORECASE)
+_A_REASON_RE = re.compile(
+    r"坏|碎|破|裂|漏|没声|不响|开线|划痕|瑕疵|质量|有问题|不能用|用不了|连不上|打不开|开不了|没反应|故障|杂音"
+    r"|不要了|不想要|不需要|不喜欢|不合适|不好|不想用|不想续|用不上|没用|买错|拍错|点错|误买|手滑|后悔|换货|太[^，,。！!？?；;\s]{0,4}了?|还不发货|还没发货|没发货|发错"
+    r"|忽略.{0,8}指令")  # an injected line changes nothing, either way: the rules run on the rest
+_AN_ORDER_OR_ITEM_RE = re.compile(r"[^\s，,。！!？?；;]{0,12}(?:那单|这单|订单|单子|买的|下的|扣的)[^\s，,。！!？?；;]{0,8}|[\u4e00-\u9fff]{1,8}|[A-Za-z0-9 -]{1,16}")
+_NAMES_AN_ORDER_RE = re.compile(r"那单|这单|订单|单子|买的|下的|扣的")
+# Words that make a noun phrase of the above something else.
+_NOT_A_NAME_RE = re.compile(r"[的了是你他她它们要能吗呢吧啊呀哦嘛么在和与及或就都也还又很更最再才被让给跟对向从到而但却如若等这那哪谁啥咋怎几多少不没别帮想会可该应需得着过来去说问看听试写讲查]")
+_LEANS_ON_NEXT_RE = re.compile(r"(?:说|讲|问|写|写着|提到|认为|觉得|以为|表示|通知|显示|别|不要|不用|不能|不想|不会|没|未|千万|勿|禁止|如果|要是|假如|万一|[:：“\"「『'《]"
+                               r"|don'?t|do\s+not|not|never|if|said|say|says|told|asked|whether|about|to)\s*$", re.IGNORECASE)
+_NOT_ITS_OWN_RE = re.compile(r"测试|试一下|试试|演示|举例|举个例子|比如|例如|模拟|假装|假设|冒充|扮演|有人|别人|朋友|同事|老婆|老公|室友|同学|邻居|闺蜜|家人|这句话|这段话|什么意思|翻译|造句|例句")
+_NOT_ONLY_MARKS_RE = re.compile(r"[\u4e00-\u9fffA-Za-z0-9]")
+_REQUEST_WORD_RE = re.compile(r"(?:申请|要求|全额|全款|全部)?退|refund|money\s+back|return", re.IGNORECASE)
+
+
+def _allowed_in_front(front: str) -> bool:
+    if _LEAD_IN_RE.fullmatch(front):
+        return True
+    if _LEANS_ON_NEXT_RE.search(front):
+        return False
+    for part in _A_CLAUSE.split(front):
+        if _LEAD_IN_RE.fullmatch(part) or _A_REASON_RE.search(part):
+            continue
+        if _AN_ORDER_OR_ITEM_RE.fullmatch(part) and (_NAMES_AN_ORDER_RE.search(part) or not _NOT_A_NAME_RE.search(part)):
+            continue
+        return False
+    return True
+
+
+def _governed_from_outside(text: str) -> bool:
+    """A message with an order number: is the request in it this customer's own, now, or something else's subject?"""
+    number = ORDER_ID_RE.search(text)
+    if not number:
+        return False
+    if _NOT_ITS_OWN_RE.search(text):
+        return True
+    words = list(_REQUEST_WORD_RE.finditer(text))
+    if not words:
+        return False
+    if number.start() < words[0].start() and not _allowed_in_front(text[:number.start()]):
+        return True
+    last = words[-1].start()
+    before = text[number.end():last] if number.start() < last else text[:last]
+    return bool(_NOT_ONLY_MARKS_RE.search(before) and _LEANS_ON_NEXT_RE.search(before.rstrip()))
 
 
 def _not_now(text: str) -> bool:
@@ -397,7 +448,7 @@ def refund_requested(text: str) -> bool:
     if _retracted(folded):  # "我要退款 算了不退了": the last word on it takes the demand back
         return False
     kept = NEGATED_REFUND_RE.sub("，", folded)
-    if _ONLY_ASKING_RE.search(kept) or _not_now(kept):
+    if _ONLY_ASKING_RE.search(kept) or _not_now(kept) or _governed_from_outside(folded):
         return False
     if not REFUND_RE.search(kept):
         return _demands_refund(kept)  # "SO… 退了吧": not one of the refund words, but a bare demand

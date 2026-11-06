@@ -5,7 +5,7 @@
 import type { AgentEvent, EvidenceItem, SpanRow, Verification } from "../../types";
 import { INJECTION, M, PII, T, W, pack, type TenantConfig } from "./pack";
 import { compose, mentionsRefund, nextCall, readsAsOrder, refundRequested, theOneOrder, understood, type Results, type Turn } from "./planner";
-import { DECLINE_TEXT, NOT_GRANTED, canDo, declines, isCanDo, nextSteps } from "./reading";
+import { ANSWERS_IN_CHINESE, DECLINE_TEXT, NOTHING_FILED, NOT_GRANTED, asksWhatItIs, canDo, declines, holdsOff, inEnglish, isCanDo, nextSteps } from "./reading";
 import { search } from "./retrieval";
 import { addEvidence, availableTools, queueNotice, runTool, type ApprovalRow, type Evidence, type ToolContext, type World, SIMULATED } from "./tools";
 import { asksForPerson, canonical, classifyReply, extractNumbers, findAll, handoffCancelled, isRefusal, money, normalizeWidth, overlapRecall, refundWithdrawRequested, splitSentences, stripCitations, sub, withdrawConfirmed } from "./text";
@@ -369,6 +369,10 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
   // Only punctuation: nothing to read, and a greeting would pretend otherwise.
   if (role === "customer" && !choice && !/[\p{L}\p{N}]/u.test(turnText)) return finish(`没有看懂您的问题，暂时无法回答。${canDo(tenant)}`, null, false);
 
+  if (role === "customer" && !choice && asksWhatItIs(turnText) && !T.ORDER_ID_RE.test(turnText)) {
+    return finish(`我是${String(config.name ?? "")}的在线客服助手。这是演示，由浏览器里的规则引擎回答，不是模型，数据都是虚构的。${canDo(tenant)}`, null, false, { next_steps: nextSteps(tenant) });
+  }
+
   // What no message may grant, whatever else it says.
   const decline = role === "customer" && !choice ? declines(turnText, injection.length > 0) : null;
   if (decline) run.spans.push(span("guardrail", "declined", { text: turnText }, { rule: decline }));
@@ -423,6 +427,13 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     } else if (BARE_NUMBER.test(turnText) && lastReply.includes("要申请退款的是哪一单")) {
       const id = findAll(T.ORDER_ID_RE, turnText)[0][0].toUpperCase();
       read = { question: `${id} ${refundRequested(previous ?? "") ? "申请退款" : "退款"}`, unconfirmed: null, method: "order_context" };
+    } else if (!hasNumber && holdsOff(turnText.trim())) {
+      // Say nothing was filed only when nothing was: a request or a refund already in this tab is answered about that one.
+      if (refundOffer) return finish(`好的，没有为订单 ${refundOffer} 提交退款申请。`, null, false);
+      const live = world.approvals.some((a) => a.tenant === tenant && a.tool === "request_refund" && a.status === "pending" && a.requester === email) || world.refunds.some((r) => r.tenant === tenant && r.customer === email && r.filed);
+      if (!live) return finish(NOTHING_FILED, null, false);
+      read = { question: talkedAbout ? `${talkedAbout} 撤回退款申请` : "我想撤回退款申请", unconfirmed: null, method: "order_context" };
+      ctx.customerText = read.question;
     } else if (talkedAbout && !hasNumber && !T.OTHER_ORDER.test(turnText) && BARE_DEMAND.test(turnText.trim())) {
       // A bare "退了吧" right after an order files it; with other turns in between it is only offered.
       read = { question: `${talkedAbout} 申请退款`, unconfirmed: adjacent ? null : talkedAbout, method: "order_context" };
@@ -533,7 +544,9 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     if (toolName === "withdraw_refund_request" && outcome.output.confirm_required) conversation.withdrawOffer = outcome.output;
   }
 
-  const answer = preface + compose(planned, results, tenant, exclude);
+  const composed = compose(planned, results, tenant, exclude);
+  // English nobody here can answer gets an honest reply in English, and examples it can answer: not a Chinese apology.
+  const answer = preface + (role === "customer" && inEnglish(turnText) && isRefusal(composed) ? ANSWERS_IN_CHINESE : composed);
   const offeredFor = results.request_refund?.at(-1)?.confirm_order;
   if (offeredFor) conversation.refundOffer = String(offeredFor);
   noteOrder(conversation, planned);

@@ -244,6 +244,25 @@ export function refundWithdrawRequested(text: string): boolean {
 }
 
 /** True when the message asks for a refund, not when it asks about one or declines one. */
+function allowedInFront(front: string): boolean {
+  if (fullMatch(T._LEAD_IN_RE, front)) return true;
+  if (T._LEANS_ON_NEXT_RE.test(front)) return false;
+  return front.split(T._A_CLAUSE).every((part) => fullMatch(T._LEAD_IN_RE, part) || T._A_REASON_RE.test(part)
+    || (fullMatch(T._AN_ORDER_OR_ITEM_RE, part) && (T._NAMES_AN_ORDER_RE.test(part) || !T._NOT_A_NAME_RE.test(part))));
+}
+
+function governedFromOutside(text: string): boolean {
+  const number = T.ORDER_ID_RE.exec(text);
+  if (!number) return false;
+  if (T._NOT_ITS_OWN_RE.test(text)) return true;
+  const words = findAll(T._REQUEST_WORD_RE, text);
+  if (!words.length) return false;
+  if (number.index < words[0].index && !allowedInFront(text.slice(0, number.index))) return true;
+  const last = words[words.length - 1].index;
+  const before = number.index < last ? text.slice(number.index + number[0].length, last) : text.slice(0, last);
+  return T._NOT_ONLY_MARKS_RE.test(before) && T._LEANS_ON_NEXT_RE.test(before.trimEnd());
+}
+
 function notNow(text: string): boolean {
   let found = false;
   for (const clause of text.split(T._A_CLAUSE)) {
@@ -258,7 +277,7 @@ export function refundRequested(text: string): boolean {
   const folded = numeralAmounts(normalizeWidth(fixTypos(text || "")));
   if (retracted(folded)) return false;
   const kept = sub(T.NEGATED_REFUND_RE, "，", folded);
-  if (T._ONLY_ASKING_RE.test(kept) || notNow(kept)) return false;
+  if (T._ONLY_ASKING_RE.test(kept) || notNow(kept) || governedFromOutside(folded)) return false;
   if (!T.REFUND_RE.test(kept)) return demandsRefund(kept);
   if (asksWhatIf(kept)) return false;
   if (namedDemand(T.REFUND_APPLY_RE, kept) || demandsRefund(kept)) return true;
