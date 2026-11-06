@@ -174,7 +174,7 @@ test.describe("the browser model, with a stand-in for the weights", () => {
     await expect(page.locator(".demo-engine")).toContainText("点击后才下载");
     await page.getByRole("button", { name: "加载模型" }).click();
     await expect(page.locator(".demo-engine")).toContainText("已加载");
-    await ask(page, "支持花呗分期吗"); // the rules would refuse this: the model picks a chunk, the program quotes it
+    await ask(page, "能开纸质发票吗"); // the rules would refuse this: the model picks a chunk, the program quotes it
     await expect(lastAnswer(page).locator(".engine-tag")).toHaveText(/Qwen3-0\.6B/, { timeout: 20_000 });
     await expect(lastAnswer(page).locator(".cite").first()).toBeVisible();
     await ask(page, "退款多久能到账呀"); // the rules have this one: the model is not asked
