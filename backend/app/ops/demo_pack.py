@@ -249,10 +249,12 @@ def money_phrases(items: list[str] | None = None) -> dict[str, list[Any]]:
     found: set[str] = set()
     for path in sorted((backend / "tests").glob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and 2 < len(node.value) < 80:
-                if "\n" not in node.value and _MONEY_WORDS.search(node.value):
-                    found.add(node.value)
-    for name in ("leon_default.jsonl", "echo_default.jsonl", "iris_default.jsonl", "leon_hard.jsonl"):
+            # A test's f"{N} 帮我退款" is a phrase too, with some order number where the test has its own.
+            value = "".join(part.value if isinstance(part, ast.Constant) else "SO20260918001" for part in node.values) \
+                if isinstance(node, ast.JoinedStr) else node.value if isinstance(node, ast.Constant) else None
+            if isinstance(value, str) and 2 < len(value) < 80 and "\n" not in value and _MONEY_WORDS.search(value):
+                found.add(value)
+    for name in ("leon_default.jsonl", "echo_default.jsonl", "iris_default.jsonl", "leon_hard.jsonl", "money_fresh_v5.jsonl"):
         for line in (backend / "evals" / name).read_text(encoding="utf-8").splitlines():
             found.add(json.loads(line)["question"])
     review = json.loads((backend / "evals" / "money_review_lists.json").read_text(encoding="utf-8"))

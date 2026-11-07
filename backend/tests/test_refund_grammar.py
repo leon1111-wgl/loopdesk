@@ -224,7 +224,7 @@ def test_what_does_not_fit_the_grammar(text):
 
 
 def test_a_question_about_something_else_needs_the_request_to_say_whose():
-    assert refund_requested(f"{N} 帮我退款 自动续费怎么关") and not refund_requested(f"{N} 退款！ 自动续费怎么关")
+    assert refund_requested(f"{N} 发票怎么开 帮我退款") and not refund_requested(f"{N} 发票怎么开 退款吧")
 
 
 @pytest.mark.parametrize("text", ["如果坏了帮我退款", "if you can't replace it I want a refund", "要是没货了直接退款", "只要没发货就帮我退款"])
@@ -291,6 +291,17 @@ def test_no_set_files_on_a_should_not_turn_with_a_number():
                  if not c["moves_money"] and not c.get("history") and ORDER_ID_RE.search(c["question"]) and refund_requested(c["question"])]
         # Refused later for reasons the words do not show (the order's window, or it is someone else's): the tool says no.
         assert wrong in ([], ["运动水壶那单SO20260801004 我申请退款"]), (name, wrong)
+
+
+def test_the_fresh_set_stays_where_its_first_run_left_it():
+    # First run on the final rule: 29/40, no wrong filing, 9 of 20 real requests filed and the rest asked again (docs/EVALUATION.md).
+    # What the words alone read as a request on a should-not turn with a number: nothing.
+    from app.textutil import ORDER_ID_RE
+
+    cases = gate_cases("money_fresh_v5.jsonl")
+    assert (len(cases), sum(c["moves_money"] for c in cases)) == (40, 20)
+    assert [c["question"] for c in cases if not c["moves_money"] and not c.get("history") and ORDER_ID_RE.search(c["question"])
+            and refund_requested(c["question"])] == []
 
 
 def test_the_lists_are_in_the_parity_table():
