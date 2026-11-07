@@ -22,7 +22,7 @@ const T = {
     enter: "进入控制台",
     sub: "客服工作台",
     eyebrow: "多租户 · 证据优先 · 人机协作",
-    h1: ["每一句回答，", "都有据可查"],
+    stack: "FastAPI · React · RAG · MCP · 语音 Agent",
     lead: "LoopDesk 把智能客服、业务处理和人工协作放进一个控制台：回答逐句核对知识库和订单数据，退款等高风险操作交给人工审批，每一次纠错都沉淀为知识补丁和回归用例。",
     how: "看运作方式",
     skip: "下次直接进入",
@@ -76,7 +76,7 @@ const T = {
     enter: "Open the console",
     sub: "Service workbench",
     eyebrow: "Multi-tenant · Evidence first · Human in the loop",
-    h1: ["Every answer,", "backed by evidence"],
+    stack: "FastAPI · React · RAG · MCP · Voice agent",
     lead: "LoopDesk puts the AI agent, business actions and human agents in one console: each sentence is checked against the knowledge base and order data, risky actions such as refunds wait for a person, and every correction becomes a knowledge patch and a regression case.",
     how: "How it works",
     skip: "Skip this page next time",
@@ -269,7 +269,8 @@ export default function IntroPage() {
         <div>
           <span className="intro-eyebrow">{t.eyebrow}</span>
           {/* The second line reads like an evidenced phrase in an answer: highlighted, with its citation. */}
-          <h1>{t.h1[0]}<br /><span className="hl">{t.h1[1]}</span>{"\u2060"}<sup className="hl-cite" aria-hidden="true">1</sup></h1>
+          <h1>LoopDesk</h1>
+          <p className="hero-stack">{t.stack}</p>
           <p className="lead">{t.lead}</p>
           <div className="cta">
             <button type="button" className="btn btn-primary btn-lg" onClick={enter}>{t.enter}<ArrowRight size={16} aria-hidden="true" /></button>

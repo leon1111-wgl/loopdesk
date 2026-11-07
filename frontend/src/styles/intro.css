@@ -31,6 +31,7 @@
 .hero { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 48px; align-items: center; max-width: 1240px; margin: 0 auto; padding: 140px 40px 64px; }
 .intro-eyebrow { display: block; margin-bottom: 12px; font-size: 12px; font-weight: 600; letter-spacing: 1px; color: var(--primary); }
 .hero h1 { font-size: clamp(38px, 5vw, 66px); line-height: 1.15; font-weight: 800; letter-spacing: 1px; }
+.hero .hero-stack { margin-top: 12px; font-family: var(--mono); font-size: clamp(14px, 1.4vw, 17px); line-height: 1.6; letter-spacing: .02em; color: var(--primary); }
 /* An evidenced phrase: a flat highlighter band under the words and a citation chip, as in an answer. */
 .hero h1 .hl {
   display: inline; color: var(--primary); padding: 0 4px; -webkit-box-decoration-break: clone; box-decoration-break: clone;
