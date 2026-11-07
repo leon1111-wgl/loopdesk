@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.agent.rewrite import carry_order
 from app.db import new_session
 from app.models import Approval, Message
-from app.textutil import refund_requested
+from app.textutil import refund_requested, stated_refund_amount
 from tests.conftest import by_type
 
 JACK_ORDER = "SO20261003005"  # Jack's ¥899 headphones, delivered 14 days ago: refunds go to review
@@ -126,12 +126,19 @@ def test_another_item_after_an_order_still_asks_which_one(ask, login):
 
 @pytest.mark.parametrize("text, amount", [
     ("899 块买的 退 100 块补偿就行", 100.0),     # the number after 退, not the price
-    ("不想退 100 元，想退 200 元", 200.0),       # never the declined one
 ])
 def test_the_amount_is_the_one_asked_for(ask, login, text, amount):
     _, events = ask(login("customer2@leon.demo"), f"{JACK_ORDER} 有杂音 {text}")
     refund = [args for name, args in _tools(events) if name == "request_refund"]
     assert refund and refund[0]["amount"] == amount
+
+
+def test_changing_the_amount_in_one_breath_is_offered_and_never_the_declined_one(ask, login):
+    text = "不想退 100 元，想退 200 元"
+    assert stated_refund_amount(text) == 200.0
+    _, events = ask(login("customer2@leon.demo"), f"{JACK_ORDER} 有杂音 {text}")
+    assert "request_refund" not in [name for name, _ in _tools(events)]
+    assert f"回复“{JACK_ORDER} 申请退款”" in by_type(events, "final")[0]["text"]
 
 
 def test_a_refund_follow_up_question_files_nothing(ask, login):

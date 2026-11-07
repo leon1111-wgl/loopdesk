@@ -348,7 +348,7 @@ describe("whose request it is", () => {
 });
 
 // The money review's findings at 6bf3c49, one or two of each shape. A list of what is not a request never closes, so the page files
-// only what fits a closed grammar (reading.ts plainRequest); these are here to keep it that way.
+// only what fits a closed grammar (textutil.plain_request, ported in text.ts); these are here to keep it that way.
 const N = "SO20260918001";
 describe("a message files only if every clause in it is part of a request", () => {
   it.each([

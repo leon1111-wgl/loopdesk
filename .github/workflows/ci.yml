@@ -25,6 +25,8 @@ jobs:
         run: pytest -q
         env:
           LOOPDESK_TEST_TRACE_WRITES: buffered
+      - name: The refund rule on its own (no browser; lists already read, so a floor and not a measurement)
+        run: python -m app.evals.money_rule --whole --gate --report money-rule.json
       - name: Regression eval gate (offline model, synthetic data)
         run: python -m app.evals.cli --fresh --gate 0.95 --report eval-report.json
       - name: Regression eval gate, second tenant (SaaS knowledge base)

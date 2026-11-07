@@ -279,7 +279,85 @@ function notNow(text: string): boolean {
   return found;
 }
 
+/** What a clause may name and still be part of a plain request. */
+export function itemWords(names: string[]): Set<string> {
+  return new Set(names.flatMap((name) => {
+    const han = name.replace(/[^一-鿿]/g, "");
+    return [...han].slice(0, -1).map((_, i) => han.slice(i, i + 2));
+  }));
+}
+
+// Until an order is in hand, the words of every item on sale here: the tool holds a clause to the order it files on.
+const ITEM_WORDS = itemWords(Object.values(pack.orders).flat().flatMap((order) => order.items.map((item) => item.name)));
+
+function namesAnItem(clause: string, words: Set<string>): boolean {
+  const han = clause.replace(T._PLAIN_ITEM_LEAD_RE, "");
+  if ([...han].length > 12 || !T._PLAIN_ITEM_SHAPE_RE.test(han) || T._PLAIN_NOT_AN_ITEM_RE.test(han)) return false;
+  for (let i = 0; i + 1 < han.length; i++) if (words.has(han.slice(i, i + 2))) return true;
+  return false;
+}
+
+function namesAThing(clause: string, words: Set<string>): boolean {
+  const han = clause.replace(T._PLAIN_ITEM_LEAD_RE, "");
+  return T._PLAIN_ITEM_SHAPE_RE.test(han) && !T._PLAIN_NOT_AN_ITEM_RE.test(han) && [...words].some((word) => [...han].some((char) => word.includes(char)));
+}
+const isDemand = (clause: string): boolean => [...clause].length <= pack.settings.plain_demand_max && T._PLAIN_DEMAND_RE.test(clause);
+const isAReason = (clause: string): boolean => !T._PLAIN_NOT_A_REASON_RE.test(clause) && (T._PLAIN_REASON_RE.test(clause) || T._PLAIN_REASON_EN_RE.test(clause));
+
+function plainClauses(text: string): string[] {
+  const kept = sub(T._PLAIN_ENGLISH_GAP_RE, "$1\u0001", text);
+  return kept.split(T._PLAIN_CLAUSE_CUT_RE).map((c) => c.replace(/\u0001/g, " ").trim()).filter(Boolean);
+}
+
+/** textutil.plain_request: whether every clause of a message with an order number is part of a plain request by this customer, now. */
+export function plainRequest(raw: string, words: Set<string> = ITEM_WORDS): boolean {
+  const text = fixTypos((raw || "").normalize("NFKC"));
+  if (!T.ORDER_ID_RE.test(text)) return true;
+  let demand = false, own = T._PLAIN_ITS_OWN_RE.test(text), reason = false, other = false;
+  for (const part of plainClauses(sub(T.ORDER_ID_RE, "，", text))) {
+    const question = T._PLAIN_ASKS_RE.test(part);
+    const clause = part.replace(/[？?]+/g, "");
+    // Symbols in front of a request are a mood ("😡😡😡 SO… 退钱"); after it they can take it back ("帮我退款 ×", "帮我退款 ？？？").
+    if (!clause || T._PLAIN_ONLY_MARKS_RE.test(clause)) {
+      if (demand) return false;
+      continue;
+    }
+    if (!question && (isDemand(clause) || T._PLAIN_DEMAND_EN_RE.test(clause))) { demand = true; continue; }
+    const naming = [...clause].length <= pack.settings.plain_demand_max ? T._PLAIN_DEMAND_NAMING_RE.exec(clause) : null;
+    if (!question && naming && namesAnItem(naming[1], words)) { demand = true; continue; }
+    if (!question && T._PLAIN_BEFORE_RE.test(clause)) continue;
+    if (!question && (T._PLAIN_COURTESY_RE.test(clause) || T._PLAIN_ORDER_WORDS_RE.test(clause) || T._PLAIN_ALSO_RE.test(clause) || T._PLAIN_NUMBER_RE.test(clause) || T._PLAIN_BOUGHT_RE.test(clause))) continue;
+    if (T._PLAIN_INJECTED_RE.test(clause) && !T._PLAIN_GOVERNS_RE.test(clause)) continue;
+    // A complaint may be a question ("还不发货？？？"); nothing else may.
+    if (T._PLAIN_STILL_NOT_SENT_RE.test(clause)) { reason = true; continue; }
+    if (!question && isAReason(clause)) { reason = true; continue; }
+    // "刚被扣了续费帮我退款": said in one breath, as speech comes, a reason and then the demand.
+    const both = T._PLAIN_REASON_THEN_DEMAND_RE.exec(clause);
+    if (!question && both && isAReason(both[1]) && isDemand(both[2])) { reason = true; demand = true; continue; }
+    // After a request "不要了" could take it back; before one, or after a reason, it is the item that is not wanted.
+    if (!question && (reason || !demand) && T._PLAIN_NO_PRODUCT_RE.test(clause) && !T._PLAIN_NOT_A_REASON_RE.test(clause)) { reason = true; continue; }
+    if (T._PLAIN_OTHER_QUESTION_RE.test(clause) && !T._PLAIN_GOVERNS_RE.test(clause)) { other = true; continue; }
+    const that = T._PLAIN_THAT_ORDER_RE.exec(clause);
+    if (!question && that && (!that[1] || T._PLAIN_BOUGHT_RE.test(that[1]) || namesAThing(that[1], words))) continue;
+    if (!question && namesAnItem(clause, words)) continue;
+    return false;
+  }
+  return demand && (!other || own);
+}
+
+export const conditionalRefund = (text: string): boolean => T._CONDITIONAL_REFUND_RE.test(text);
+
+/** textutil.refund_requested: the list's reading, no condition, and nothing in a message with an order number that is not part of a request. */
 export function refundRequested(text: string): boolean {
+  const folded = normalizeWidth(fixTypos(text || ""));
+  if (conditionalRefund(folded) || !plainRequest(text)) return false;
+  if (readsAsRequest(text)) return true;
+  // "SO… 我要退": a bare 退 the list leaves out, in a message that is nothing but a request for it.
+  return T.ORDER_ID_RE.test(folded) && !T.REFUND_RE.test(folded) && T._SAYS_WHOSE_RE.test(sub(T.ORDER_ID_RE, " ", folded)) && !T.NEGATED_REFUND_RE.test(folded) && !refundWithdrawRequested(text);
+}
+
+/** textutil.reads_as_request: the list's reading. It never closes, so nothing files on it alone. */
+export function readsAsRequest(text: string): boolean {
   if (refundWithdrawRequested(text)) return false;
   const folded = numeralAmounts(normalizeWidth(fixTypos(text || "")));
   if (retracted(folded)) return false;
@@ -292,7 +370,7 @@ export function refundRequested(text: string): boolean {
 }
 
 export function otherQuestion(text: string): string | null {
-  if (!refundRequested(text)) return null;
+  if (!readsAsRequest(text)) return null;
   const clause = normalizeWidth(text).split(T._CLAUSE_CUT_RE).find((c) => c !== undefined && otherQuestionClause(c));
   return clause ? sub(T.ORDER_ID_RE, "", clause).replace(/^[ ，,。？?]+|[ ，,。？?]+$/g, "") : null;
 }
@@ -322,7 +400,7 @@ export function statedRefundAmount(text: string): number | null {
 
 export function cancelRequested(text: string): boolean {
   const folded = normalizeWidth(text || "");
-  return T.CANCEL_ORDER_RE.test(folded) && T._CANCEL_VERB_RE.test(folded) && !(T.REFUND_INQUIRY_RE.test(folded) || T._QUESTION_RE.test(folded));
+  return T.CANCEL_ORDER_RE.test(folded) && T._CANCEL_VERB_RE.test(folded) && !(T.REFUND_INQUIRY_RE.test(folded) || T._QUESTION_RE.test(folded)) && plainRequest(folded);
 }
 
 export function refundDeclined(text: string): boolean {

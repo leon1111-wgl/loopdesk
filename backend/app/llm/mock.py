@@ -19,7 +19,7 @@ from typing import Any
 
 from ..textutil import (CANCEL_ORDER_RE, NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, OTHER_ORDER,
                         REFUND_APPLY_RE, REFUND_RE, cancel_requested, handoff_cancelled,
-                        estimate_tokens, expand_query, fix_typos, normalize_width, other_question, refund_bare_decline,
+                        estimate_tokens, expand_query, fix_typos, normalize_width, other_question, reads_as_request, refund_bare_decline,
                         refund_requested, refund_withdraw_requested, stated_refund_amount, withdraw_confirmed,
                         split_sentences, strip_citations, token_set)
 from ..rag.chunking import CUT_MARK
@@ -145,9 +145,21 @@ def split_intents(text: str) -> tuple[str, str | None]:
     return text[:match.start()].strip(), extra
 
 
-def _mentions_refund(text: str) -> bool:
-    """A refund word, or a bare demand without one ("SO… 退了吧", N-126)."""
-    return bool(_REFUND.search(text)) or refund_requested(text)
+# Beyond the refund words: "能退吗", "就帮我退了吧", "退不退", "SO… 不要了 退", "退20". Whatever does not file on these is offered.
+_LOOSE_REFUND = re.compile(r"退(?:了|吧|吗|么|嘛|不退|一下|下|哈|呗|个款|回|\s*[¥￥]?[0-9]|(?=[\s，,。！!？?]|$))|(?:能|可以|可|要|想|帮我|给我)退(?!订|出|群|役|回)")
+# "SO… 不要了": with the order named, what the customer may want is offered too.
+_UNWANTED = re.compile(r"(?:不想要|不要)了?(?=[\s，,。！!]|$)")
+
+
+def _mentions_refund(text: str, items: tuple[str, ...] = ()) -> bool:
+    """A refund word, a bare demand without one ("SO… 退了吧", N-126), or a loose one."""
+    return (bool(_REFUND.search(text) or _LOOSE_REFUND.search(text) or (ORDER_ID_RE.search(text) and _UNWANTED.search(text) and not _CANCEL.search(text)))
+            or refund_requested(text, items))
+
+
+def _item_names(order: dict[str, Any]) -> tuple[str, ...]:
+    """What may be named in a request for this order: a clause naming anything else is not part of one."""
+    return tuple(str(i.get("name", "")) for i in order.get("items") or [])
 
 
 def asks_refund_status(text: str) -> bool:
@@ -566,8 +578,9 @@ class MockLLM(LLMProvider):
                 if live and can("search_knowledge"):
                     return "search_knowledge", {"query": "退款 到账 工作日"}
                 return None
-            if _CANCEL.search(text) and not _mentions_refund(text):  # N-063: an unshipped order is cancelled by refunding it
-                if (cancel_requested(text) and order.get("status") == "paid" and order.get("refundable")
+            items = _item_names(order)
+            if _CANCEL.search(text) and not _mentions_refund(text, items):  # N-063: an unshipped order is cancelled by refunding it
+                if (cancel_requested(text, items) and order.get("status") == "paid" and order.get("refundable")
                         and can("request_refund")):
                     return "request_refund", {"order_id": order_id, "amount": float(order.get("amount", 0)),
                                               "reason": f"顾客要求取消未发货订单：{text[:100]}"}
@@ -576,7 +589,7 @@ class MockLLM(LLMProvider):
             reported = ((_TICKET.search(text) and (_REPORTED.search(text) or not _ASKING.search(text.strip())))
                         or (not ORDER_ID_RE.search(text) and fault_report(text)))
             repair = _REPAIR.search(text) and (_FAULTY.search(text) or not _ASKING.search(text.strip()))
-            if (repair or reported) and not refund_requested(text):  # N-198: a repair or an exchange is a ticket
+            if (repair or reported) and not refund_requested(text, items):  # N-198: a repair or an exchange is a ticket
                 if can("search_knowledge"):
                     return "search_knowledge", {"query": "质量问题 退货 换货"}
                 if can("create_ticket"):
@@ -586,11 +599,11 @@ class MockLLM(LLMProvider):
                 return None
             if _SELF_DAMAGE.search(text):  # N-200
                 return ("search_knowledge", {"query": SELF_DAMAGE_QUERY}) if can("search_knowledge") else None
-            if _mentions_refund(text):
+            if _mentions_refund(text, items):
                 if not order.get("refundable", False):
                     return None
                 # "先别退款，如果退款的话钱退到哪" asks about a refund: answer it, never file one (N-091).
-                if not refund_requested(text):
+                if not refund_requested(text, items):
                     if can("search_knowledge"):
                         return "search_knowledge", {"query": refund_question(text)}
                     return None
@@ -743,7 +756,7 @@ class MockLLM(LLMProvider):
         rush = bool(orders) and not shipments and bool(_RUSH.search(text))
         # A question about refunds on one of the customer's orders, answered without filing one (N-091).
         inquiry = (len(orders) == 1 and not refund and not orders[0].get("error") and orders[0].get("refundable")
-                   and bool(_mentions_refund(text)) and not refund_requested(text))
+                   and _mentions_refund(text, _item_names(orders[0])) and not refund_requested(text, _item_names(orders[0])))
         if knowledge:
             query = ("退款 到账 工作日" if (refund and not refund_failed) or progress
                      else SELF_DAMAGE_QUERY if self_damage
@@ -766,6 +779,8 @@ class MockLLM(LLMProvider):
             # customer misread as asking is offered to apply, not told "不会为您发起退款".
             if NEGATED_REFUND_RE.search(normalize_width(text)):
                 parts.append(f"如需退款，可以直接回复“{oid} 申请退款”，这次只解答问题、不会为您发起退款。")
+            elif reads_as_request(text):  # they want it, in words the grammar leaves out: asked outright, and a yes files it
+                parts.append(f"需要为订单 {oid} 申请退款吗？如需提交，回复“是的”或“{oid} 申请退款”即可。")
             else:
                 parts.append(f"如需现在申请退款，回复“{oid} 申请退款”即可，我马上为您提交。")
         if faults:  # which is which: the tickets' own sentences say only their numbers

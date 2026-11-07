@@ -7,11 +7,11 @@ import { scoreCase, type GateCase } from "./gate-harness";
  * committed before they were measured. All three have been read since, so they are floors against regressions now: what they
  * measured the first time is in docs/EVALUATION.md. BLIND_REPORT=dir writes the per-case results.
  */
-const FLOORS = { "tier1_blind.jsonl": { all: 65, money: 23 }, "tier1_blind_v2.jsonl": { all: 69, money: 29 }, "tier1_blind_v3.jsonl": { all: 71, money: 28 }, "tier1_money_v4.jsonl": { all: 39, money: 39 } };
+const FLOORS = { "tier1_blind.jsonl": { all: 65, money: 23 }, "tier1_blind_v2.jsonl": { all: 69, money: 29 }, "tier1_blind_v3.jsonl": { all: 71, money: 28 }, "tier1_money_v4.jsonl": { all: 39, money: 39 }, "money_fresh_v5.jsonl": { all: 29, money: 29 } };
 
 type BlindCase = GateCase & { tenant: string; kind: string };
 
-describe.each(["tier1_blind.jsonl", "tier1_blind_v2.jsonl", "tier1_blind_v3.jsonl", "tier1_money_v4.jsonl"])("the blind set %s", (file) => {
+describe.each(["tier1_blind.jsonl", "tier1_blind_v2.jsonl", "tier1_blind_v3.jsonl", "tier1_money_v4.jsonl", "money_fresh_v5.jsonl"])("the blind set %s", (file) => {
   const cases: BlindCase[] = readFileSync(new URL(`../../../../backend/evals/${file}`, import.meta.url), "utf-8").trim().split("\n").map((line: string) => JSON.parse(line));
   const results = cases.map((c) => ({ ...scoreCase(c.tenant, c), kind: c.kind, question: c.question, moves_money: c.moves_money }));
   if (process.env.BLIND_REPORT) writeFileSync(`${process.env.BLIND_REPORT}/${file}.json`, JSON.stringify(results, null, 1));

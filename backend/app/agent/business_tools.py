@@ -30,7 +30,8 @@ from ..models import Approval, Conversation, Message, Refund, Run, Tenant, Ticke
 from ..rag.conflicts import disputed
 from ..rag.retrieval import gate_options, hybrid_search
 from ..security import Principal
-from ..textutil import (ORDER_ID_RE, REFUND_RE, fix_typos, normalize_width, refund_bare_decline, refund_declined,
+from ..textutil import (ORDER_ID_RE, REFUND_RE, cancel_requested, fix_typos, normalize_width, refund_bare_decline,
+                        refund_turned_down,
                         refund_requested,
                         refund_withdraw_requested, stated_refund_amount, withdraw_confirmed)
 from . import handoff
@@ -497,19 +498,62 @@ def _already_waiting(ctx: ToolContext, waiting: Approval, amount: float) -> Refu
         "approval_id": waiting.id, "amount": f"{first:.2f}", "filed_at": filed_at}})
 
 
+# The answer right before this turn asked whether to file: the rule's own offer, or a model's question in its own words.
+_ASKED_TO_FILE = re.compile(r"(?:需要|是否|要不要|确认|确定|要)[^。！!？?\n]{0,30}退[^。！!？?\n]{0,16}(?:吗|[？?])|退款吗")
+
+
+def _asked_to_file(ctx: ToolContext, order: OrderInfo) -> bool:
+    """A yes means something only as the answer to a question about this order, with no other turn since."""
+    if ctx.conversation_id is None:
+        return False
+    last = ctx.db.execute(select(Message).where(
+        Message.conversation_id == ctx.conversation_id, Message.role.in_(("assistant", "agent", "system")))
+        .order_by(Message.id.desc()).limit(1)).scalar_one_or_none()
+    if last is None or ctx.db.execute(select(func.count(Message.id)).where(
+            Message.conversation_id == ctx.conversation_id, Message.role == "user", Message.id > last.id)).scalar_one() > 1:
+        return False
+    text = normalize_width(last.content or "")
+    named = {m.upper() for m in ORDER_ID_RE.findall(text)}
+    return bool(_ASKED_TO_FILE.search(text)) and (not named or order.order_id in named)
+
+
+def _is_a_request(ctx: ToolContext, order: OrderInfo) -> bool:
+    """The turn that files on ``order``. Without a number of its own the turn is read as if it named the order ("帮我退款 别急着提交"
+    a turn after the number is held to the grammar too), and a closed set of yeses answers a question asked just before it."""
+    from ..voice.confirm import classify_reply  # the closed set of yeses the voice read-back accepts
+
+    text = normalize_width(ctx.customer_text)
+    if not ORDER_ID_RE.search(text):
+        if classify_reply(text) == "yes" and _asked_to_file(ctx, order):
+            return True
+        text = f"{order.order_id} {text}"
+    items = [str(item.get("name", "")) for item in order.items]
+    return refund_requested(text, items) or cancel_requested(text, items)
+
+
+def _turned_down(customer_text: str) -> bool:
+    from ..voice.confirm import classify_reply
+
+    text = normalize_width(customer_text)
+    return refund_turned_down(text) or (not ORDER_ID_RE.search(text) and classify_reply(text) == "no")
+
+
 def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     done = _refund_for_approval(ctx)
     if done is not None:  # already filed; the order is held now, so skip re-validation
         return {"order_id": done.order_id, "amount": done.amount}
-    # Whatever the model makes of it, "先别退款" or "如果退款的话…" does not move money (N-091). A turn that
-    # does not mention refunds at all ("是的，退吧" after the model asked) is left to the model.
-    if ctx.approval_id is None and refund_declined(ctx.customer_text):
-        raise ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。"
+    # Whatever the model makes of it, "先别退款" does not move money (N-091).
+    if ctx.approval_id is None and ctx.customer_text and _turned_down(ctx.customer_text):
+        raise ToolError("顾客这句话说了先不退，并没有申请退款，不能发起退款。"
                         "请回答顾客的问题；顾客明确要求退款时再申请。")
     order, amount = _validated(ctx, args)
-    if ctx.approval_id is None and ctx.unconfirmed_order and order.order_id == ctx.unconfirmed_order.upper():
+    # Nor does anything else that is not a plain request: a question, a condition, a plan, a line the rule cannot read. It costs the
+    # customer one reply, so they are told which one; a request is never refused for its wording.
+    if ctx.approval_id is None and (
+            (ctx.unconfirmed_order and order.order_id == ctx.unconfirmed_order.upper())
+            or (ctx.customer_text and not _is_a_request(ctx, order))):
         names = "、".join(str(item.get("name", "")) for item in order.items)
-        message = (f"需要为订单 {order.order_id}（{names}）申请退款吗？回复“{order.order_id} 申请退款”即可提交")
+        message = f"需要为订单 {order.order_id}（{names}）申请退款吗？回复“是的”或“{order.order_id} 申请退款”即可提交"
         raise RefundWaiting(message, {"error": message, "confirm_order": order.order_id})
     # The customer named an amount and the call files another (N-218): "退我20就行" filed as the full ¥45, or
     # "退我500" quietly capped at the ¥32 paid. A reviewer who reads only the card would pay what nobody asked for.
