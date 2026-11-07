@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import math
 import re
+import unicodedata
+from collections.abc import Iterable
 from functools import lru_cache
 
 # Customer-service domain words: jieba keeps them whole, and the voice channel uses those a
@@ -462,8 +464,183 @@ def numeral_amounts(text: str) -> str:
     return _CN_AMOUNT_RE.sub(digits, text)
 
 
-def refund_requested(text: str) -> bool:
-    """True when the message asks for a refund, not when it asks about one or declines one."""
+# ---------------------------------------------------------------- what files: a closed grammar
+# reads_as_request below lists what is not a request, and a list like that never closes: every review found a new way past it. So
+# a message with an order number files only if every clause in it is one of the shapes here: the demand itself, courtesy, a
+# reason, the item, words about the order, an amount. Anything else, however it reads, is answered and offered, not filed. A
+# request worded some other way costs one more turn; a wrong refund costs money. The browser reads these same expressions
+# (demo_pack.py), and tests/test_refund_grammar.py and app/evals/money_rule.py check this side without it.
+# Longest first and possessive: "我要" is also "我" + "要", and a failing match would otherwise try every split. The browser has no
+# possessive quantifiers (js_pattern), so a clause past _PLAIN_DEMAND_MAX characters is not tried at all.
+_PLAIN_FRONT = "|".join(sorted((
+    "那就 那 现在再 我们 我 现在 马上 立刻 立即 赶紧 赶快 快点 快 尽快 今天 就 也 都 全 还是 必须 一定要 要求 坚持 确认 请 烦请 劳烦 麻烦你 麻烦您 麻烦 帮忙 帮我 替我 为我 给我 我要 我想 要 想 先 只 "
+    "把钱 把这笔钱 把这单 把它 这单 这笔钱 这笔 这个月的 这个月 会员费 年卡 直接 全额 全款 全部 申请 办理 办个 办 发起 提交 顾客要求 客户要求 给顾客 给客户 帮顾客 帮客户 为顾客 为客户").split(),
+    key=len, reverse=True))
+_PLAIN_AMOUNT = r"(?:[¥￥]?[0-9]+(?:\.[0-9]+)?(?:元|块钱?)?|[一二三四五六七八九十百千两半]+(?:元|块钱?)?)"
+_PLAIN_THANKS = r"(?:谢谢(?:你|啦|了)?|多谢|谢了|麻烦了?|辛苦了?|拜托了?)"
+_PLAIN_MEANING = r"(?:不换了?|不要换货?|不用换|到(?:我的?)?(?:支付宝|微信|银行卡|原卡|卡上?|账户))"
+_PLAIN_DEMAND_MAX = 32
+_PLAIN_DEMAND_RE = re.compile(
+    rf"^(?:{_PLAIN_FRONT})*+退(?:货退款|款|钱|货|掉|给我|我钱|我|回来|一下|全款|全额|个?差价)?(?:退款)?(?:一下)?{_PLAIN_AMOUNT}?(?:补偿|赔偿)?(?:了)?(?:吧|呀|啊|哈|呗|啦|了吧)?(?:就行|就好)?(?:吧)?{_PLAIN_MEANING}?{_PLAIN_THANKS}?$"
+    rf"|^(?:{_PLAIN_FRONT})*+的?退款申请$|^(?:{_PLAIN_FRONT})*+取消(?:这个|这笔|该|我的)?订单吧?$")
+_PLAIN_DEMAND_NAMING_RE = re.compile(rf"^(?:{_PLAIN_FRONT})*+退掉(.+)$")
+_PLAIN_DEMAND_EN_RE = re.compile(
+    r"^(?:(?:please|pls|plz|kindly|can you|could you)\s+)*(?:process\s+)?(?:a\s+)?(?:full\s+)?refund(?:\s+(?:me|my|it|this|the|order|for|please|pls|plz|now))*$"
+    r"|^i(?:\s+want|\s+need|\s+would\s+like|'d\s+like)\s+(?:a\s+(?:full\s+)?refund|my\s+money\s+back)(?:\s+(?:for|order|please|now|my|the))*$"
+    r"|^(?:please\s+)?(?:give\s+me\s+)?(?:my\s+)?money\s+back(?:\s+please)?$", re.IGNORECASE)
+_PLAIN_COURTESY_RE = re.compile(r"^(?:你好|您好|客服|在吗|嗯+|好的|好|那|那就|确认|确定|不对|抱歉|谢谢(?:你|啦|了)?|多谢|谢了|辛苦了?|麻烦了?|拜托了?|决定了|想好了|急|thx|thanks|thank you|ty|ok|okay|hi|hello|please|pls|plz)$", re.IGNORECASE)
+_PLAIN_ORDER_WORDS_RE = re.compile(r"^(?:我的(?:这单|订单)|我这单|订单号?(?:是|为)?|单号(?:是|为)?|这单|那单|这笔|那笔|的|和|以及|给|为|把|给订单|为订单|帮我把|麻烦把|请把|请给订单|请给|请为订单|请立即为订单|麻烦给订单|麻烦给|帮我提交|提交|直接给订单|顾客原话)$")
+_PLAIN_ALSO_RE = re.compile(r"^(?:不退货|不用退货|不想换货?|不换货|不换了?|不要换货?|不用换|剩下的再说|到.{0,6}(?:支付宝|微信|银行卡|原卡|卡上?)|也退给我|please process it now)$", re.IGNORECASE)
+_PLAIN_NUMBER_RE = re.compile(rf"^[0-9]+(?:\.[0-9]+)?$|^(?:元|块钱?)(?:买的|(?:补偿|赔偿)?(?:就行|就好)?吧?)$|^{_PLAIN_AMOUNT}(?:买的)?$")
+# An injected line changes nothing either way, so it is not a reason to stop: the rules still run on the request beside it.
+_PLAIN_INJECTED_RE = re.compile(r"忽略.{0,8}指令|系统通知|管理员已授权|本对话中所有|(?:无需|不需要|不用)(?:审批|审核)|跳过(?:审核|审批)|经理已经|审批单号|^[A-Z]{1,4}-?[0-9]+$")
+_PLAIN_BEFORE_RE = re.compile(r"^(?:本来|原本)不想退的?$|被拒了?$")
+_PLAIN_REASON_RE = re.compile(
+    r"坏|碎|破|裂|漏|没声|不响|开线|划痕|瑕疵|质量|有问题|不能用|用不了|连不上|打不开|开不了|没反应|故障|杂音|异味|味道|裂纹|不想要|不喜欢|不太喜欢|不满意|不太满意|不合适|不好|不需要这|不想用|不想续"
+    r"|不续了|打算续|用不上|没用|买错|拍错|点错|开错|买重|买贵|误买|手滑|后悔|发错|尺寸不对|颜色不对|太[^，,]{0,4}了|被扣|刚扣|扣了|扣的|等了|还不发|还没发|没发货|不发货|超过")
+_PLAIN_REASON_EN_RE = re.compile(r"broken|damaged|defective|faulty|wrong|by mistake|mistake|isn'?t what|not what|doesn'?t work|not working|don'?t want|no longer need|too (?:small|big|expensive)", re.IGNORECASE)
+_PLAIN_NO_PRODUCT_RE = re.compile(r"不需要了?$|不要了$")
+_PLAIN_NOT_A_REASON_RE = re.compile(r"退|吗|呢|如果|要是|的话|一旦|除非|只要|倘若|假如|假设|万一|若|怕|担心|会(?!员)|没有?(?:坏|碎|破|裂|漏|质量|问题)|不是|别|不要(?!了)|测试|玩笑|明天|下次|以后|回头|他|她|说|问")
+_PLAIN_OTHER_QUESTION_RE = re.compile(r"^(?:另外|还有|顺便|对了).+|自动续费|连续包月|续费|积分|发票|多久到账|几天到账|什么时候到账|退到哪")
+# An injected line or a question about something else is no reason to stop, unless it says something about this refund.
+_PLAIN_GOVERNS_RE = re.compile(r"别|不让|不要|不用退|算了|先不|不退|不想退|他|她|说")
+_PLAIN_ITS_OWN_RE = re.compile(r"我要|帮我|给我|请|麻烦|必须|立刻|马上|please|pls|plz|i want|i need", re.IGNORECASE)
+_PLAIN_ONLY_MARKS_RE = re.compile(r"^[^一-鿿a-z0-9]*$", re.IGNORECASE)
+_PLAIN_ASKS_RE = re.compile(r"[？?]")
+_PLAIN_STILL_NOT_SENT_RE = re.compile(r"^(?:怎么|为什么|咋|为啥|等了.{0,6}|都?这么久了?)?还(?:不|没)发(?:货)?(?:呢|啊|呀)?$")
+_PLAIN_BOUGHT_RE = re.compile(r"^我?(?:昨天|前天|今天|上周|上个月|前几天|刚才?|之前)?(?:买|拍|下)的$")
+_PLAIN_THAT_ORDER_RE = re.compile(r"^(.{0,10}?)(?:那单|这单)$")
+_PLAIN_NOT_MINE_RE = re.compile(r"我|姐|哥|弟|妹|爸|妈|儿|女|朋友|同事|老公|老婆")
+_PLAIN_REASON_THEN_DEMAND_RE = re.compile(r"^(.{1,16}?[了的][^，,]{0,6}?)((?:帮我|给我|我要|请帮|麻烦).+)$")
+_PLAIN_ENGLISH_GAP_RE = re.compile(r"([a-z'])\s+(?=[a-z'])", re.IGNORECASE)
+_PLAIN_CLAUSE_CUT_RE = re.compile(r"[，,。！!；;、：:\s]+|\.(?=\s|$)|(?<=[了的吧])(?=我要|帮我|给我|请帮|麻烦)|(?<=[？?])(?=[^？?\s，,。！!；;、：:])")
+_PLAIN_ITEM_LEAD_RE = re.compile(r"^(?:那个|这个|我的)")
+_PLAIN_ITEM_SHAPE_RE = re.compile(r"^[一-鿿A-Za-z0-9 -]+$")
+_PLAIN_NOT_AN_ITEM_RE = re.compile(r"[的了是你他她它们要能吗呢吧啊呀哦嘛么在和与及或就都也还又很更最再才被让给跟对向从到而但却如若等这那哪谁啥咋怎几多少不没别帮想会可该应需得着过来去说问看听试写讲查]")
+# A condition this rule cannot check. Deliberately no request, whoever could check it: see "条件句" in docs/EVALUATION.md.
+_CONDITIONAL_REFUND_RE = re.compile(
+    r"(?:如果|要是|若是?|假如|假设|倘若|一旦|除非|只要|万一|不到|没到|不行|实在不行|不然|否则|的话)[^。！!]{0,20}?(?:就|我就|帮我|给我|直接|那)?(?:申请)?退"
+    r"|(?<![a-z])(?:if|unless|in case)(?![a-z])[^.!?]{0,60}(?:refund|money back)", re.IGNORECASE)
+# "SO… 我要退": a bare 退 the list leaves out, in a message that is nothing but a request for it.
+_SAYS_WHOSE_RE = re.compile(r"(?:我要|帮我|给我|请|麻烦|要|想|赶紧|立刻|现在就)退")
+
+
+def _item_words(items: Iterable[str]) -> set[str]:
+    words: set[str] = set()
+    for name in items:
+        han = re.sub(r"[^一-鿿]", "", str(name))
+        words.update(han[i:i + 2] for i in range(len(han) - 1))
+    return words
+
+
+def _names_an_item(clause: str, words: set[str]) -> bool:
+    han = _PLAIN_ITEM_LEAD_RE.sub("", clause)
+    if len(han) > 12 or not _PLAIN_ITEM_SHAPE_RE.search(han) or _PLAIN_NOT_AN_ITEM_RE.search(han):
+        return False
+    return any(han[i:i + 2] in words for i in range(len(han) - 1))
+
+
+def _names_a_thing(clause: str) -> bool:
+    """"杯子" in "杯子那单": the number says which order, so the word in front of 那单 only has to be nobody's and say nothing else."""
+    return bool(_PLAIN_ITEM_SHAPE_RE.search(clause)) and not _PLAIN_NOT_AN_ITEM_RE.search(clause) and not _PLAIN_NOT_MINE_RE.search(clause)
+
+
+def _is_demand(clause: str) -> bool:
+    return len(clause) <= _PLAIN_DEMAND_MAX and bool(_PLAIN_DEMAND_RE.search(clause))
+
+
+def _is_a_reason(clause: str) -> bool:
+    return not _PLAIN_NOT_A_REASON_RE.search(clause) and bool(_PLAIN_REASON_RE.search(clause) or _PLAIN_REASON_EN_RE.search(clause))
+
+
+def _plain_clauses(text: str) -> list[str]:
+    kept = _PLAIN_ENGLISH_GAP_RE.sub("\\1\x01", text)
+    return [part for part in (c.replace("\x01", " ").strip() for c in _PLAIN_CLAUSE_CUT_RE.split(kept)) if part]
+
+
+def plain_request(raw: str, items: Iterable[str] = ()) -> bool:
+    """Whether every clause of a message with an order number is part of a plain request by this customer, now. ``items`` are
+    the names of what is on the order, the only things a clause may name: without them a clause naming an item is not in the
+    grammar, and the message is offered. A message with no number decides nothing here: nothing is filed on it alone."""
+    text = fix_typos(unicodedata.normalize("NFKC", raw or ""))
+    if not ORDER_ID_RE.search(text):
+        return True
+    words = _item_words(items)
+    demand, other, reason, own = False, False, False, bool(_PLAIN_ITS_OWN_RE.search(text))
+    for part in _plain_clauses(ORDER_ID_RE.sub("，", text)):
+        question = bool(_PLAIN_ASKS_RE.search(part))
+        clause = re.sub(r"[？?]+", "", part)
+        # Symbols in front of a request are a mood ("😡😡😡 SO… 退钱"); after it they can take it back ("帮我退款 ×", "帮我退款 ？？？").
+        if not clause or _PLAIN_ONLY_MARKS_RE.search(clause):
+            if demand:
+                return False
+            continue
+        if not question and (_is_demand(clause) or _PLAIN_DEMAND_EN_RE.search(clause)):
+            demand = True
+            continue
+        naming = _PLAIN_DEMAND_NAMING_RE.search(clause) if len(clause) <= _PLAIN_DEMAND_MAX else None
+        if not question and naming and _names_an_item(naming.group(1), words):
+            demand = True
+            continue
+        if not question and _PLAIN_BEFORE_RE.search(clause):
+            continue
+        if not question and (_PLAIN_COURTESY_RE.search(clause) or _PLAIN_ORDER_WORDS_RE.search(clause)
+                             or _PLAIN_ALSO_RE.search(clause) or _PLAIN_NUMBER_RE.search(clause)
+                             or _PLAIN_BOUGHT_RE.search(clause)):
+            continue
+        if _PLAIN_INJECTED_RE.search(clause) and not _PLAIN_GOVERNS_RE.search(clause):
+            continue
+        if _PLAIN_STILL_NOT_SENT_RE.search(clause):  # a complaint may be a question ("还不发货？？？"); nothing else may
+            reason = True
+            continue
+        if not question and _is_a_reason(clause):
+            reason = True
+            continue
+        # "刚被扣了续费帮我退款": said in one breath, as speech comes, a reason and then the demand.
+        both = _PLAIN_REASON_THEN_DEMAND_RE.search(clause)
+        if not question and both and _is_a_reason(both.group(1)) and _is_demand(both.group(2)):
+            reason = demand = True
+            continue
+        # After a request "不要了" could take it back; before one, or after a reason, it is the item that is not wanted.
+        if not question and (reason or not demand) and _PLAIN_NO_PRODUCT_RE.search(clause) and not _PLAIN_NOT_A_REASON_RE.search(clause):
+            reason = True
+            continue
+        if _PLAIN_OTHER_QUESTION_RE.search(clause) and not _PLAIN_GOVERNS_RE.search(clause):
+            other = True
+            continue
+        that = _PLAIN_THAT_ORDER_RE.search(clause)
+        if not question and that and (not that.group(1) or _PLAIN_BOUGHT_RE.search(that.group(1)) or _names_a_thing(that.group(1))):
+            continue
+        if not question and _names_an_item(clause, words):
+            continue
+        return False
+    return demand and (not other or own)
+
+
+def refund_requested(text: str, items: Iterable[str] = ()) -> bool:
+    """True when a refund may be filed on this message: the list's reading, no condition, and nothing in a message with an order
+    number that is not part of a request. ``items`` are the names on the order, where the caller knows them."""
+    folded = normalize_width(fix_typos(text or ""))
+    if _CONDITIONAL_REFUND_RE.search(folded) or not plain_request(text, items):
+        return False
+    if reads_as_request(text):
+        return True
+    return bool(ORDER_ID_RE.search(folded) and not REFUND_RE.search(folded) and _SAYS_WHOSE_RE.search(ORDER_ID_RE.sub(" ", folded))
+                and not NEGATED_REFUND_RE.search(folded) and not refund_withdraw_requested(text))
+
+
+def refund_turned_down(text: str) -> bool:
+    """The customer said not to: telling them how to file would be beside the point. Anything else that does not file is offered."""
+    folded = numeral_amounts(normalize_width(fix_typos(text or "")))
+    if _retracted(folded) or refund_withdraw_requested(text):
+        return True
+    kept = NEGATED_REFUND_RE.sub("，", folded)  # "不是要退货，是要退款" asks again after it
+    return kept != folded and not reads_as_request(text) and not _named_demand(REFUND_APPLY_RE, kept)
+
+
+def reads_as_request(text: str) -> bool:
+    """The list's reading: the message asks for a refund, not about one, and does not decline one. It never closes, so nothing
+    files on it alone (refund_requested); it still tells who wants their money from who is asking how it works."""
     if refund_withdraw_requested(text):  # "撤回退款申请" takes one back (N-127)
         return False
     folded = numeral_amounts(normalize_width(fix_typos(text or "")))
@@ -539,7 +716,7 @@ def _retracted(text: str) -> bool:
 
 def other_question(text: str) -> str | None:
     """The question about another subject that comes with a refund demand (N-179), to be answered too."""
-    if not refund_requested(text):
+    if not reads_as_request(text):
         return None
     clause = next((c for c in _CLAUSE_CUT_RE.split(normalize_width(text)) if _other_question(c)), None)
     return ORDER_ID_RE.sub("", clause).strip(" ，,。？?") if clause else None
@@ -631,18 +808,18 @@ CANCEL_ORDER_RE = re.compile(r"取消(?:这个|这笔|该|我的)?订单|(?:不�
 _CANCEL_VERB_RE = re.compile(r"(?:帮我|给我|我要|我想|请|麻烦|直接|赶紧|马上)取消|不想要了|不要了")
 
 
-def cancel_requested(text: str) -> bool:
+def cancel_requested(text: str, items: Iterable[str] = ()) -> bool:
     text = normalize_width(text or "")
     return (bool(CANCEL_ORDER_RE.search(text)) and bool(_CANCEL_VERB_RE.search(text))
-            and not (REFUND_INQUIRY_RE.search(text) or _QUESTION_RE.search(text)))
+            and not (REFUND_INQUIRY_RE.search(text) or _QUESTION_RE.search(text)) and plain_request(text, items))
 
 
-def refund_declined(text: str) -> bool:
+def refund_declined(text: str, items: Iterable[str] = ()) -> bool:
     """The message mentions a refund but does not ask for one: filing one would go against it."""
     text = normalize_width(text or "")
     if CANCEL_ORDER_RE.search(text) and not REFUND_RE.search(text):  # "能取消订单吗" asks; "帮我取消订单" files
-        return not cancel_requested(text)
-    return bool(REFUND_RE.search(text) or NEGATED_REFUND_RE.search(text)) and not refund_requested(text)
+        return not cancel_requested(text, items)
+    return bool(REFUND_RE.search(text) or NEGATED_REFUND_RE.search(text)) and not refund_requested(text, items)
 
 # Full-width digits and Latin letters (and ＋ －, which appear in phone numbers) become ASCII:
 # "ＳＯ２０２６…" is the same order number. Chinese full-width punctuation (，？！) is left alone,

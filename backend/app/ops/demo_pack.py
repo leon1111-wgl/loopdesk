@@ -218,7 +218,7 @@ def build() -> dict[str, Any]:
     from .. import textutil
     from ..agent import business_tools
 
-    out["settings"] = {"timing_reach": textutil._TIMING_REACH, "bare_demand_max": textutil._BARE_DEMAND_MAX,
+    out["settings"] = {"timing_reach": textutil._TIMING_REACH, "bare_demand_max": textutil._BARE_DEMAND_MAX, "plain_demand_max": textutil._PLAIN_DEMAND_MAX,
                        "my_orders_limit": business_tools.MY_ORDERS_LIMIT, "rejected_before_days": business_tools.REJECTED_BEFORE_DAYS,
                        "min_relevance": settings.min_relevance, "retrieval_top_k": settings.retrieval_top_k,
                        "refund_window_days": settings.refund_window_days, "refund_window_max_count": settings.refund_window_max_count,
@@ -235,7 +235,12 @@ def build() -> dict[str, Any]:
 _MONEY_WORDS = re.compile(r"退|refund|money back|撤回|撤销|取消|钱|人工|投诉")
 
 
-def money_phrases() -> dict[str, list[Any]]:
+def _item_names(pack: dict[str, Any]) -> list[str]:
+    """Every item on sale in the demo: the browser cannot tell which order a clause is about until it has read it."""
+    return sorted({item["name"] for orders in pack["orders"].values() for order in orders for item in order["items"]})
+
+
+def money_phrases(items: list[str] | None = None) -> dict[str, list[Any]]:
     from .. import textutil as t
     from ..voice.confirm import classify_reply
 
@@ -249,7 +254,10 @@ def money_phrases() -> dict[str, list[Any]]:
     for name in ("leon_default.jsonl", "echo_default.jsonl", "iris_default.jsonl", "leon_hard.jsonl"):
         for line in (backend / "evals" / name).read_text(encoding="utf-8").splitlines():
             found.add(json.loads(line)["question"])
-    return {text: [t.refund_requested(text), t.refund_declined(text), t.cancel_requested(text),
+    review = json.loads((backend / "evals" / "money_review_lists.json").read_text(encoding="utf-8"))
+    found.update(review["adversarial"], review["plain"], (turn for case in review["multi_turn"] for turn in case["turns"]))
+    items = items or []
+    return {text: [t.refund_requested(text, items), t.refund_declined(text, items), t.cancel_requested(text, items),
                    t.refund_withdraw_requested(text), t.withdraw_confirmed(text), t.refund_bare_decline(text),
                    t.stated_refund_amount(text), t.asks_for_person(text), t.handoff_cancelled(text)[0], classify_reply(text)]
             for text in sorted(found)}
@@ -261,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="exit 1 when the committed files are out of date")
     args = parser.parse_args(argv)
     pack = build()
-    phrases = money_phrases()
+    phrases = money_phrases(_item_names(pack))
     phrases_file = args.output.with_name("money_phrases.json")
     if args.check:
         current = json.loads(args.output.read_text(encoding="utf-8"))

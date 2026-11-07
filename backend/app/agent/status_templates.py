@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..textutil import CITE_RE, ORDER_ID_RE, normalize_width, refund_requested
+from ..textutil import CITE_RE, ORDER_ID_RE, normalize_width, reads_as_request
 from .claims import claim_text
 from .tools import Evidence
 
@@ -163,7 +163,7 @@ def case_state(evidence: list[Evidence], customer_text: str) -> CaseState:
     ledger, which wins over the order's refundable flag; but a refund that took effect for an order is
     never undone by a later call for the same order that failed (N-201): the second one fails on "退款中"
     because the first one paid."""
-    state = CaseState(refund_asked=refund_requested(customer_text))
+    state = CaseState(refund_asked=reads_as_request(customer_text))
     took_effect: dict[str, tuple[str, dict[str, Any]]] = {}
     for item in evidence:
         if item.kind != "tool":

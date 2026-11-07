@@ -1,10 +1,9 @@
 /**
  * How the browser engine reads a question beyond the offline model's rules. The backend has a model for colloquial wording; the
  * static demo has none, so the documents' own words are mapped from how people say them, an answer is picked by the kind of
- * fact asked for, and what no rule may grant in a chat is declined up front. Money is not decided here: text.ts still does that.
+ * fact asked for, and what no rule may grant in a chat is declined up front. Money is not decided here: text.ts does that.
  */
 
-import { fixTypos } from "./text";
 
 /** Everyday wording, and the words the documents use for it. */
 const VOCABULARY: [RegExp, string][] = [
@@ -185,81 +184,6 @@ export const statesWhatIsAsked = (question: string, sentence: string): boolean =
 export function answerFit(question: string, sentence: string): number {
   const asked = KINDS.filter(([kind]) => kind.test(question));
   return asked.length ? 0.5 + (0.5 * asked.filter(([, looks]) => looks.test(sentence)).length) / asked.length : 0.75;
-}
-
-/**
- * The backend counts "如果不能换货就退款" as a request, because its model can check the condition first. Nothing here can, so
- * this page files nothing on a condition: it answers about the order and offers.
- */
-export const conditionalRefund = (text: string): boolean => /(?:如果|要是|若是?|假如|万一|不到|没到|不行|实在不行|不然|否则|可以的话|方便的话|能的话|行的话|来得及的话|有可能的话)[^。！!]{0,20}?(?:就|我就|帮我|给我|直接|那)?(?:申请)?退|(?<![a-z])(?:if|unless|in case)(?![a-z])[^.!?]{0,60}(?:refund|money back)/i.test(text);
-
-// ---------------------------------------------------------------- what files, on this page
-// The rules in text.ts list what is not a request, and a list like that never closes: a reviewer found a new way past it every
-// time. This page has no model to catch the rest, so it turns the question round. A message with an order number files only if
-// every clause in it is one of these, and anything else, however it reads, is answered and offered instead of filed. A plain
-// request worded some other way costs one more turn; a wrong refund costs money.
-const FRONT_WORDS = "那就|那|现在再|我们|我|现在|马上|立刻|立即|赶紧|尽快|今天|就|也|还是|必须|一定要|要求|坚持|确认|请|麻烦你|麻烦|帮忙|帮我|替我|为我|给我|我要|我想|要|想|先|只|把钱|把这笔钱|把这单|把它|这单|这笔钱|这笔|这个月的|这个月|会员费|年卡|直接|全额|全款|全部|申请|办理|办个|发起|提交";
-const AMOUNT = "(?:[¥￥]?\\d+(?:\\.\\d+)?(?:元|块钱?)?|[一二三四五六七八九十百千两半]+(?:元|块钱?)?)";
-const DEMAND = new RegExp(`^(?:${FRONT_WORDS})*退(?:货退款|款|钱|货|掉|给我|我|回来|一下|全款|全额)?(?:退款)?${AMOUNT}?(?:了)?(?:吧|呀|啊|哈|呗|啦|了吧)?(?:就行|就好)?(?:吧)?$|^的?退款申请$|^(?:${FRONT_WORDS})*取消(?:这个|这笔|该|我的)?订单吧?$`);
-const DEMAND_NAMING = new RegExp(`^(?:${FRONT_WORDS})*退掉(.+)$`);
-const DEMAND_EN = /^(?:(?:please|pls|plz|kindly|can you|could you)\s+)*(?:process\s+)?(?:a\s+)?refund(?:\s+(?:me|my|it|this|the|order|for|please|pls|plz|now))*$|^i\s+(?:want|need|would like|'d like)\s+(?:a\s+refund|my\s+money\s+back)(?:\s+(?:for|order|please|now|my|the))*$|^(?:please\s+)?(?:give\s+me\s+)?(?:my\s+)?money\s+back(?:\s+please)?$/i;
-const COURTESY = /^(?:你好|您好|客服|在吗|嗯+|好的|好|那|那就|不对|抱歉|谢谢(?:你|啦|了)?|多谢|谢了|辛苦了?|麻烦了?|拜托了?|thx|thanks|thank you|ty|ok|okay|hi|hello|please|pls|plz)$/i;
-const ORDER_WORDS = /^(?:订单号?(?:是|为)?|单号(?:是|为)?|这单|那单|这笔|那笔|的|和|以及|给|为|把|给订单|为订单|帮我把|麻烦把|请把|请给订单|请给|请为订单|请立即为订单|麻烦给订单|麻烦给|帮我提交|提交|直接给订单|顾客原话)$/;
-const ALSO = /^(?:不退货|不用退货|不换了?|不要换货?|不用换|剩下的再说|到.{0,6}(?:支付宝|微信|银行卡|原卡|卡上?)|也退给我|please process it now)$/i;
-// An injected line changes nothing either way, so it is not a reason to stop: the rules still run on the request beside it.
-const INJECTED = /忽略.{0,8}指令|系统通知|管理员已授权|本对话中所有|(?:无需|不需要|不用)(?:审批|审核)|跳过(?:审核|审批)|经理已经|审批单号|^[A-Z]{1,4}-?\d+$/;
-const NOT_THIS_TIME = /^(?:本来|原本)不想退的?$|被拒了?$/;
-const A_REASON = /坏|碎|破|裂|漏|没声|不响|开线|划痕|瑕疵|质量|有问题|不能用|用不了|连不上|打不开|开不了|没反应|故障|杂音|异味|味道|裂纹|不想要|不喜欢|不太喜欢|不满意|不太满意|不合适|不好|不需要这|不想用|不想续|不续了|打算续|用不上|没用|买错|拍错|点错|开错|买重|买贵|误买|手滑|后悔|发错|尺寸不对|颜色不对|太[^，,]{0,4}了|被扣|刚扣|扣了|扣的|等了|还不发|还没发|没发货|不发货|超过/;
-const A_REASON_EN = /broken|damaged|defective|faulty|wrong|by mistake|mistake|isn'?t what|not what|doesn'?t work|not working|don'?t want|no longer need|too (?:small|big|expensive)/i;
-const WANTS_NO_PRODUCT = /不需要了?$|不要了$/;
-const NOT_A_REASON = /退|吗|呢|如果|要是|明天|下次|以后|回头|他|她|说|问/;
-const OTHER_QUESTION = /^(?:另外|还有|顺便|对了).+|自动续费|连续包月|续费|积分|发票|多久到账|几天到账|什么时候到账|退到哪/;
-const ITS_OWN = /我要|帮我|给我|请|麻烦|必须|立刻|马上|please|pls|plz|i want|i need/i;
-const SAYS_A_THING = /^[^一-鿿a-z0-9]*$/i;
-
-function clausesOf(text: string): string[] {
-  const kept = text.replace(/([a-z'])\s+(?=[a-z'])/gi, "$1\u0001");
-  return kept.split(/[，,。！!；;、：:\s]+|\.(?=\s|$)|(?<=[了的吧])(?=我要|帮我|给我|请帮|麻烦)/).map((c) => c.replace(/\u0001/g, " ").trim()).filter(Boolean);
-}
-
-/** Whether every clause of a message with an order number is part of a plain request by this customer, now. */
-export function plainRequest(raw: string, numberRe: RegExp, itemWords: Set<string>): boolean {
-  const text = fixTypos(raw.normalize("NFKC"));
-  if (!numberRe.test(text)) return true;
-  const clauses = clausesOf(text.replace(new RegExp(numberRe.source, `${numberRe.flags.replace("g", "")}g`), "，"));
-  let demand = false, own = ITS_OWN.test(text), reason = false, other = false;
-  for (const part of clauses) {
-    const question = /[？?]/.test(part);
-    const clause = part.replace(/[？?]+/g, "");
-    // Symbols in front of a request are a mood ("😡😡😡 SO… 退钱"); after it they can take it back ("帮我退款 ×", "帮我退款 ？？？").
-    if (!clause || SAYS_A_THING.test(clause)) {
-      if (demand) return false;
-      continue;
-    }
-    if (!question && (DEMAND.test(clause) || DEMAND_EN.test(clause))) { demand = true; continue; }
-    const naming = DEMAND_NAMING.exec(clause);
-    if (!question && naming && namesAnItem(naming[1], itemWords)) { demand = true; continue; }
-    if (!question && NOT_THIS_TIME.test(clause)) continue;
-    if (!question && (COURTESY.test(clause) || ORDER_WORDS.test(clause) || ALSO.test(clause) || /^\d+(?:\.\d+)?$|^(?:元|块钱?)$/.test(clause) || new RegExp(`^${AMOUNT}$`).test(clause))) continue;
-    if (INJECTED.test(clause)) continue;
-    // A complaint may be a question ("还不发货？？？"); nothing else may.
-    if (/(?:怎么|为什么|咋|为啥|等了.{0,4})?还(?:不|没)发/.test(clause)) { reason = true; continue; }
-    if (!question && !NOT_A_REASON.test(clause) && (A_REASON.test(clause) || A_REASON_EN.test(clause))) { reason = true; continue; }
-    // After a request "不要了" could take it back; before one, or after a reason, it is the item that is not wanted.
-    if (!question && (reason || !demand) && WANTS_NO_PRODUCT.test(clause) && !NOT_A_REASON.test(clause)) { reason = true; continue; }
-    if (OTHER_QUESTION.test(clause)) { other = true; continue; }
-    if (!question && /^[^，,]{0,10}(?:那单|这单)$/.test(clause) && !NOT_A_REASON.test(clause)) continue;
-    if (!question && namesAnItem(clause, itemWords)) continue;
-    return false;
-  }
-  return demand && (!other || own);
-}
-
-function namesAnItem(clause: string, itemWords: Set<string>): boolean {
-  const han = clause.replace(/^(?:那个|这个|我的)/, "");
-  if (han.length > 12 || !/^[一-鿿A-Za-z0-9 -]+$/.test(han) || /[的了是你他她它们要能吗呢吧啊呀哦嘛么在和与及或就都也还又很更最再才被让给跟对向从到而但却如若等这那哪谁啥咋怎几多少不没别帮想会可该应需得着过来去说问看听试写讲查]/.test(han)) return false;
-  for (let i = 0; i + 1 < han.length; i++) if (itemWords.has(han.slice(i, i + 2))) return true;
-  return false;
 }
 
 export const asksHowLong = (text: string): boolean => /多久|多长时间|几个?小时|几天|什么时候|啥时候|何时|时效/.test(text);

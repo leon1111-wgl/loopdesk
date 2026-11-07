@@ -113,7 +113,7 @@ def test_an_angry_follow_up_keeps_the_order_and_is_offered_the_refund(ask, login
     emma = login("customer@leon.demo")
     conversation, _ = ask(emma, "SO20261008010 杯子收到就是碎的")
     _, events = ask(emma, "你没听懂吗 我说碎了！！要退钱", conversation_id=conversation)
-    assert "需要为订单 SO20261008010（陶瓷马克杯）申请退款吗" in _final(events) and _approvals() == 0
+    assert "回复“SO20261008010 申请退款”" in _final(events) and _approvals() == 0
     _, events = ask(emma, "SO20261008010 申请退款", conversation_id=conversation)  # named: filed (quality issue)
     assert by_type(events, "approval_required")
 

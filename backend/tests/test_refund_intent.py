@@ -9,7 +9,8 @@ from app.db import new_session
 from app.models import Approval, Order, Refund
 from app.services import get_services
 from app.governance.script import canonical
-from app.textutil import CANCEL_ORDER_RE as CANCEL_ORDER, fix_typos, refund_declined, refund_requested, refund_withdraw_requested
+from app.textutil import (CANCEL_ORDER_RE as CANCEL_ORDER, fix_typos, reads_as_request, refund_declined, refund_requested,
+                          refund_withdraw_requested)
 from tests.conftest import by_type
 from tests.test_refund_policy import ScriptedRefundModel
 
@@ -83,7 +84,7 @@ def test_declining_or_asking_is_not_a_request(text):
     "如果还能截停就帮我退款", "如果不发货呢，那就帮我退款",
 ])
 def test_requests_still_count(text):
-    assert refund_requested(text) and not refund_declined(text)
+    assert reads_as_request(text)  # the list's reading; what files on it is in test_refund_grammar.py
 
 
 # Asking whether it can be done is not asking for it (found by the second blind set: the first of these paid out ¥18; the
@@ -147,7 +148,7 @@ def test_leaving_something_is_not_a_refund(text):
     "退 100 块补偿就行", "退 100 元差价", "退100块钱给我", "直接退 50 元吧", "退 ¥30 谢谢", "只退 100 元就行", "退一半吧 SO20261019101", "SO20261019101 全款退", "SO20261019101 退钱！",
 ])
 def test_a_request_said_politely_or_flatly_still_counts(text):
-    assert refund_requested(text) and not refund_declined(text)
+    assert reads_as_request(text)  # the list's reading; what files on it is in test_refund_grammar.py
 
 
 @pytest.mark.parametrize("text", [
@@ -292,7 +293,7 @@ def test_an_open_question_asks_instead_of_promising_nothing(ask, login):
     "refund SO20260918001 pls",
 ])
 def test_a_typo_or_a_short_english_request_is_still_a_request(text):
-    assert refund_requested(text)
+    assert refund_requested(text, ["云朵抱枕"])
 
 
 @pytest.mark.parametrize("text", ["SO20260918001 申清退款要多久", "pls tell me how to refund SO20260918001", "did you refund SO20260918001"])
@@ -352,7 +353,7 @@ def test_what_stands_in_front_can_make_it_not_a_request(text):
     "I want my money back for SO20261015009, speaker is broken",
 ])
 def test_a_plain_request_with_an_order_number_stays_one(text):
-    assert refund_requested(text)
+    assert refund_requested(text, ["蓝牙小音箱", "降噪耳机 Pro"])
 
 
 # The adversarial set's first run (tier1_money_v4.jsonl) found these: the request word comes before the order number.

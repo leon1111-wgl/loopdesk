@@ -3,7 +3,9 @@ from datetime import datetime, timedelta, timezone
 from app.db import new_session
 from app.models import Approval, Message, Run, Span
 from app.ops.retention import ERASED, REDACTED, apply_retention
+from app.services import get_services
 from tests.conftest import by_type
+from tests.test_refund_policy import ScriptedRefundModel
 
 
 def _age(db, run_id: str, days: int) -> None:
@@ -265,7 +267,7 @@ def _rows_quoting(db, *needles: str) -> list[str]:
     return found
 
 
-def test_erasure_leaves_none_of_the_customers_words_anywhere(client, ask, login):
+def test_erasure_leaves_none_of_the_customers_words_anywhere(client, ask, login, monkeypatch):
     # N-104: the model copies the customer's message into a refund's "reason" argument, and masking
     # only covers phone, ID and card numbers, so a name and address survived the erasure in
     # approvals.arguments (GET /approvals/{id}), in the refund ledger and in the flywheel's eval
@@ -275,8 +277,12 @@ def test_erasure_leaves_none_of_the_customers_words_anywhere(client, ask, login)
 
     emma = login("customer@leon.demo")
     words = f"我叫{NAME} 住杭州市西湖区{ADDRESS}"
-    _, auto = ask(emma, f"SO20260918001 我要退款 {words} 不想要了")
-    _, paused = ask(emma, f"SO20261008002 我要退款 {words}")
+    # A message with a name and an address in it is offered, not filed, so the reason comes from a model that copies them anyway.
+    with monkeypatch.context() as model:
+        model.setattr(get_services(), "provider", ScriptedRefundModel({"order_id": "SO20260918001", "reason": f"我要退款 {words} 不想要了"}))
+        _, auto = ask(emma, "SO20260918001 我要退款")
+        model.setattr(get_services(), "provider", ScriptedRefundModel({"order_id": "SO20261008002", "reason": f"我要退款 {words}"}))
+        _, paused = ask(emma, "SO20261008002 我要退款")
     approval_id = by_type(paused, "approval_required")[0]["approval_id"]
     _, asked = ask(emma, f"{words} 退款多久能到账？")
     message_id = by_type(asked, "final")[0]["message_id"]
@@ -310,14 +316,16 @@ def test_erasure_leaves_none_of_the_customers_words_anywhere(client, ask, login)
     assert client.get("/api/audit/verify", headers=admin).json()["ok"] is True
 
 
-def test_an_unsettled_refund_keeps_its_request_until_it_settles(client, ask, login):
+def test_an_unsettled_refund_keeps_its_request_until_it_settles(client, ask, login, monkeypatch):
     # The other side of N-104: every retry and the reconciliation must send the payment system the
     # same request (one idempotency key, one body), so a refund still unsettled keeps its reason; the
     # erasure says so, and erasing again after it settles clears it.
     from app.models import Refund, User
     from app.ops.retention import ERASED, erase_user
 
-    ask(login("customer@leon.demo"), f"SO20260918001 我要退款 我叫{NAME} 不想要了")
+    with monkeypatch.context() as model:
+        model.setattr(get_services(), "provider", ScriptedRefundModel({"order_id": "SO20260918001", "reason": f"我要退款 我叫{NAME} 不想要了"}))
+        ask(login("customer@leon.demo"), "SO20260918001 我要退款")
     with new_session() as db:
         refund = db.query(Refund).filter(Refund.order_id == "SO20260918001").one()
         refund.status = "pending"  # no answer yet: the reconciliation sends this very request again

@@ -30,7 +30,8 @@ from ..models import Approval, Conversation, Message, Refund, Run, Tenant, Ticke
 from ..rag.conflicts import disputed
 from ..rag.retrieval import gate_options, hybrid_search
 from ..security import Principal
-from ..textutil import (ORDER_ID_RE, REFUND_RE, fix_typos, normalize_width, refund_bare_decline, refund_declined,
+from ..textutil import (ORDER_ID_RE, REFUND_RE, cancel_requested, fix_typos, normalize_width, refund_bare_decline,
+                        refund_turned_down,
                         refund_requested,
                         refund_withdraw_requested, stated_refund_amount, withdraw_confirmed)
 from . import handoff
@@ -497,17 +498,34 @@ def _already_waiting(ctx: ToolContext, waiting: Approval, amount: float) -> Refu
         "approval_id": waiting.id, "amount": f"{first:.2f}", "filed_at": filed_at}})
 
 
+def _is_a_request(customer_text: str, order: OrderInfo) -> bool:
+    """The turn that files on ``order``. Without a number of its own the turn is read as if it named the order ("帮我退款 算了
+    不用提交" a turn after the number is held to the grammar too), and a closed set of yeses answers the question asked before it."""
+    from ..voice.confirm import classify_reply  # the closed set of yeses the voice read-back accepts
+
+    text = normalize_width(customer_text)
+    if not ORDER_ID_RE.search(text):
+        if classify_reply(text) == "yes":
+            return True
+        text = f"{order.order_id} {text}"
+    items = [str(item.get("name", "")) for item in order.items]
+    return refund_requested(text, items) or cancel_requested(text, items)
+
+
 def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     done = _refund_for_approval(ctx)
     if done is not None:  # already filed; the order is held now, so skip re-validation
         return {"order_id": done.order_id, "amount": done.amount}
-    # Whatever the model makes of it, "先别退款" or "如果退款的话…" does not move money (N-091). A turn that
-    # does not mention refunds at all ("是的，退吧" after the model asked) is left to the model.
-    if ctx.approval_id is None and refund_declined(ctx.customer_text):
-        raise ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。"
+    # Whatever the model makes of it, "先别退款" does not move money (N-091).
+    if ctx.approval_id is None and ctx.customer_text and refund_turned_down(ctx.customer_text):
+        raise ToolError("顾客这句话说了先不退，并没有申请退款，不能发起退款。"
                         "请回答顾客的问题；顾客明确要求退款时再申请。")
     order, amount = _validated(ctx, args)
-    if ctx.approval_id is None and ctx.unconfirmed_order and order.order_id == ctx.unconfirmed_order.upper():
+    # Nor does anything else that is not a plain request: a question, a condition, a plan, a line the rule cannot read. It costs the
+    # customer one reply, so they are told which one; a request is never refused for its wording.
+    if ctx.approval_id is None and (
+            (ctx.unconfirmed_order and order.order_id == ctx.unconfirmed_order.upper())
+            or (ctx.customer_text and not _is_a_request(ctx.customer_text, order))):
         names = "、".join(str(item.get("name", "")) for item in order.items)
         message = (f"需要为订单 {order.order_id}（{names}）申请退款吗？回复“{order.order_id} 申请退款”即可提交")
         raise RefundWaiting(message, {"error": message, "confirm_order": order.order_id})

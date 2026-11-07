@@ -95,6 +95,7 @@ export interface Pack {
     max_agent_steps: number;
     timing_reach: number;
     bare_demand_max: number;
+    plain_demand_max: number;
     my_orders_limit: number;
     rejected_before_days: number;
   };
