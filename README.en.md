@@ -1,10 +1,12 @@
 # LoopDesk · Evidence-first customer-service agent platform
 
+By [Leon Wang](https://leon1111-wgl.github.io/)
+
 [中文](README.md) · **English**
 
 [![CI](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml)
 
-**[Open the live demo ↗](https://leon1111-wgl.github.io/loopdesk/)** (no install needed; pick a role to enter: customer, human agent or admin; replays a real-model or offline-model recording, as labelled on the page) · [Code](https://github.com/leon1111-wgl/loopdesk) · [Run it with a real model in 5 minutes](#run-it-with-a-real-model-in-5-minutes) · [Case study: one customer's refund, from question to money returned](docs/CASE_STUDY.md) (Chinese) · [Architecture](docs/ARCHITECTURE.md) (Chinese) · [Evaluation](docs/EVALUATION.md) (Chinese) · [Voice channel](#voice-channel-voice-agent)
+**[Open the live demo ↗](https://leon1111-wgl.github.io/loopdesk/)** (no install needed; pick a role to enter: customer, human agent or admin; type your own question and a rule engine answers in your browser for free, it is not a model; the sample questions replay a real-model or offline-model recording, as labelled on the page) · [Code](https://github.com/leon1111-wgl/loopdesk) · [Run it with a real model in 5 minutes](#run-it-with-a-real-model-in-5-minutes) · [Case study: one customer's refund, from question to money returned](docs/CASE_STUDY.md) (Chinese) · [Architecture](docs/ARCHITECTURE.md) (Chinese) · [Evaluation](docs/EVALUATION.md) (Chinese) · [Voice channel](#voice-channel-voice-agent)
 
 **Every sentence of an answer has a source. Every high-risk action is reviewed by a person. Every human correction becomes a regression test.**
 

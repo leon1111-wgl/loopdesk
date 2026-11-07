@@ -3,16 +3,21 @@
  * fetch("/api/…") is answered from responses recorded from the real backend on SYNTHETIC data
  * (backend/app/ops/record_demo.py): by a real model when the committed real-model recording still
  * covers this console (backend/app/ops/demo_fixtures.py), otherwise by the offline model, recorded
- * on each deployment. The banner names the model. The scripted questions replay their recorded event
- * streams; anything that would change data is refused with a note, so nothing on the page is made up
- * and nothing is written anywhere.
+ * on each deployment. The banner names the model.
+ *
+ * Which engine answers a question, and every answer says so:
+ * - a scripted question replays its recorded event stream;
+ * - anything else goes to the browser engine (demo/engine): rules, retrieval and tools over the same fictional data, in
+ *   this tab, no server and no key. A visitor can load a small model on top of it (demo/engine/tier2.ts).
+ * Changes only touch the in-tab copy, are labelled 模拟, and go away on reload. Nothing is written anywhere.
  */
 import type { AgentEvent } from "../types";
+import type { DemoEngine, EngineError as EngineErrorType, ModelChoice } from "./engine";
+import type { LoadProgress, ModelClient } from "./engine/tier2";
 
 interface Chat {
   question: string;
   events: AgentEvent[];
-  messages: { conversation: Record<string, unknown>; [key: string]: unknown } | null;
 }
 
 export interface RecordingModel {
@@ -37,18 +42,20 @@ interface Fixtures {
 interface LocalConversation {
   email: string;
   conversation: Record<string, unknown>;
-  messages: unknown;
+  /** What this conversation said when the browser engine could not load (a very old browser, a failed download). */
+  fallback?: Record<string, unknown>[];
 }
 
 export const isDemo = import.meta.env.VITE_DEMO === "1";
 export const REPO_URL = "https://github.com/leon1111-wgl/loopdesk";
-const NOT_SAVED = "这是静态演示，不会保存修改。完整流程（审批、人工接待、工单、知识库编辑……）请在本地运行：git clone 之后 docker compose up。";
+const NOT_SAVED = "这是静态演示，这项修改不会保存。对话页问的问题、提交的申请和对应的审批可以在本页模拟；完整流程请在本地运行：git clone 之后 docker compose up。";
 const NO_EXPORT = "静态演示不提供导出。本地运行后可以在这里下载 CSV。";
 const TOKEN_PREFIX = "demo:";
 
 let data: Fixtures | null = null;
 const local = new Map<number, LocalConversation>();
-let nextId = 900_001;
+const FIRST_LOCAL_ID = 900_001;
+let nextId = FIRST_LOCAL_ID;
 
 export function recordedAt(): string | null {
   return data?.recorded_at ?? null;
@@ -65,6 +72,103 @@ export function recording(): { model: RecordingModel; date: string; commit: stri
 /** The questions an account can replay (they were asked while recording). */
 export function demoQuestions(email?: string | null): string[] {
   return email && data ? (data.chats[email] ?? []).map((c) => c.question) : [];
+}
+
+// ---------------------------------------------------------------- the browser engine
+let engine: DemoEngine | null = null;
+let EngineError: typeof EngineErrorType | null = null;
+let engineLoading: Promise<DemoEngine> | null = null;
+
+function loadEngine(): Promise<DemoEngine> {
+  engineLoading ??= import("./engine").then((module) => {
+    EngineError = module.EngineError;
+    engine = new module.DemoEngine((slug) => recordedTenant(slug));
+    return engine;
+  }).catch((error) => {
+    engineLoading = null; // a failed download can be tried again on the next question
+    throw error;
+  });
+  return engineLoading;
+}
+
+/** The tenant's limits as the console shows them: the recording's /api/tenant, not numbers in the page's code. */
+function recordedTenant(slug: string): Record<string, number> | undefined {
+  const admin = Object.entries(data?.users ?? {}).find(([, u]) => u.role === "admin" && (u.tenant as { slug?: string } | undefined)?.slug === slug)?.[0];
+  const key = admin ? data?.responses[admin]?.["/api/tenant"] : undefined;
+  return key ? (data?.bodies[key] as Record<string, number>) : undefined;
+}
+
+export type ModelState =
+  | { status: "off" }
+  | { status: "loading"; progress: number; text: string }
+  | { status: "ready" }
+  | { status: "failed"; error: string };
+
+let modelClient: ModelClient | null = null;
+let modelLoads = 0; // a load the visitor cancelled says nothing when it fails
+let modelState: ModelState = { status: "off" };
+const modelListeners = new Set<(state: ModelState) => void>();
+
+function setModelState(state: ModelState) {
+  modelState = state;
+  modelListeners.forEach((listener) => listener(state));
+}
+
+export function currentModelState(): ModelState {
+  return modelState;
+}
+
+export function watchModel(listener: (state: ModelState) => void): () => void {
+  modelListeners.add(listener);
+  return () => modelListeners.delete(listener);
+}
+
+/** Whether to offer the model at all: a browser with WebGPU, not a phone. Nothing is downloaded by asking. */
+export async function modelAvailable(): Promise<boolean> {
+  const { webgpuAvailable } = await import("./engine/tier2");
+  return webgpuAvailable();
+}
+
+/** Only ever called from the visitor's click. The rules keep answering while it loads. */
+export async function loadModel(): Promise<void> {
+  const { ModelClient } = await import("./engine/tier2");
+  modelClient ??= new ModelClient();
+  const load = ++modelLoads;
+  setModelState({ status: "loading", progress: 0, text: "正在准备下载" });
+  try {
+    await modelClient.load((p: LoadProgress) => {
+      if (load === modelLoads) setModelState({ status: "loading", progress: p.progress ?? 0, text: p.text ?? "" });
+    });
+    if (load === modelLoads) setModelState({ status: "ready" });
+  } catch (error) {
+    if (load === modelLoads) setModelState({ status: "failed", error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+export function stopModel(): void {
+  modelLoads += 1;
+  modelClient?.teardown();
+  setModelState({ status: "off" });
+}
+
+/** What the model chooses for this question, validated; null: the rules answer alone. */
+async function modelChoice(email: string, conversationId: number, question: string, notes: AgentEvent[]): Promise<ModelChoice | null> {
+  if (modelState.status !== "ready" || !modelClient || !engine) return null;
+  if (!engine.wouldRefuse(email, conversationId, question)) return null; // the rules have an answer: no need to ask
+  const { buildPrompt, validateChoice } = await import("./engine/tier2");
+  const user = data!.users[email];
+  const prompt = buildPrompt((user.tenant as { slug: string }).slug, user.role, question);
+  if (!prompt.candidates.length) return null;
+  try {
+    const raw = await modelClient.choose(prompt);
+    const choice = validateChoice(raw, prompt, question);
+    notes.push({ type: "model_choice", raw: raw.slice(0, 400), note: choice ? choice.note : "模型认为资料里没有答案，或输出不合法：由规则引擎回答", accepted: Boolean(choice) });
+    return choice;
+  } catch (error) {
+    notes.push({ type: "model_choice", raw: "", note: error instanceof Error ? error.message : String(error), accepted: false });
+    if (!modelClient.loaded) setModelState({ status: "failed", error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
 }
 
 export async function installReplay(): Promise<void> {
@@ -96,7 +200,7 @@ function body(init: RequestInit): Record<string, unknown> {
   }
 }
 
-function answer(path: string, init: RequestInit): Promise<Response> {
+async function answer(path: string, init: RequestInit): Promise<Response> {
   const fixtures = data!;
   const method = (init.method ?? "GET").toUpperCase();
   if (path === "/api/auth/demo-accounts") return json(fixtures.accounts);
@@ -109,15 +213,36 @@ function answer(path: string, init: RequestInit): Promise<Response> {
   if (!email) return json({ detail: "登录已失效，请重新登录" }, 401);
   const refs = fixtures.responses[email] ?? {};
   const recorded = (url: string): unknown => (url in refs ? fixtures.bodies[refs[url]] : undefined);
+  const user = fixtures.users[email];
+  const tenant = (user.tenant as { slug: string }).slug;
+  const staff = user.role !== "customer";
+  const run = engine;
 
   if (method === "GET") {
     if (path.startsWith("/api/export/")) return json({ detail: NO_EXPORT }, 403);
     const own = /^\/api\/conversations\/(\d+)\/messages$/.exec(path);
-    if (own && local.has(Number(own[1]))) return json(local.get(Number(own[1]))!.messages);
-    if (path === "/api/conversations") {
-      const mine = [...local.values()].filter((c) => c.email === email).map((c) => c.conversation).reverse();
-      return json([...mine, ...((recorded(path) as unknown[]) ?? [])]);
+    if (own) {
+      const id = Number(own[1]);
+      const live = run?.conversations.get(id);
+      if (live && !run!.mayRead(live, email)) return json({ detail: "对话不存在" }, 404);
+      if (live) {
+        const row = local.get(id)?.conversation ?? recordedRow(recorded, id) ?? { id, title: "新对话" };
+        return json({ conversation: { ...run!.conversationRow(live, String(row.title ?? "新对话")), ...(live.handoff ? { status: "handoff" } : {}) }, handoff: live.handoff, messages: live.messages });
+      }
+      if (local.has(id)) return json({ conversation: local.get(id)!.conversation, handoff: null, messages: local.get(id)!.fallback ?? [] });
+      if (id >= FIRST_LOCAL_ID) return json({ detail: "这段模拟对话只保存在当前页面，刷新后已清除。" }, 404);
     }
+    if (path === "/api/conversations") {
+      const mine = [...local.values()].filter((c) => c.email === email).map((c) => {
+        const live = run?.conversations.get(Number(c.conversation.id));
+        return live ? run!.conversationRow(live, String(c.conversation.title)) : c.conversation;
+      }).reverse();
+      const shown = new Set(mine.map((c) => c.id));
+      return json([...mine, ...((recorded(path) as { id: unknown }[]) ?? []).filter((c) => !shown.has(c.id))]);
+    }
+    // What this tab simulated, on top of what was recorded: the staff pages see it like anything else.
+    const merged = staff && run ? mergedPage(path, run, tenant, recorded) : undefined;
+    if (merged !== undefined) return json(merged);
     const hit = recorded(path) ?? recorded(path.split("?")[0]);
     return hit !== undefined ? json(hit) : json({ detail: "静态演示没有录制这一页的数据" }, 404);
   }
@@ -126,38 +251,49 @@ function answer(path: string, init: RequestInit): Promise<Response> {
   if (method === "POST" && path === "/api/conversations") {
     const now = new Date().toISOString();
     const conversation = { id: nextId++, title: "新对话", channel: "web", status: "bot", created_at: now, updated_at: now };
-    local.set(conversation.id, { email, conversation, messages: { conversation, handoff: null, messages: [] } });
+    local.set(conversation.id, { email, conversation });
     return json(conversation);
   }
   const stream = /^\/api\/conversations\/(\d+)\/stream$/.exec(path);
-  if (method === "POST" && stream) return replay(email, Number(stream[1]), String(body(init).content ?? ""));
-  if (method === "POST" && /^\/api\/messages\/\d+\/feedback$/.test(path)) return json({ detail: NOT_SAVED }, 403);
+  if (method === "POST" && stream) {
+    // As in the backend: only a conversation's owner writes in it. Staff reply from the handoff queue.
+    const id = Number(stream[1]);
+    const owner = local.get(id)?.email ?? (recordedRow(recorded, id) ? email : null);
+    if (owner !== email) return json({ detail: "只有发起这段对话的顾客可以在这里发言" }, 403);
+    return replay(email, id, String(body(init).content ?? ""), recorded);
+  }
+  const decide = /^\/api\/approvals\/(\d+)\/(decide|withdraw)$/.exec(path);
+  if (method === "POST" && decide && run?.world.approvals.some((a) => a.id === Number(decide[1]))) {
+    try {
+      const form = body(init);
+      return json(decide[2] === "decide" ? run.decide(Number(decide[1]), email, String(form.decision ?? ""), String(form.comment ?? "")) : run.withdrawByStaff(Number(decide[1]), email));
+    } catch (error) {
+      if (EngineError && error instanceof EngineError) return json({ detail: error.message }, error.status);
+      throw error;
+    }
+  }
   return json({ detail: NOT_SAVED }, 403);
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const NO_ENGINE = "这个浏览器没能加载演示的回答引擎（版本过旧，或下载失败）。可以换一个新版浏览器或刷新后重试；录制好的示例问题不受影响。";
+
+/** The scripted questions need nothing to replay, and anything else says what went wrong instead of failing the send. */
+function withoutEngine(email: string, conversationId: number, question: string, recordedEvents: AgentEvent[] | undefined, conversation: LocalConversation | undefined): Response {
+  const at = new Date().toISOString();
+  const events: AgentEvent[] = recordedEvents ?? [
+    { type: "final", run_id: "", message_id: null, text: NO_ENGINE, status: "completed", meta: { citations: [], status: "completed" } },
+    { type: "done", run_id: "", status: "completed", latency_ms: 0 },
+  ];
+  const final = events.find((e): e is Extract<AgentEvent, { type: "final" }> => e.type === "final");
+  const own = conversation ?? { email, conversation: { id: conversationId, title: question.slice(0, 30), channel: "web", status: "bot", created_at: at, updated_at: at } };
+  local.set(conversationId, own);
+  own.fallback = [...(own.fallback ?? []),
+    { id: nextId++, role: "user", content: question, run_id: null, meta: {}, created_at: at, feedback: null },
+    { id: nextId++, role: "assistant", content: final?.text ?? "", run_id: null, meta: { ...final?.meta, engine: recordedEvents ? "recorded" : "unavailable" }, created_at: at, feedback: null }];
+  return sse(events);
 }
 
-function replay(email: string, conversationId: number, content: string): Promise<Response> {
-  const question = content.trim();
-  const chat = data!.chats[email]?.find((c) => c.question === question);
-  const conversation = local.get(conversationId);
-  const events: AgentEvent[] = chat ? chat.events : unrecorded(email, question);
-  if (conversation) {
-    conversation.conversation = { ...conversation.conversation, title: question.slice(0, 30) };
-    conversation.messages = chat?.messages
-      ? { ...chat.messages, conversation: { ...chat.messages.conversation, id: conversationId } }
-      : {
-          conversation: conversation.conversation,
-          handoff: null,
-          messages: [
-            { id: nextId++, role: "user", content: question, run_id: null, meta: {}, created_at: new Date().toISOString(), feedback: null },
-            { id: nextId++, role: "assistant", content: (events[0] as { text?: string }).text ?? "", run_id: null,
-              meta: { demo: true }, created_at: new Date().toISOString(), feedback: null },
-          ],
-        };
-  }
+function sse(events: AgentEvent[]): Response {
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -168,15 +304,59 @@ function replay(email: string, conversationId: number, content: string): Promise
       controller.close();
     },
   });
-  return Promise.resolve(new Response(stream, { headers: { "Content-Type": "text/event-stream" } }));
+  return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
 }
 
-function unrecorded(email: string, question: string): AgentEvent[] {
-  const choices = demoQuestions(email).map((q) => `· ${q}`).join("\n");
-  const text = `这是静态演示，只能回放录制好的问题（“${question.slice(0, 20)}”没有录制）。可以试试：\n${choices}\n\n`
-    + "完整版本在本地运行，可以问任何问题。";
-  return [
-    { type: "final", run_id: null, message_id: null, text, status: "completed", meta: { citations: [], demo: true } },
-    { type: "done", run_id: null, status: "completed", latency_ms: 0 },
-  ] as unknown as AgentEvent[];
+function recordedRow(recorded: (url: string) => unknown, id: number): Record<string, unknown> | undefined {
+  return ((recorded("/api/conversations") as Record<string, unknown>[]) ?? []).find((c) => c.id === id);
+}
+
+function mergedPage(path: string, run: DemoEngine, tenant: string, recorded: (url: string) => unknown): unknown {
+  const [page, query = ""] = path.split("?");
+  const params = new URLSearchParams(query);
+  const list = (extra: unknown[]) => [...extra, ...((recorded(path) as unknown[]) ?? [])];
+  if (page === "/api/approvals") return list(run.approvals(tenant, params.get("status_filter") ?? "pending"));
+  if (page === "/api/tickets") return list(run.ticketsOf(tenant));
+  if (page === "/api/handoffs") return list(run.handoffsOf(tenant));
+  if (page === "/api/runs") {
+    const items = run.runsOf(tenant, params.get("status") ?? "");
+    const base = recorded(path) as { items?: unknown[] } | undefined;
+    return { ...base, items: [...items, ...(base?.items ?? [])] };
+  }
+  const detail = /^\/api\/runs\/([0-9a-f]{32})$/.exec(page);
+  if (detail) return run.runDetail(detail[1]) ?? undefined;
+  return undefined;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function replay(email: string, conversationId: number, content: string, recorded: (url: string) => unknown): Promise<Response> {
+  const question = content.trim();
+  const chat = data!.chats[email]?.find((c) => c.question === question);
+  const conversation = local.get(conversationId);
+  if (conversation && conversation.conversation.title === "新对话") conversation.conversation = { ...conversation.conversation, title: question.slice(0, 30) };
+  let run: DemoEngine;
+  try {
+    run = await loadEngine();
+  } catch {
+    return withoutEngine(email, conversationId, question, chat?.events, conversation);
+  }
+  // A recorded conversation the visitor goes on with keeps what it said; it becomes this tab's from here on.
+  if (!run.conversations.has(conversationId)) {
+    const body = recorded(`/api/conversations/${conversationId}/messages`) as { messages?: Record<string, unknown>[]; conversation?: Record<string, unknown> } | undefined;
+    run.conversation(conversationId, email, body?.messages);
+    if (!local.has(conversationId) && body?.conversation) local.set(conversationId, { email, conversation: body.conversation });
+  }
+  const notes: AgentEvent[] = [];
+  let events: AgentEvent[];
+  if (chat) {
+    run.noteReplay(email, conversationId, question, chat.events);
+    events = chat.events.map((e) => (e.type === "final" ? { ...e, meta: { ...e.meta, engine: "recorded" } } : e));
+  } else {
+    const choice = await modelChoice(email, conversationId, question, notes);
+    events = [...notes, ...run.ask(email, conversationId, question, choice)];
+  }
+  return sse(events);
 }

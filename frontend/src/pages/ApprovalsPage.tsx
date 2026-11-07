@@ -219,7 +219,7 @@ export default function ApprovalsPage() {
               <tbody>
                 {data?.map((a) => (
                   <tr key={a.id} className={`clickable ${a.id === openId ? "row-focus" : ""}`} {...pressable(() => setOpenId(a.id))}>
-                    <td className="nowrap"><b>#{a.id}</b> <span className="faint">{TOOL_TEXT[a.tool_name] ?? a.tool_name}</span></td>
+                    <td className="nowrap"><b>#{a.id}</b> <span className="faint">{TOOL_TEXT[a.tool_name] ?? a.tool_name}</span>{a.simulated && <span className="badge badge-warning" style={{ marginLeft: 6 }} title="在本页提交的申请，决定也只作用于本页，不会保存">模拟</span>}</td>
                     <td className="mono nowrap">{String(a.arguments.order_id ?? "")}</td>
                     <td className="num nowrap"><b>{yuan(a.arguments.amount)}</b></td>
                     <td className="nowrap hide-compact">{a.requested_by?.name}<div className="faint">{ROLE_TEXT[a.requested_by?.role ?? ""]}</div></td>

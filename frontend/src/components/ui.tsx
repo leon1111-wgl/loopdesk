@@ -3,7 +3,7 @@ import { AlertTriangle, Inbox, X } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
 
-export const TIER_TEXT: Record<string, string> = { fast: "快模型", strong: "强模型", cache: "答案缓存", rule: "规则（未调用模型）" };
+export const TIER_TEXT: Record<string, string> = { fast: "快模型", strong: "强模型", cache: "答案缓存", rule: "规则（未调用模型）", browser: "浏览器内小模型（只选依据）" };
 export const tierText = (tier?: string | null) => TIER_TEXT[tier ?? ""] ?? tier ?? "—";
 
 export const ROLE_TEXT: Record<string, string> = { admin: "管理员", agent: "客服坐席", customer: "顾客" };

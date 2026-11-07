@@ -273,3 +273,11 @@ def test_a_single_character_glued_onto_a_known_word_still_matches(client, login)
     # A leftover of two characters is a concept the KB does not cover, not a segmentation slip:
     # "货到付款" must not shrink to 付款 and get answered with the shipping time after payment.
     assert gate_passes("能货到付款吗") == []
+
+
+def test_a_pasted_run_is_not_split_slice_by_slice():
+    from app.rag.retrieval import MAX_SPLIT_WORD, TenantIndex
+
+    index = TenantIndex([])
+    word = "a" * (MAX_SPLIT_WORD + 1)
+    assert index.known_parts([word]) == [word]

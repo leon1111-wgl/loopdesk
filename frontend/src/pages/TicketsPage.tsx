@@ -18,6 +18,7 @@ interface Ticket {
   due_at: string;
   closed_at: string | null;
   overdue: boolean;
+  simulated?: boolean; // the static demo: created in this tab
 }
 
 const PRIORITY: Record<Ticket["priority"], string> = { low: "低", normal: "普通", high: "高", urgent: "紧急" };

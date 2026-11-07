@@ -1,10 +1,12 @@
 # LoopDesk · 证据优先的企业客服 Agent 平台
 
+By [Leon Wang](https://leon1111-wgl.github.io/)
+
 [![CI](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml/badge.svg)](https://github.com/leon1111-wgl/loopdesk/actions/workflows/ci.yml)
 
 **中文** · [English](README.en.md)
 
-**[打开在线演示 ↗](https://leon1111-wgl.github.io/loopdesk/)**（不用安装，选一个角色进入：顾客、坐席或管理员；回放真实模型或离线模型的录制，实际来源以页面标注为准）· [代码](https://github.com/leon1111-wgl/loopdesk) · [5 分钟用真实模型跑起来](#5-分钟用真实模型跑起来) · [案例：一位顾客的退款，从提问到钱退回去](docs/CASE_STUDY.md) · [架构](docs/ARCHITECTURE.md) · [评测](docs/EVALUATION.md) · [语音通道](#语音通道voice-agent)
+**[打开在线演示 ↗](https://leon1111-wgl.github.io/loopdesk/)**（不用安装，选一个角色进入：顾客、坐席或管理员；可以直接问自己的问题，由浏览器内的规则引擎免费回答，不是模型；示例问题回放真实模型或离线模型的录制，实际来源以页面标注为准）· [代码](https://github.com/leon1111-wgl/loopdesk) · [5 分钟用真实模型跑起来](#5-分钟用真实模型跑起来) · [案例：一位顾客的退款，从提问到钱退回去](docs/CASE_STUDY.md) · [架构](docs/ARCHITECTURE.md) · [评测](docs/EVALUATION.md) · [语音通道](#语音通道voice-agent)
 
 **每一句回答都有出处，每一个高风险动作都要人复核，每一次人工纠错都会变成回归测试。**
 
@@ -226,6 +228,8 @@ E2E_PYTHON=../backend/.venv/bin/python pnpm e2e
 四条路径各跨两种角色：顾客提问拿到带证据校验的回答、管理员在链路页找到这次运行；顾客申请超额退款进入审批、管理员通过后顾客页面无需刷新就收到结果；顾客转人工、坐席在人工接待页回复、顾客页面收到回复；顾客报修、Agent 建工单、坐席在工单页接手并写明处理结果、顾客在对话里看到结果。任何页面出现控制台错误、未捕获异常或 5xx 都算失败。CI 中单独一个 job 运行。
 
 ## 在线演示是怎么来的
+
+没有录制的问题由浏览器里的规则引擎当场回答（`frontend/src/demo/engine`），不需要服务器、不需要密钥，手机也能用。它和后端用同一份规则和数据（`app/ops/demo_pack.py`），退款和工单只改本页的模拟副本。每条回答都标明来源，规则引擎不是模型，也不代表真实模型的质量，数字见 [docs/EVALUATION.md](docs/EVALUATION.md)。前沿技术取舍见 [docs/FRONTIER_REVIEW.md](docs/FRONTIER_REVIEW.md)。
 
 [在线演示](https://leon1111-wgl.github.io/loopdesk/)是同一套 React 控制台的静态构建，部署在 GitHub Pages 上，没有后端。录制脚本（`python -m app.ops.record_demo`）在真实后端上按剧本让顾客提问、坐席审批和回复、管理员改额度、跑一遍回归评测，把控制台会请求的每个接口的响应和示例问题的事件流录下来；浏览器里的 `demo/replay.ts` 用这些录制回答请求：可以切换角色浏览每个页面，回放对话页的示例问题；提交类操作不会生效。
 
