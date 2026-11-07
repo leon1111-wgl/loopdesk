@@ -6,7 +6,7 @@
  */
 import { pack, T, TOOLS, type SeedOrder, type TenantConfig, type TenantTool } from "./pack";
 import { clauseHits, search } from "./retrieval";
-import { classifyReply, conditionalRefund, findAll, fixTypos, money, normalizeWidth, plainRequest, refundBareDecline, refundDeclined, refundRequested, refundWithdrawRequested, statedRefundAmount, withdrawConfirmed } from "./text";
+import { classifyReply, conditionalRefund, findAll, fixTypos, itemWords, money, normalizeWidth, plainRequest, refundBareDecline, refundDeclined, refundRequested, refundWithdrawRequested, statedRefundAmount, withdrawConfirmed } from "./text";
 
 const TX = pack.texts.tools;
 const HOUR = 3_600_000;
@@ -370,6 +370,10 @@ function refundPrecheck(world: World, ctx: ToolContext, args: Record<string, unk
     throw new ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。请回答顾客的问题；顾客明确要求退款时再申请。");
   }
   const { order, amount } = validated(world, ctx, args);
+  // A clause naming an item names one on this order, or it is not part of a request for this order.
+  if (ctx.approvalId === null && !plainRequest(ctx.customerText, itemWords(order.items.map((i) => i.name)))) {
+    throw new ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。请回答顾客的问题；顾客明确要求退款时再申请。");
+  }
   if (ctx.approvalId === null && ctx.unconfirmedOrder && order.id === ctx.unconfirmedOrder.toUpperCase()) {
     const names = order.items.map((i) => i.name).join("、");
     const note = String(getOrder(world, ctx, { order_id: order.id }).refund_note ?? "");

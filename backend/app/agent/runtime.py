@@ -45,7 +45,8 @@ from .rewrite import Frame, carry_order, carry_order_loosely, frame_of, is_follo
 from ..observability import request_id_var
 from ..security import Principal
 from .. import telemetry
-from ..textutil import ORDER_ID_RE, asks_for_person, handoff_cancelled, normalize_width
+from ..textutil import ORDER_ID_RE, asks_for_person, handoff_cancelled, normalize_width, offered_order
+from ..voice.confirm import classify_reply
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
 from .status_templates import case_state, compose as compose_status
@@ -310,6 +311,12 @@ class AgentRuntime:
                     yield from self._forward_to_human(conversation)
                     return
                 conversation.status = "bot"  # no live ticket behind the flag: the agent takes over again
+        # The answer before this one asked whether to file for an order: this turn may be the reply.
+        offered = offered_order(history[-1].content) if history and history[-1].role == "assistant" else None
+        reply = classify_reply(pii.masked) if offered and not ORDER_ID_RE.search(pii.masked) else None
+        if reply == "no" and conversation is not None:
+            yield from self._said(conversation, f"好的，没有为订单 {offered} 提交退款申请。")
+            return
         run = Run(
             tenant_id=tenant.id, conversation_id=conversation.id if conversation else None, user_id=user.id,
             input_text=pii.masked, is_eval=options.dry_run, status="running",
@@ -337,7 +344,7 @@ class AgentRuntime:
 
             # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
             question = pii.masked
-            carried = carry_order(pii.masked, previous)
+            carried = f"{offered} 申请退款" if reply == "yes" else carry_order(pii.masked, previous)
             unconfirmed = None
             if carried is None and (loose := carry_order_loosely(pii.masked, previous)) is not None:
                 carried, unconfirmed = loose  # "你没听懂吗 我说碎了！！要退钱": that order, but a refund is only offered

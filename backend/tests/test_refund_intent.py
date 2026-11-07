@@ -353,7 +353,7 @@ def test_what_stands_in_front_can_make_it_not_a_request(text):
     "I want my money back for SO20261015009, speaker is broken",
 ])
 def test_a_plain_request_with_an_order_number_stays_one(text):
-    assert refund_requested(text, ["蓝牙小音箱", "降噪耳机 Pro"])
+    assert refund_requested(text, ["蓝牙小音箱", "降噪耳机 Pro", "陶瓷马克杯", "豪华会员 年卡"])
 
 
 # The adversarial set's first run (tier1_money_v4.jsonl) found these: the request word comes before the order number.

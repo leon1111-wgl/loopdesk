@@ -9,7 +9,7 @@ import { answerSentences } from "./retrieval";
 import { tenantTools } from "./tools";
 import {
   cancelRequested, expandQuery, findAll, fixTypos, fullMatch, handoffCancelled, money, normalizeWidth, otherQuestion, refundBareDecline,
-  refundRequested, refundWithdrawRequested, splitSentences, statedRefundAmount, sub, tokenSet, withdrawConfirmed,
+  readsAsRequest, refundRequested, refundWithdrawRequested, splitSentences, statedRefundAmount, sub, tokenSet, withdrawConfirmed,
 } from "./text";
 
 export { refundRequested };
@@ -708,6 +708,8 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   if (inquiry) {
     const oid = orders[0].order_id;
     if (T.NEGATED_REFUND_RE.test(normalizeWidth(text))) parts.push(`如需退款，可以直接回复“${oid} 申请退款”，这次只解答问题、不会为您发起退款。`);
+    // They want it, in words the grammar leaves out: asked outright, and a yes files it (as in the backend's offline model).
+    else if (readsAsRequest(text)) parts.push(`需要为订单 ${oid} 申请退款吗？如需提交，回复“是的”或“${oid} 申请退款”即可。`);
     else parts.push(`如需现在申请退款，回复“${oid} 申请退款”即可，我马上为您提交。`);
   }
   if (!ticket && !refund && !handoff && !inquiry && (faultAsked(text) || lostParcel(text))) parts.push(TICKET_OFFER);

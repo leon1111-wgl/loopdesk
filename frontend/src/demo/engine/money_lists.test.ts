@@ -33,6 +33,6 @@ describe("the review lists on the page", () => {
 
   it(`still files plain requests (${plain.length}/${lists.plain.length}), and conversations stay where they were (${conversations.length}/${lists.multi_turn.length})`, () => {
     expect(plain.length).toBeGreaterThanOrEqual(114);
-    expect(conversations.length).toBeLessThanOrEqual(64);
+    expect(conversations.length).toBeLessThanOrEqual(66); // 64 before the outright question, and a yes to it files: two more, both that
   });
 });

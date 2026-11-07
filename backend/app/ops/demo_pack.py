@@ -42,8 +42,9 @@ def _flags(pattern: re.Pattern[str]) -> str:
 
 
 def js_pattern(pattern: re.Pattern[str]) -> dict[str, str]:
-    """The expression as JavaScript reads it: no possessive quantifiers (the one that has them only ever sees a
-    string of 16 characters, so backtracking is bounded), and astral code points in the u form."""
+    """The expression as JavaScript reads it: no possessive quantifiers (the ones that have them only ever see a short string,
+    _BARE_DEMAND_MAX and _PLAIN_DEMAND_MAX, so backtracking is bounded; their words are chosen so that the longest match never
+    hides a reading backtracking would find, which test_refund_grammar.py checks), and astral code points in the u form."""
     source = pattern.pattern.replace("*+", "*").replace("++", "+")
     flags = _flags(pattern)
     if "\\U" in source:

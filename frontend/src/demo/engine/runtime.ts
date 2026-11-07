@@ -558,7 +558,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
   // English nobody here can answer gets an honest reply in English, and examples it can answer: not a Chinese apology.
   const asksWhich = results.list_my_orders && !results.get_order;
   const answer = preface + (role === "customer" && inEnglish(turnText) && (isRefusal(composed) || asksWhich) ? ANSWERS_IN_CHINESE : composed);
-  const offeredFor = results.request_refund?.at(-1)?.confirm_order;
+  const offeredFor = results.request_refund?.at(-1)?.confirm_order ?? T._OFFERED_RE.exec(answer)?.[1];
   if (offeredFor) conversation.refundOffer = String(offeredFor);
   noteOrder(conversation, planned);
   // Streamed in small pieces, like the real backend's model tokens.

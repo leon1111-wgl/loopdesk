@@ -279,30 +279,38 @@ function notNow(text: string): boolean {
   return found;
 }
 
-// The words of every item on sale here: what a clause may name and still be part of a plain request.
-const ITEM_WORDS = new Set(Object.values(pack.orders).flat().flatMap((order) => order.items.flatMap((item) => {
-  const han = item.name.replace(/[^一-鿿]/g, "");
-  return [...han].slice(0, -1).map((_, i) => han.slice(i, i + 2));
-})));
+/** What a clause may name and still be part of a plain request. */
+export function itemWords(names: string[]): Set<string> {
+  return new Set(names.flatMap((name) => {
+    const han = name.replace(/[^一-鿿]/g, "");
+    return [...han].slice(0, -1).map((_, i) => han.slice(i, i + 2));
+  }));
+}
 
-function namesAnItem(clause: string): boolean {
+// Until an order is in hand, the words of every item on sale here: the tool holds a clause to the order it files on.
+const ITEM_WORDS = itemWords(Object.values(pack.orders).flat().flatMap((order) => order.items.map((item) => item.name)));
+
+function namesAnItem(clause: string, words: Set<string>): boolean {
   const han = clause.replace(T._PLAIN_ITEM_LEAD_RE, "");
-  if (han.length > 12 || !T._PLAIN_ITEM_SHAPE_RE.test(han) || T._PLAIN_NOT_AN_ITEM_RE.test(han)) return false;
-  for (let i = 0; i + 1 < han.length; i++) if (ITEM_WORDS.has(han.slice(i, i + 2))) return true;
+  if ([...han].length > 12 || !T._PLAIN_ITEM_SHAPE_RE.test(han) || T._PLAIN_NOT_AN_ITEM_RE.test(han)) return false;
+  for (let i = 0; i + 1 < han.length; i++) if (words.has(han.slice(i, i + 2))) return true;
   return false;
 }
 
-const namesAThing = (clause: string): boolean => T._PLAIN_ITEM_SHAPE_RE.test(clause) && !T._PLAIN_NOT_AN_ITEM_RE.test(clause) && !T._PLAIN_NOT_MINE_RE.test(clause);
-const isDemand = (clause: string): boolean => clause.length <= pack.settings.plain_demand_max && T._PLAIN_DEMAND_RE.test(clause);
+function namesAThing(clause: string, words: Set<string>): boolean {
+  const han = clause.replace(T._PLAIN_ITEM_LEAD_RE, "");
+  return T._PLAIN_ITEM_SHAPE_RE.test(han) && !T._PLAIN_NOT_AN_ITEM_RE.test(han) && [...words].some((word) => [...han].some((char) => word.includes(char)));
+}
+const isDemand = (clause: string): boolean => [...clause].length <= pack.settings.plain_demand_max && T._PLAIN_DEMAND_RE.test(clause);
 const isAReason = (clause: string): boolean => !T._PLAIN_NOT_A_REASON_RE.test(clause) && (T._PLAIN_REASON_RE.test(clause) || T._PLAIN_REASON_EN_RE.test(clause));
 
 function plainClauses(text: string): string[] {
-  const kept = text.replace(/([a-z'])\s+(?=[a-z'])/gi, "$1\u0001");
+  const kept = sub(T._PLAIN_ENGLISH_GAP_RE, "$1\u0001", text);
   return kept.split(T._PLAIN_CLAUSE_CUT_RE).map((c) => c.replace(/\u0001/g, " ").trim()).filter(Boolean);
 }
 
 /** textutil.plain_request: whether every clause of a message with an order number is part of a plain request by this customer, now. */
-export function plainRequest(raw: string): boolean {
+export function plainRequest(raw: string, words: Set<string> = ITEM_WORDS): boolean {
   const text = fixTypos((raw || "").normalize("NFKC"));
   if (!T.ORDER_ID_RE.test(text)) return true;
   let demand = false, own = T._PLAIN_ITS_OWN_RE.test(text), reason = false, other = false;
@@ -315,8 +323,8 @@ export function plainRequest(raw: string): boolean {
       continue;
     }
     if (!question && (isDemand(clause) || T._PLAIN_DEMAND_EN_RE.test(clause))) { demand = true; continue; }
-    const naming = clause.length <= pack.settings.plain_demand_max ? T._PLAIN_DEMAND_NAMING_RE.exec(clause) : null;
-    if (!question && naming && namesAnItem(naming[1])) { demand = true; continue; }
+    const naming = [...clause].length <= pack.settings.plain_demand_max ? T._PLAIN_DEMAND_NAMING_RE.exec(clause) : null;
+    if (!question && naming && namesAnItem(naming[1], words)) { demand = true; continue; }
     if (!question && T._PLAIN_BEFORE_RE.test(clause)) continue;
     if (!question && (T._PLAIN_COURTESY_RE.test(clause) || T._PLAIN_ORDER_WORDS_RE.test(clause) || T._PLAIN_ALSO_RE.test(clause) || T._PLAIN_NUMBER_RE.test(clause) || T._PLAIN_BOUGHT_RE.test(clause))) continue;
     if (T._PLAIN_INJECTED_RE.test(clause) && !T._PLAIN_GOVERNS_RE.test(clause)) continue;
@@ -330,8 +338,8 @@ export function plainRequest(raw: string): boolean {
     if (!question && (reason || !demand) && T._PLAIN_NO_PRODUCT_RE.test(clause) && !T._PLAIN_NOT_A_REASON_RE.test(clause)) { reason = true; continue; }
     if (T._PLAIN_OTHER_QUESTION_RE.test(clause) && !T._PLAIN_GOVERNS_RE.test(clause)) { other = true; continue; }
     const that = T._PLAIN_THAT_ORDER_RE.exec(clause);
-    if (!question && that && (!that[1] || T._PLAIN_BOUGHT_RE.test(that[1]) || namesAThing(that[1]))) continue;
-    if (!question && namesAnItem(clause)) continue;
+    if (!question && that && (!that[1] || T._PLAIN_BOUGHT_RE.test(that[1]) || namesAThing(that[1], words))) continue;
+    if (!question && namesAnItem(clause, words)) continue;
     return false;
   }
   return demand && (!other || own);

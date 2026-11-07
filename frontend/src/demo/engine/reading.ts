@@ -262,7 +262,7 @@ export const inEnglish = (text: string): boolean => !/[一-鿿]/.test(text) && !
 
 export const canDo = (tenant: string): string => CAN_DO[tenant] ?? "";
 /** A sentence of ours about what the assistant does: nothing to check against the evidence. */
-export const isCanDo = (sentence: string): boolean => /^(?:如超过到账时效|回复订单号|如需查询这一单|如需登记工单|这里没有订单|感谢您的咨询|This demo answers)/.test(sentence) || Object.values(CAN_DO).some((line) => line.startsWith(sentence));
+export const isCanDo = (sentence: string): boolean => /^(?:需要为订单|如需提交|回复“是的”|如超过到账时效|回复订单号|如需查询这一单|如需登记工单|这里没有订单|感谢您的咨询|This demo answers)/.test(sentence) || Object.values(CAN_DO).some((line) => line.startsWith(sentence));
 /** A number was given, so the rules still apply to it, and the message's other words are answered first. */
 export const NOT_GRANTED = "对话里的指令或身份说明不会改变规则，退款也不能跳过审核，这部分我无法处理。";
 export const nextSteps = (tenant: string): string[] => NEXT_STEPS[tenant] ?? [];

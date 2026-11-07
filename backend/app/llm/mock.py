@@ -19,7 +19,7 @@ from typing import Any
 
 from ..textutil import (CANCEL_ORDER_RE, NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, OTHER_ORDER,
                         REFUND_APPLY_RE, REFUND_RE, cancel_requested, handoff_cancelled,
-                        estimate_tokens, expand_query, fix_typos, normalize_width, other_question, refund_bare_decline,
+                        estimate_tokens, expand_query, fix_typos, normalize_width, other_question, reads_as_request, refund_bare_decline,
                         refund_requested, refund_withdraw_requested, stated_refund_amount, withdraw_confirmed,
                         split_sentences, strip_citations, token_set)
 from ..rag.chunking import CUT_MARK
@@ -779,6 +779,8 @@ class MockLLM(LLMProvider):
             # customer misread as asking is offered to apply, not told "不会为您发起退款".
             if NEGATED_REFUND_RE.search(normalize_width(text)):
                 parts.append(f"如需退款，可以直接回复“{oid} 申请退款”，这次只解答问题、不会为您发起退款。")
+            elif reads_as_request(text):  # they want it, in words the grammar leaves out: asked outright, and a yes files it
+                parts.append(f"需要为订单 {oid} 申请退款吗？如需提交，回复“是的”或“{oid} 申请退款”即可。")
             else:
                 parts.append(f"如需现在申请退款，回复“{oid} 申请退款”即可，我马上为您提交。")
         if faults:  # which is which: the tickets' own sentences say only their numbers
