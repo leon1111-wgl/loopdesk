@@ -39,6 +39,11 @@ describe("a number at the end of its sentence owns that sentence", () => {
     "我的扫地机器人物流到哪了？订单号SO20261008002。另外想退三天前收到的抱枕，订单号SO20260918001。",
     "扫地机器人到哪了 单号是SO20261008002，抱枕想退，订单号SO20260918001",
     "SO20261008002 物流到哪了，另外想退抱枕，订单号SO20260918001",
+    "SO20261008002 到哪了，抱枕想退 SO20260918001 可以吗",
+    "SO20261008002 到哪了，抱枕想退，订单号SO20260918001 谢谢",
+    "SO20261008002 到哪了，抱枕想退，订单号是 SO20260918001 对吧",
+    "SO20261008002 到哪了，抱枕想退 SO20260918001 这单",
+    "SO20261008002到哪了,抱枕想退,订单号SO20260918001.",
   ])("%s", (line) => {
     const engine = new DemoEngine(() => undefined);
     const events = engine.ask("customer@leon.demo", 1, line);
@@ -46,5 +51,16 @@ describe("a number at the end of its sentence owns that sentence", () => {
     expect(text).not.toContain("SO20261008002 申请退款");
     expect(text).toContain("SO20260918001 申请退款");
     expect(text).toContain("AT1402938475");
+  });
+});
+
+describe("refund words between two numbers get a question, not a guess", () => {
+  it.each(["SO20261008002 到哪了，抱枕想退，SO20260918001 帮忙看看", "SO20260918001 到哪了，杯子想退，SO20261008010 帮忙看下"])("%s", (line) => {
+    const engine = new DemoEngine(() => undefined);
+    const events = engine.ask("customer@leon.demo", 1, line);
+    const text = events.find((e): e is Extract<AgentEvent, { type: "final" }> => e.type === "final")?.text ?? "";
+    expect(text).not.toContain("申请退款”即可");
+    expect(text).toContain("没有写是哪一单");
+    expect(events.some((e) => e.type === "approval_required")).toBe(false);
   });
 });

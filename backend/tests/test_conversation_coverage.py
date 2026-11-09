@@ -230,11 +230,30 @@ def test_each_order_keeps_its_own_words():
     ("我的扫地机器人物流到哪了？订单号SO20261008002。另外想退三天前收到的抱枕，订单号SO20260918001。", "物流", "想退"),
     ("扫地机器人到哪了 单号是SO20261008002，抱枕想退，订单号SO20260918001", "到哪", "想退"),
     ("SO20261008002 物流到哪了，另外想退抱枕，订单号SO20260918001", "物流", "想退"),
+    # the review's wordings: a few closing words after the number, or an ASCII full stop
+    ("SO20261008002 到哪了，抱枕想退 SO20260918001 可以吗", "到哪", "想退"),
+    ("SO20261008002 到哪了，抱枕想退，订单号SO20260918001 谢谢", "到哪", "想退"),
+    ("SO20261008002 到哪了，抱枕想退，订单号是 SO20260918001 对吧", "到哪", "想退"),
+    ("SO20261008002 到哪了，抱枕想退 SO20260918001 这单", "到哪", "想退"),
+    ("SO20261008002到哪了,抱枕想退,订单号SO20260918001.", "到哪", "想退"),
 ])
 def test_a_number_at_the_end_of_its_sentence_owns_that_sentence(text, robot, pillow):
     clauses = order_clauses(text)
     assert robot in clauses["SO20261008002"] and "退" not in clauses["SO20261008002"]
     assert pillow in clauses["SO20260918001"]
+
+
+@pytest.mark.parametrize("text", [
+    "SO20261008002 到哪了，抱枕想退，SO20260918001 帮忙看看",  # the refund words sit between the two numbers
+    "SO20260918001 到哪了，杯子想退，SO20261008010 帮忙看下",  # the other way round: a wrong guess would offer the ¥39.90 pillow
+])
+def test_refund_words_between_two_numbers_get_a_question_not_a_guess(ask, login, text):
+    from app.llm.mock import ASK_WHICH_REFUND_TEXT
+
+    _, events = ask(login("customer@leon.demo"), text)
+    answer = by_type(events, "final")[0]["text"]
+    assert "申请退款”即可" not in answer and ASK_WHICH_REFUND_TEXT in answer
+    assert not by_type(events, "approval_required")
 
 
 def test_two_asks_with_trailing_numbers_get_the_right_answers(ask, login):

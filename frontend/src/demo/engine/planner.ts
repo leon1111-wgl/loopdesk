@@ -171,9 +171,10 @@ function afterEachNumber(text: string): [string | null, string][] {
   return [...head, ...spans.map(([start, id], i): [string | null, string] => [id, text.slice(start, i + 1 < spans.length ? spans[i + 1][0] : text.length)])];
 }
 
-/** mock.order_clauses: words after a number belong to it; number-less words belong to a bare reference right after them ("抱枕想退，订单号SO2"). */
-function orderClauses(text: string): Record<string, string> {
-  if (!T.ORDER_ID_RE.test(text)) return {};
+/** mock._order_pieces: [each order's words, the words that belong to no order for sure]. Words after a number belong to it; number-less words
+ * belong to a bare reference right after them ("抱枕想退，订单号SO2 谢谢"); number-less words between two numbers belong to neither. */
+function orderPieces(text: string): [Record<string, string>, string] {
+  if (!T.ORDER_ID_RE.test(text)) return [{}, ""];
   const pieces: [string | null, string][] = text.split(M._PIECE_END).filter(Boolean).flatMap((piece) => (T.ORDER_ID_RE.test(piece) ? afterEachNumber(piece) : [[null, piece] as [string | null, string]]));
   const owners = pieces.map(([id]) => id);
   const claimed = pieces.map(() => false);
@@ -183,17 +184,28 @@ function orderClauses(text: string): Record<string, string> {
       claimed[i] = true;
     }
   }
+  const lastNumber = pieces.reduce((at, [id], i) => (id !== null ? i : at), -1);
   let last: string | null = null;
   pieces.forEach(([id], i) => {
     last = id ?? last;
-    owners[i] = owners[i] ?? last;
+    if (owners[i] === null && i > lastNumber) owners[i] = last;
   });
   const clauses: Record<string, string> = {};
+  let loose = "";
   pieces.forEach(([, words], i) => {
     const owner = owners[i];
     if (owner !== null) clauses[owner] = (clauses[owner] ?? "") + words;
+    else loose += words;
   });
-  return clauses;
+  return [clauses, loose];
+}
+
+const orderClauses = (text: string): Record<string, string> => orderPieces(text)[0];
+
+/** mock.loose_refund: refund words that belong to none of several orders for sure. */
+function looseRefund(text: string): boolean {
+  const loose = orderPieces(text)[1];
+  return Boolean(loose) && mentionsRefund(loose) && !T.ORDER_ID_RE.test(loose);
 }
 
 // What the order's own record answers.
@@ -679,6 +691,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
     }
   }
   if (orders.length > 1 && refundRequested(text)) parts.push(X.MULTI_REFUND_TEXT);
+  else if (orders.length > 1 && looseRefund(text)) parts.push(X.ASK_WHICH_REFUND_TEXT);
 
   for (const shipment of shipments) {
     if (shipment.error) parts.push(`物流查询失败：${shipment.error}。`);
