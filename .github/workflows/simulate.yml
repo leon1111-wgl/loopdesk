@@ -96,7 +96,11 @@ jobs:
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
+          import re, sys
           sets = ["custom"] if os.environ["CUSTOM"].strip() else [s.strip() for s in os.environ["SETS"].split(",") if s.strip()]
+          bad = [s for s in sets if not re.fullmatch(r"[A-Za-z0-9_-]+", s)]
+          if bad:  # set names reach file names and artifact names: letters, digits, _ and - only
+              sys.exit(f"bad set name: {bad}")
           seeds = [int(s) for s in os.environ["SEEDS"].split(",") if s.strip()][:5]
           print("matrix=" + json.dumps({"include": [{"set": s, "seed": k} for s in sets for k in seeds]}))
           PY
@@ -146,14 +150,17 @@ jobs:
           CUSTOM: ${{ inputs.scenarios }}
         run: printf '%s' "$CUSTOM" > evals/simulations/custom.json && python -c "from app.evals.simulate import load, SIM_DIR; print(len(load(SIM_DIR / 'custom.json')), 'scenarios')"
       - name: Simulate
+        shell: bash  # with -o pipefail: a crash of the harness fails the job instead of hiding behind tee
         env:
           SIM_MODEL_LABEL: ${{ needs.plan.outputs.label }}
           SIM_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           ONLY: ${{ inputs.only }}
+          SET: ${{ matrix.set }}
+          SEED: ${{ matrix.seed }}
         run: |
-          python -m app.evals.simulate --set "${{ matrix.set }}" --customer model --model-url http://127.0.0.1:8080 \
-            --seeds "${{ matrix.seed }}" ${ONLY:+--only "$ONLY"} --report "../sim-${{ matrix.set }}-${{ matrix.seed }}.json" 2>&1 \
-            | grep -v '^{' | tee ../sim-${{ matrix.set }}-${{ matrix.seed }}.log
+          python -m app.evals.simulate --set "$SET" --customer model --model-url http://127.0.0.1:8080 \
+            --seeds "$SEED" ${ONLY:+--only "$ONLY"} --report "../sim-$SET-$SEED.json" 2>&1 \
+            | { grep -v '^{' || true; } | tee "../sim-$SET-$SEED.log"
       - name: Throughput
         if: always()
         run: |
@@ -170,7 +177,7 @@ jobs:
           path: |
             sim-${{ matrix.set }}-${{ matrix.seed }}.json
             sim-${{ matrix.set }}-${{ matrix.seed }}.log
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   report:
     name: Combine and summarise
@@ -193,8 +200,10 @@ jobs:
           path: parts
           pattern: sim-*
           merge-multiple: true
-      - name: One report, and the wrong-money gate
-        run: python -m app.evals.simulate --merge ../parts/sim-*.json --report ../simulations.json >> "$GITHUB_STEP_SUMMARY"
+      - name: One report, and the gates (wrong money is 0; every scenario ran with every seed)
+        run: |
+          python -m app.evals.simulate --merge ../parts/sim-*.json --report ../simulations.json >> "$GITHUB_STEP_SUMMARY"
+          python -m app.evals.simulate --stats ../simulations.json >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

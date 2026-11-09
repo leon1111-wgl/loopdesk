@@ -90,9 +90,9 @@ function CardFace({ card }: { card: Card }) {
   return (
     <div className="sim-card">
       <div className="row row-wrap" style={{ gap: 6 }}>
-        <span className="badge badge-primary">{PERSONA_TEXT[card.persona]}</span>
+        {card.set !== "custom" && <span className="badge badge-primary">{PERSONA_TEXT[card.persona]}</span>}
         <span className="badge">{SET_TEXT[card.set]}</span>
-        <span className="faint small mono">{card.key}</span>
+        {card.set !== "custom" && <span className="faint small mono">{card.key}</span>}
       </div>
       <p className="sim-card-who">你是 <b>{card.name ?? who?.name}</b> · {who?.shop ?? card.tenant} 的顾客</p>
       <p className="sim-card-goal">{card.card}</p>
@@ -403,8 +403,8 @@ function Recorded() {
           <tbody>
             {Object.entries(report.summary).flatMap(([set, s]) => [["all", s.all] as const, ...Object.entries(s.by_persona)].map(([p, b]) => (
               <tr key={`${set}-${p}`} className={p === "all" ? "sim-total" : ""}>
-                <td>{SET_TEXT[set as Card["set"]] ?? set}</td>
-                <td>{p === "all" ? "全部" : PERSONA_TEXT[p as Persona] ?? p}</td>
+                <td className="nowrap">{SET_TEXT[set as Card["set"]] ?? set}</td>
+                <td className="nowrap">{p === "all" ? "全部" : PERSONA_TEXT[p as Persona] ?? p}</td>
                 <td className="mono">{b.passed}/{b.runs}</td>
                 <td className="mono">{b.pass_all_seeds}/{b.scenarios}</td>
                 <td className={`mono ${b.wrong_money ? "sim-bad" : ""}`}>{b.wrong_money}</td>

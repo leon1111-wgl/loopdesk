@@ -315,12 +315,14 @@ def fresh_backend(configured_model: bool = False) -> Iterator[tuple[Any, Any]]:
             yield client, new_session
 
 
-def pass_hat_k(results: list[dict[str, Any]]) -> tuple[int, int]:
-    """Scenarios that passed in every seed they ran, out of all scenarios (τ-bench's pass^k)."""
+def pass_hat_k(results: list[dict[str, Any]], k: int | None = None) -> tuple[int, int]:
+    """Scenarios that passed in all k seeds, out of all scenarios (τ-bench's pass^k). A scenario with fewer than k runs (a job
+    that died) does not count as passing; k defaults to the most runs any scenario has."""
     by_key: dict[str, list[bool]] = {}
     for r in results:
         by_key.setdefault(r["key"], []).append(r["passed"])
-    return sum(all(v) for v in by_key.values()), len(by_key)
+    k = k or max((len(v) for v in by_key.values()), default=0)
+    return sum(all(v) and len(v) == k for v in by_key.values()), len(by_key)
 
 
 def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -370,11 +372,54 @@ def merge(reports: list[dict[str, Any]]) -> dict[str, Any]:
     meta["seeds"] = sorted({seed for r in reports for seed in r["meta"]["seeds"]})
     meta["sets"] = sets
     meta.pop("set", None)
-    meta["throughput"] = {r["meta"]["set"] + f"/seed{r['meta']['seeds'][0]}": r["meta"]["throughput"] for r in reports}
+    meta["throughput"] = {f"{r['meta']['set']}/seeds{','.join(map(str, r['meta']['seeds']))}": r["meta"]["throughput"] for r in reports}
     commits = {r["meta"]["commit"] for r in reports}
     if len(commits) > 1:
         raise ValueError(f"reports from different commits: {sorted(commits)}")
+    for name in sets:  # a job that died must not leave a smaller, greener report behind
+        rows = [x for x in runs if x["set"] == name]
+        counts: dict[str, list[int]] = {}
+        for x in rows:
+            counts.setdefault(x["key"], []).append(x["seed"])
+        short = sorted(k for k, seeds in counts.items() if sorted(seeds) != meta["seeds"])
+        if short:
+            raise ValueError(f"{name}: not every scenario ran with seeds {meta['seeds']}: {', '.join(short[:5])}")
     return {"meta": meta, "summary": {name: summarize([x for x in runs if x["set"] == name]) for name in sets}, "runs": runs}
+
+
+_QUOTED = re.compile(r"[“「]([^”」]{2,60})[”」]")
+
+
+def stats(report: dict[str, Any]) -> dict[str, Any]:
+    """The counts docs/EVALUATION.md quotes about how the simulated customer behaved, each with its rule:
+    - copied: a sent customer line equal (spaces ignored) to a line the agent quoted in “…” or 「…」 in the reply just before it;
+    - money goals: runs whose card's own end state (not also_ok) pays a refund or files an application;
+    - filed first: of those, runs where the agent's reply to the first sent line filed one (an approval or a refund that went through)."""
+    cards = {(name, c["key"]): c for name in report["meta"]["sets"] if (SIM_DIR / f"{name}.json").exists()
+             for c in load(SIM_DIR / f"{name}.json")}  # your own cards (custom) live only in the job that ran them
+    lines = sent = copied = 0
+    first = later = never = 0
+    for run in report["runs"]:
+        last_agent = ""
+        for turn in run["transcript"]:
+            if turn["role"] == "agent":
+                last_agent = turn["text"]
+                continue
+            lines += 1
+            if not turn.get("sent"):
+                continue
+            sent += 1
+            quoted = {re.sub(r"\s", "", q) for q in _QUOTED.findall(last_agent)}
+            copied += re.sub(r"\s", "", turn["text"]) in quoted
+        end = cards.get((run["set"], run["key"]), {}).get("end", {})
+        if not (end.get("refunds") or (end.get("approvals") or {}).get("pending")):
+            continue
+        agents = [t for t in run["transcript"] if t["role"] == "agent"]
+        filed = next((i for i, t in enumerate(agents) if t.get("approval")
+                      or any(x["name"] == "request_refund" and not x["error"] for x in t.get("tools", []))), None)
+        first, later, never = first + (filed == 0), later + (filed is not None and filed > 0), never + (filed is None)
+    return {"customer_lines": lines, "sent": sent, "copied_quoted_line": copied,
+            "money_goal_runs": first + later + never, "filed_on_first_line": first, "filed_later": later, "never_filed": never}
 
 
 def markdown(report: dict[str, Any]) -> str:
@@ -406,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - tests/test
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--merge", nargs="+", metavar="REPORT", help="combine per-job reports into --report (and print a table)")
+    parser.add_argument("--stats", type=Path, metavar="REPORT", help="print how the simulated customers behaved in a merged report")
     parser.add_argument("--configured-model", action="store_true",
                         help="the agent under test uses the configured real model (needs keys); default the offline one")
     args = parser.parse_args(argv)
@@ -414,6 +460,9 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - tests/test
     logging.getLogger("loopdesk").setLevel(logging.WARNING)  # one access line per request drowns the results
     if args.play:
         args.customer, args.only = "person", args.play
+    if args.stats:
+        print(json.dumps(stats(json.loads(args.stats.read_text(encoding="utf-8"))), ensure_ascii=False, indent=1))
+        return 0
     if args.merge:
         report = merge([json.loads(Path(p).read_text(encoding="utf-8")) for p in args.merge])
         if args.report:
@@ -467,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - tests/test
             "summary": summary, "runs": results,
         }
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    return 0
+    return 1 if head["wrong_money"] and args.customer == "model" else 0  # the report is written first, then the job fails
 
 
 if __name__ == "__main__":  # pragma: no cover

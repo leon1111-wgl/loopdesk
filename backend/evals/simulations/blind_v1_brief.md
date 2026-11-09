@@ -1,6 +1,6 @@
 # What the blind writer saw (blind_v1.json)
 
-Claude Sonnet wrote blind_v1.json on 2026-11-10 from this page and the public policy documents below, and nothing else: no code, no tests, no other evaluation file, not dev.json. It was committed before any simulated run. The page was generated from the seed data (frontend/src/demo/engine/pack.json).
+Claude Sonnet 5.5 wrote blind_v1.json on 2026-11-10 from this page and the public policy documents below, and nothing else: no code, no tests, no other evaluation file, not dev.json. It was committed before any simulated run. The page was generated from the seed data (frontend/src/demo/engine/pack.json).
 
 Policy documents given: backend/seed_data/leon/{refund_policy,shipping,membership,invoice}.md, backend/seed_data/echo/{membership,coins_minors,digital_album,account,audio_download}.md.
 

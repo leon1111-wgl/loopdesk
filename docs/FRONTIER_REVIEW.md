@@ -25,13 +25,13 @@
 | 谁 | 做法 | 来源（日期） |
 |---|---|---|
 | Sierra | 发布前用模拟对话测试 Agent：测试从标准作业流程、知识库和辅导记录生成，每条跑多次，由独立的评判 Agent 打分，可以作为 CI（例如 GitHub Actions）里的发布门禁；生产里另有“监督”Agent 旁听动作和回复，高风险话题从旁听切换为拦截 | [Simulations](https://sierra.ai/blog/simulations-the-secret-behind-every-great-agent)（2025-08-19）；[Enterprise-grade agents](https://sierra.ai/jp/blog/enterprise-grade-agents)（2025-10-02） |
-| Sierra 研究团队：τ²-bench | 模拟用户带着隐藏目标和 Agent 对话，按数据库终态评分，用 pass^k 衡量多次运行的一致性；用户也能操作工具时（dual-control）Agent 的表现明显下降。仓库已到 τ-bench 2.0（MIT），2026-03 加了检索和含中文在内的 6 种语言语音 | [arXiv 2506.07982](https://arxiv.org/abs/2506.07982)（2025-06）；[仓库](https://github.com/sierra-research/tau2-bench)（2026-11 查阅） |
-| Decagon | Simulations：从 Agent 处理不好的真实对话里生成顾客画像，返回通过与否和完整链路，重复运行看一致性；业务逻辑写在 Agent Operating Procedures 里。没有公布数字 | [Decagon Simulations](https://decagon.ai/blog/decagon-simulations)（2025-09-23） |
+| Sierra 研究团队：τ²-bench | 模拟用户带着隐藏目标和 Agent 对话，按数据库终态评分，用 pass^k 衡量多次运行的一致性；用户也能操作工具时（dual-control）Agent 的表现明显下降。仓库已到 τ-bench 2.0（MIT，CHANGELOG 记为 2026-10-19），加了含中文在内的 6 种语言的文本与语音；知识检索领域在 1.0 加入 | [arXiv 2506.07982](https://arxiv.org/abs/2506.07982)（2025-06）；[仓库与 CHANGELOG](https://github.com/sierra-research/tau2-bench)（2026-11-10 查阅） |
+| Decagon | Simulations：从 AI 或人工客服处理不好的真实对话里生成顾客画像，返回通过与否和完整链路，重复运行看一致性；业务逻辑写在 Agent Operating Procedures 里。没有公布数字 | [Decagon Simulations](https://decagon.ai/blog/decagon-simulations)（2025-09-23） |
 | Salesforce | Agentforce Testing Center：批量生成合成的顾客说法，检查 Agent 选的主题、动作顺序和结果 | [投资者关系新闻稿](https://investor.salesforce.com/news/news-details/2024/Salesforce-Introduces-Agentforce-Testing-Center-First-of-Its-Kind-AI-Agent-Lifecycle-Management-Tooling-for-Testing-Autonomous-AI-Agents-at-Scale/default.aspx)（2024-11-20；该页面拦截自动访问，内容取自主会话 2026-11-10 的调研笔记） |
 | Salesforce AI Research：CRMArena-Pro | 用模型扮演的用户做多轮测试：领先的 Agent 单轮约 58%、多轮约 35% 成功，几乎没有保密意识。这是对厂商宣传最有用的可复现对照 | [arXiv 2505.18878](https://arxiv.org/abs/2505.18878)（2025-05） |
 | Anthropic | 评测指南：优先确定性评分，评结果多于评路径，用 pass^k 衡量一致性 | [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)（2026-01-09） |
 | Klarna | 2024-02 称 AI 助手处理了三分之二的客服对话；2025-05 CEO 表示要投资人工客服的质量并重新招人，变成人机混合、随时能找到人 | [新闻稿](https://www.klarna.com/international/press/klarna-ai-assistant-handles-two-thirds-of-customer-service-chats-in-its-first-month/)（2024-02-27）；[Entrepreneur](https://www.entrepreneur.com/business-news/klarna-ceo-reverses-course-by-hiring-more-humans-not-ai/491396)（2025-05-09） |
-| AWS | AgentCore Policy：在工具网关处默认拒绝，用 Cedar 策略逐次判断工具调用（预览 2025-12-02，正式发布 2026-03-03）。对应候选 12，这一轮没做 | [AWS Security Blog](https://aws.amazon.com/blogs/security/why-policy-in-amazon-bedrock-agentcore-chose-cedar-for-securing-agentic-workflows/)；[GA 公告](https://aws.amazon.com/about-aws/whats-new/2026/03/policy-amazon-bedrock-agentcore-generally-available) |
+| AWS | AgentCore Policy：在工具网关处默认拒绝，用 Cedar 策略逐次判断工具调用（正式发布 2026-03-03）。对应候选 12，这一轮没做 | [AWS Security Blog](https://aws.amazon.com/blogs/security/why-policy-in-amazon-bedrock-agentcore-chose-cedar-for-securing-agentic-workflows/)；[GA 公告](https://aws.amazon.com/about-aws/whats-new/2026/03/policy-amazon-bedrock-agentcore-generally-available) |
 
 **这一版对应的做法**：τ²-bench 的模拟用户（角色对调、用户说 `###STOP###` 结束、结束语不发给 Agent）、严格的数据库终态评分、多个种子算 pass^k，以及 Sierra 那样把模拟放进 GitHub Actions、有一项不过就让运行失败的门禁（这里是“动钱错误必须为 0”）。
 

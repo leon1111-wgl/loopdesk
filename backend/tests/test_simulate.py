@@ -111,6 +111,41 @@ def test_clean_reply_keeps_only_what_a_customer_would_send():
 def test_pass_hat_k_needs_every_seed():
     rows = [{"key": "a", "passed": True}, {"key": "a", "passed": False}, {"key": "b", "passed": True}, {"key": "b", "passed": True}]
     assert pass_hat_k(rows) == (1, 2)
+    # a scenario whose other seeds never ran (a job died) is not "passed on every seed" (review P2-3)
+    assert pass_hat_k([{"key": "a", "passed": True}, {"key": "b", "passed": True}, {"key": "b", "passed": True}]) == (1, 2)
+    assert pass_hat_k([{"key": "a", "passed": True}], k=3) == (0, 1)
+
+
+def _part(set_name, seed, keys, wrong=0):
+    runs = [{"key": k, "seed": seed, "persona": "plain", "passed": True, "outcome": "pass", "handoff": False, "stop": "done",
+             "turns": 1, "transcript": []} for k in keys]
+    for run in runs[:wrong]:
+        run.update(passed=False, outcome="wrong_money")
+    return {"meta": {"commit": "abc", "set": set_name, "seeds": [seed], "throughput": {}}, "runs": runs}
+
+
+def test_merge_refuses_a_report_with_a_seed_missing():
+    """A job that died must not leave a smaller, greener report (review P1-2)."""
+    from app.evals.simulate import merge
+
+    merged = merge([_part("dev", 1, ["a", "b"]), _part("dev", 2, ["a", "b"])])
+    assert merged["summary"]["dev"]["all"]["pass_all_seeds"] == 2 and merged["meta"]["seeds"] == [1, 2]
+    with pytest.raises(ValueError, match="not every scenario ran"):
+        merge([_part("dev", 1, ["a", "b"]), _part("dev", 2, ["a"])])
+
+
+def test_stats_counts_copied_lines_and_first_line_filings():
+    from app.evals.simulate import stats
+
+    run = {"set": "dev", "key": "leon_pillow_plain", "seed": 1, "transcript": [
+        {"role": "customer", "text": "抱枕想退 SO20260918001", "sent": True},
+        {"role": "agent", "text": "如需现在申请退款，回复“SO20260918001 申请退款”即可", "tools": [], "approval": False},
+        {"role": "customer", "text": "SO20260918001 申请退款", "sent": True},
+        {"role": "agent", "text": "已受理", "tools": [{"name": "request_refund", "error": False}], "approval": False},
+        {"role": "customer", "text": "谢谢", "sent": False}]}
+    assert stats({"meta": {"sets": ["dev"]}, "runs": [run]}) == {
+        "customer_lines": 3, "sent": 2, "copied_quoted_line": 1, "money_goal_runs": 1, "filed_on_first_line": 0,
+        "filed_later": 1, "never_filed": 0}
 
 
 def test_summary_counts_wrong_money_per_persona():
