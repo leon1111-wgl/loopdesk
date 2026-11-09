@@ -44,9 +44,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PUSH_SETS: dev
-  PUSH_SEEDS: "1"
-  PUSH_ONLY: leon_pillow_plain,leon_mug_cracked,echo_coins_child
+  PUSH_SETS: dev,blind_v1
+  PUSH_SEEDS: "1,2,3"
+  PUSH_ONLY: ""
   LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11899/llama-b11899-bin-ubuntu-x64.tar.gz
   LLAMA_SHA256: 464e0dfdd70d18a3b758074ac58e04fa27f892a771805dd883b2d0f3c5ca0289
 
