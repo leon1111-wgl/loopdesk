@@ -77,6 +77,8 @@ export interface Scenario {
   also_ok?: End[];
   must_say?: string[];
   why?: string;
+  /** A visitor's own goal whose outcome the rules never produce (customgoal.ts): what the rules do instead. Browser only. */
+  rule?: { note: string; end: End; chosen: string };
 }
 
 /** Every end state the goal accepts, written out in full: what a card leaves out stays as it was. */
@@ -116,7 +118,7 @@ export function moneyOutcome(accepted: Full[], actual: Pick<Full, "refunds" | "a
   return "ok";
 }
 
-export type Outcome = "pass" | "wrong_money" | "missed_action" | "not_said" | "other_state";
+export type Outcome = "pass" | "wrong_money" | "missed_action" | "not_said" | "other_state" | "rule_mismatch";
 
 export interface Grade {
   passed: boolean;
@@ -124,12 +126,21 @@ export interface Grade {
   money: "ok" | "wrong" | "missed";
   tables: Diff;
   notSaid: string[];
+  /** For a goal the rules never produce: whether the conversation ended where the rules put it. */
+  ruleKept?: boolean;
 }
 
 const compact = (text: string) => text.replace(/\s/g, "");
 
-/** simulate.run_conversation's verdict, given the state before and after and what the agent said. */
+/** simulate.run_conversation's verdict, given the state before and after and what the agent said. A visitor's goal the rules never
+ * produce is not the agent's fault: it is held to what the rules do instead and graded "rule_mismatch", unless money moved that
+ * the rules do not allow either, which stays "wrong_money". */
 export function grade(scenario: Scenario, start: State, actual: State, agentTexts: string[]): Grade {
+  if (scenario.rule) {
+    const byRules = grade({ ...scenario, end: scenario.rule.end, also_ok: undefined, rule: undefined }, start, actual, agentTexts);
+    if (byRules.outcome === "wrong_money") return byRules;
+    return { ...byRules, passed: false, outcome: "rule_mismatch", ruleKept: byRules.passed };
+  }
   const accepted = expectedStates(scenario, start);
   const diffs = accepted.map((e) => tableDiff(e, actual, start.orders));
   const match = diffs.findIndex((d) => TABLES.every((t) => d[t].ok));

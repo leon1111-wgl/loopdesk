@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "../../types";
 import { DemoEngine } from ".";
+import { customScenario, rulesForRefund } from "./customgoal";
 import { endState, expectedStates, grade, moneyOutcome, tableDiff, TABLES, type End, type Scenario } from "./endstate";
+import { pack } from "./pack";
 
 /** The hidden-goal cards (backend/evals/simulations) graded by the browser's copy of app/evals/simulate.py. */
 const read = (name: string) => JSON.parse(readFileSync(new URL(`../../../../backend/evals/simulations/${name}`, import.meta.url), "utf-8"));
@@ -62,5 +64,47 @@ describe("refund words between two numbers get a question, not a guess", () => {
     expect(text).not.toContain("申请退款”即可");
     expect(text).toContain("没有写是哪一单");
     expect(events.some((e) => e.type === "approval_required")).toBe(false);
+  });
+});
+
+/** The main session's probe of PR #4: a custom goal whose outcome the rules never produce graded the correct agent "动钱错误". */
+describe("a custom goal is held to what the rules do with that order", () => {
+  const EMMA = "customer@leon.demo";
+  function play(orderId: string, outcome: "refund" | "review", label: string, line: string) {
+    const order = pack.orders.leon.find((o) => o.id === orderId)!;
+    const rule = rulesForRefund(new DemoEngine(() => undefined), EMMA, orderId, "leon");
+    const card = customScenario({ email: EMMA, tenant: "leon", name: "Emma", order: { id: orderId, amount: order.amount, items: order.items.map((i) => i.name).join("、") }, outcome, goal: "", label }, rule);
+    const engine = new DemoEngine(() => undefined);
+    const start = endState(engine, "leon", [1]);
+    const final = engine.ask(EMMA, 1, line).find((e): e is Extract<AgentEvent, { type: "final" }> => e.type === "final")?.text ?? "";
+    return { rule, card, result: grade(card, start, endState(engine, "leon", [1]), [final]) };
+  }
+
+  it("the robot (¥1299) with 自动退款: the agent files it for review, which the rules require: not wrong money", () => {
+    const { rule, result } = play("SO20261008002", "refund", "自动退款，钱退回", "扫地机器人不要了 SO20261008002 申请退款");
+    expect(rule.kind).toBe("review");
+    expect(result.outcome).toBe("rule_mismatch");
+    expect(result.ruleKept).toBe(true);
+  });
+
+  it("the pillow (¥39.90) with 自动退款: the rules allow it, and filing it passes", () => {
+    const { rule, card, result } = play("SO20260918001", "refund", "自动退款，钱退回", "SO20260918001 申请退款");
+    expect(rule).toMatchObject({ kind: "auto", amount: 39.9 });
+    expect(card.rule).toBeUndefined();
+    expect(result.outcome).toBe("pass");
+  });
+
+  it("the 30-day tote with 自动退款: the rules refuse it, and the grade says the goal does not fit them", () => {
+    const { rule, result } = play("SO20260918011", "refund", "自动退款，钱退回", "SO20260918011 申请退款");
+    expect(rule.kind).toBe("refused");
+    expect(rule.note).toContain("15 天");
+    expect(result.outcome).toBe("rule_mismatch");
+    expect(result.ruleKept).toBe(true);
+  });
+
+  it("the pillow with 提交人工审核: the rules refund it automatically, so review does not fit them either", () => {
+    const { rule, result } = play("SO20260918001", "review", "提交人工审核（先不退钱）", "SO20260918001 申请退款");
+    expect(rule.kind).toBe("auto");
+    expect(result.outcome).toBe("rule_mismatch");
   });
 });

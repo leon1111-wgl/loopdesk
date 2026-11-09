@@ -6,6 +6,7 @@ import { isDemo, REPO_URL } from "../demo/replay";
 import type { DemoEngine } from "../demo/engine";
 import type { Diff, Grade, Persona, Scenario, State, Table } from "../demo/engine/endstate";
 import type { SeedOrder } from "../demo/engine/pack";
+import type { CustomOutcome, RefundRule } from "../demo/engine/customgoal";
 import type { AgentEvent } from "../types";
 import devSet from "../../../backend/evals/simulations/dev.json";
 import blindSet from "../../../backend/evals/simulations/blind_v1.json";
@@ -31,6 +32,7 @@ const OUTCOME_TEXT: Record<string, [string, string]> = {
   missed_action: ["该办没办", "badge-warning"],
   not_said: ["没说到要点", "badge-warning"],
   other_state: ["终态不一致", "badge-warning"],
+  rule_mismatch: ["目标和规则不符", "badge-info"],
 };
 const ACCOUNTS: Record<string, { name: string; tenant: string; shop: string }> = {
   "customer@leon.demo": { name: "Emma", tenant: "leon", shop: "Leon优选" },
@@ -64,12 +66,12 @@ function show(table: Table, value: unknown): string {
   return value ? "是" : "否";
 }
 
-function DiffTable({ tables, caption }: { tables: Diff; caption: string }) {
+function DiffTable({ tables, caption, target = "目标" }: { tables: Diff; caption: string; target?: string }) {
   return (
     <div className="table-wrap">
       <table className="table sim-diff">
         <caption className="sr-only">{caption}</caption>
-        <thead><tr><th scope="col">表</th><th scope="col">目标</th><th scope="col">实际</th><th scope="col">结果</th></tr></thead>
+        <thead><tr><th scope="col">表</th><th scope="col">{target}</th><th scope="col">实际</th><th scope="col">结果</th></tr></thead>
         <tbody>
           {(Object.keys(TABLE_TEXT) as Table[]).map((t) => (
             <tr key={t} className={tables[t].ok ? "" : "sim-miss"}>
@@ -235,7 +237,12 @@ function Game() {
             <h3 ref={resultRef} tabIndex={-1} className="row" style={{ gap: 8 }}>
               评分 <span className={`badge ${OUTCOME_TEXT[result.outcome][1]}`}>{OUTCOME_TEXT[result.outcome][0]}</span>
             </h3>
-            <DiffTable tables={result.tables} caption="这张卡要求的终态和对话结束时的实际数据" />
+            {result.outcome === "rule_mismatch" && card?.rule ? (
+              <>
+                <p className="small">你选的结局是“{card.rule.chosen}”，但按这单的规则，直接申请退款会{card.rule.note}。所以这一轮不判客服的对错，下表按规则的终态对比：{result.ruleKept ? "对话停在了规则会到的地方。" : "对话没有停在规则会到的地方（比如还没有提出申请）。"}</p>
+                <DiffTable tables={result.tables} caption="按规则的终态和对话结束时的实际数据" target="按规则" />
+              </>
+            ) : <DiffTable tables={result.tables} caption="这张卡要求的终态和对话结束时的实际数据" />}
             {result.notSaid.length > 0 && <p className="small">客服没有说到：{result.notSaid.map((s) => s.split("|")[0]).join("、")}</p>}
             <details className="small">
               <summary>这个评分说明什么</summary>
@@ -254,7 +261,7 @@ function Game() {
 
 const PERSONA_FILTER: ["all" | Persona, string][] = [["all", "全部"], ...(Object.keys(PERSONA_TEXT) as Persona[]).map((p): [Persona, string] => [p, PERSONA_TEXT[p]])];
 
-const OUTCOMES: { value: string; label: string }[] = [
+const OUTCOMES: { value: CustomOutcome; label: string }[] = [
   { value: "refund", label: "自动退款，钱退回" },
   { value: "review", label: "提交人工审核（先不退钱）" },
   { value: "ticket", label: "开一张售后工单" },
@@ -297,8 +304,9 @@ function CustomCard({ onPick, defaultAccount }: { onPick: (card: Card) => void; 
   const [account, setAccount] = useState(defaultAccount && ACCOUNTS[defaultAccount] ? defaultAccount : "customer@leon.demo");
   const [orders, setOrders] = useState<SeedOrder[]>([]);
   const [order, setOrder] = useState("");
-  const [outcome, setOutcome] = useState("refund");
+  const [outcome, setOutcome] = useState<CustomOutcome>("refund");
   const [goal, setGoal] = useState("");
+  const [rule, setRule] = useState<RefundRule | null>(null);
   const tenant = ACCOUNTS[account].tenant;
   useEffect(() => {
     import("../demo/engine/pack").then(({ pack }) => {
@@ -307,21 +315,33 @@ function CustomCard({ onPick, defaultAccount }: { onPick: (card: Card) => void; 
       setOrder(mine[0]?.id ?? "");
     });
   }, [account, tenant]);
+  // What the rules do with a plain request on this order: the engine itself answers it, in its own fresh copy of the data.
+  useEffect(() => {
+    let current = true;
+    setRule(null);
+    if (!order) return;
+    Promise.all([import("../demo/replay"), import("../demo/engine/customgoal")]).then(async ([{ freshEngine }, { rulesForRefund }]) => {
+      const answer = rulesForRefund(await freshEngine(), account, order, tenant);
+      if (current) setRule(answer);
+    }).catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, [account, order, tenant]);
   const chosen = useMemo(() => orders.find((o) => o.id === order), [orders, order]);
   const needsOrder = outcome === "refund" || outcome === "review";
+  const fits = (value: string) => !rule || !((value === "refund" && rule.kind !== "auto") || (value === "review" && rule.kind !== "review"));
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     if (needsOrder && !chosen) return;
-    const end = outcome === "refund" && chosen ? { orders: { [chosen.id]: "refunding" }, refunds: { [chosen.id]: chosen.amount } }
-      : outcome === "review" ? { approvals: { pending: 1 } } : outcome === "ticket" ? { tickets: 1 } : outcome === "handoff" ? { handoff: true } : {};
+    const { customScenario } = await import("../demo/engine/customgoal");
     const label = OUTCOMES.find((o) => o.value === outcome)!.label;
-    onPick({
-      key: "custom", set: "custom", tenant, as: account, name: ACCOUNTS[account].name, persona: "plain",
-      card: goal.trim() || `你想要的结果：${label}。`,
-      facts: chosen ? [`订单号 ${chosen.id}（${chosen.items.map((i) => i.name).join("、")}，¥${chosen.amount}）`] : [],
-      end,
-    });
+    const card = customScenario({
+      email: account, tenant, name: ACCOUNTS[account].name, outcome, goal, label,
+      order: chosen ? { id: chosen.id, amount: chosen.amount, items: chosen.items.map((i) => i.name).join("、") } : undefined,
+    }, chosen ? rule : null);
+    onPick({ ...card, set: "custom" });
   }
 
   return (
@@ -336,15 +356,19 @@ function CustomCard({ onPick, defaultAccount }: { onPick: (card: Card) => void; 
           {orders.map((o) => <option key={o.id} value={o.id}>{o.id} · {o.items.map((i) => i.name).join("、")} · ¥{o.amount}</option>)}
         </select>
       </label>
-      <label className="field"><span>你认为正确的结果</span>
-        <select className="select" value={outcome} onChange={(e) => setOutcome(e.target.value)}>
-          {OUTCOMES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      <label className="field"><span>你认为正确的结局</span>
+        <select className="select" value={outcome} onChange={(e) => setOutcome(e.target.value as CustomOutcome)}>
+          {OUTCOMES.map((o) => <option key={o.value} value={o.value}>{o.label}{fits(o.value) ? "" : "（按规则这单不会）"}</option>)}
         </select>
       </label>
       <label className="field sim-custom-goal"><span>目标（选填，只给你自己看）</span>
         <input className="input" value={goal} onChange={(e) => setGoal(e.target.value)} maxLength={200} placeholder="例如：杯子裂了想退钱，但先不给订单号" />
       </label>
-      <p className="faint small sim-custom-note">评分按你选的结果判：选“自动退款”就要求这单按实付金额退回；其他订单和表必须保持原样。结果选错了，评分也会跟着错。</p>
+      <p className="small sim-custom-note" role="status">
+        {rule ? <>按这单的规则，直接说“{order} 申请退款”会：<b>{rule.note}</b>。</> : "正在查这单按规则会怎么办…"}
+        {rule && !fits(outcome) && <> 你选的结局和规则不符：这一轮会按规则的终态对比，并说明规则会怎么办，不会把客服照规则办事算成错误。</>}
+      </p>
+      <p className="faint small sim-custom-note">评分按你选的结局判：选“自动退款”就要求这单按实付金额退回；其他订单和表必须保持原样。</p>
       <div className="row"><button className="btn btn-primary" type="submit" disabled={needsOrder && !chosen}>用这张卡开始</button></div>
     </form>
   );
