@@ -18,6 +18,7 @@ import {
   ReceiptText,
   RefreshCcw,
   ScrollText,
+  Target,
   Ticket,
   Wrench,
   Sun,
@@ -200,6 +201,7 @@ export default function Layout() {
     { key: "knowledge", label: "知识与质量", short: "知识", icon: <BookOpen size={16} />, items: [
       { to: "/knowledge", label: "知识库", icon: <BookOpen size={15} /> },
       { to: "/evals", label: "评测中心", icon: <FlaskConical size={15} /> },
+      { to: "/simulations", label: "模拟顾客", icon: <Target size={15} /> },
       { to: "/flywheel", label: "数据飞轮", icon: <RefreshCcw size={15} /> },
     ] },
     { key: "ops", label: "运维审计", short: "运维", icon: <Activity size={16} />, items: [
@@ -235,6 +237,9 @@ export default function Layout() {
           </div>
           <span className="spacer" />
           <span className="badge env-tag">{isDemo ? "静态演示" : "演示环境"}<span className="hide-compact"> · 数据均为虚构</span></span>
+          {isDemo && (location.pathname.startsWith("/simulations")
+            ? <NavLink to="/chat" className="btn btn-sm" aria-label="回到对话"><MessagesSquare size={14} aria-hidden="true" /><span className="hide-compact">回到对话</span></NavLink>
+            : <NavLink to="/simulations" className="btn btn-sm" aria-label="试一个目标" title="拿一张隐藏目标的任务卡和客服对话，结束后按数据终态评分"><Target size={14} aria-hidden="true" /><span className="hide-compact">试一个目标</span></NavLink>)}
           {themeButton}
           <UserMenu user={user} />
         </header>

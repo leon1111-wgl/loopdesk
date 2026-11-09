@@ -4,6 +4,45 @@
 
 判断标准有两条：做了之后，看演示的人或审代码的人能不能看出差别；有没有一个测试或测量，不做就会失败。两条都不满足的，不管多热门都不做。
 
+## 第二轮（2026-11-10）：模拟顾客
+
+第一轮的完整对话评测（第 2 节）用的是脚本化顾客，自己写的局限是“测不到顾客临场换说法”。这一轮补上这一块：让一个开源模型扮演带着隐藏目标的顾客，和真实后端对话，结束后只按数据终态评分。做法、数字和局限见 `docs/EVALUATION.md` 的“模拟顾客”，这里写为什么选它、对应业界的什么做法。
+
+| # | 候选 | 决定 | 理由 |
+|---|---|---|---|
+| 11 | τ²-bench 式模拟顾客 + 终态评分，网页上“试一个目标” | **采纳，已做** | 补上第 2 节自己写明的缺口；不碰动钱规则，只测它；访客能在页面上自己玩，评审者能在 Actions 上重跑 |
+| 12 | 把退款、审批分级、四眼原则改写成 Cedar 策略（AWS AgentCore Policy 的做法） | 这一轮不做 | 要重写已经被大量测试钉住的动钱逻辑，看演示的人几乎看不出差别。这一轮的终态评测正是安全重写它的前提：先有能发现“动钱错误”的回归，再动规则 |
+| 13 | 链路回放与两个提交之间的对比 | 不做 | 已有链路页；只加展示，没有可测的收益 |
+| 14 | 注入攻击下同时报成功率和任务完成率 | 不做 | 被测的是规则层，攻击一侧没有信息量；有真实模型的定期运行后再做（第 6 节） |
+| 15 | 浏览器小模型（第 2 档） | 仍然关闭 | 第一轮的结论没有变：真实运行失败，盲测上最多多对 1 条。模拟顾客不需要浏览器里有模型 |
+
+**为什么在 Actions 的 CPU 上跑模型。** GitHub Models 已于 2026-07-30 完全下线，推理 API 不再对任何人开放（[GitHub Docs](https://docs.github.com/en/github-models/use-github-models/prototyping-with-ai-models)，2026-11-10 核实）；厂商 API 要密钥和费用。公开仓库的标准 Linux 运行器是 4 核 16 GB（[GitHub Docs](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)），4-bit 的 4B 模型用 llama.cpp 在 CPU 上能跑：实测扮演顾客每轮约 3.6 秒、每秒生成 13.6 个 token（运行 [42664091779](https://github.com/leon1111-wgl/loopdesk/actions/runs/42664091779)）。模型是 Qwen3-4B-Instruct-2507（Apache-2.0，unsloth 转换的 Q4_K_M GGUF），llama.cpp 用固定版本 b11899，两者都按 SHA-256 校验，只下载到运行器并放进 Actions 缓存，不进仓库、不在本机运行。工作流也可以选 Qwen3-8B（Qwen 官方 GGUF），这一轮没有用它测量。
+
+## What large companies run in production（大公司在生产里怎么做）
+
+下表只列有一手来源和日期的做法。厂商的效果数字（解决率、“最高 90%”）都是自报的，没有独立审计，这里不引用。
+
+| 谁 | 做法 | 来源（日期） |
+|---|---|---|
+| Sierra | 发布前用模拟对话测试 Agent：测试从标准作业流程、知识库和辅导记录生成，每条跑多次，由独立的评判 Agent 打分，可以作为 CI（例如 GitHub Actions）里的发布门禁；生产里另有“监督”Agent 旁听动作和回复，高风险话题从旁听切换为拦截 | [Simulations](https://sierra.ai/blog/simulations-the-secret-behind-every-great-agent)（2025-08-19）；[Enterprise-grade agents](https://sierra.ai/jp/blog/enterprise-grade-agents)（2025-10-02） |
+| Sierra 研究团队：τ²-bench | 模拟用户带着隐藏目标和 Agent 对话，按数据库终态评分，用 pass^k 衡量多次运行的一致性；用户也能操作工具时（dual-control）Agent 的表现明显下降。仓库已到 τ-bench 2.0（MIT），2026-03 加了检索和含中文在内的 6 种语言语音 | [arXiv 2506.07982](https://arxiv.org/abs/2506.07982)（2025-06）；[仓库](https://github.com/sierra-research/tau2-bench)（2026-11 查阅） |
+| Decagon | Simulations：从 Agent 处理不好的真实对话里生成顾客画像，返回通过与否和完整链路，重复运行看一致性；业务逻辑写在 Agent Operating Procedures 里。没有公布数字 | [Decagon Simulations](https://decagon.ai/blog/decagon-simulations)（2025-09-23） |
+| Salesforce | Agentforce Testing Center：批量生成合成的顾客说法，检查 Agent 选的主题、动作顺序和结果 | [投资者关系新闻稿](https://investor.salesforce.com/news/news-details/2024/Salesforce-Introduces-Agentforce-Testing-Center-First-of-Its-Kind-AI-Agent-Lifecycle-Management-Tooling-for-Testing-Autonomous-AI-Agents-at-Scale/default.aspx)（2024-11-20；该页面拦截自动访问，内容取自主会话 2026-11-10 的调研笔记） |
+| Salesforce AI Research：CRMArena-Pro | 用模型扮演的用户做多轮测试：领先的 Agent 单轮约 58%、多轮约 35% 成功，几乎没有保密意识。这是对厂商宣传最有用的可复现对照 | [arXiv 2505.18878](https://arxiv.org/abs/2505.18878)（2025-05） |
+| Anthropic | 评测指南：优先确定性评分，评结果多于评路径，用 pass^k 衡量一致性 | [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)（2026-01-09） |
+| Klarna | 2024-02 称 AI 助手处理了三分之二的客服对话；2025-05 CEO 表示要投资人工客服的质量并重新招人，变成人机混合、随时能找到人 | [新闻稿](https://www.klarna.com/international/press/klarna-ai-assistant-handles-two-thirds-of-customer-service-chats-in-its-first-month/)（2024-02-27）；[Entrepreneur](https://www.entrepreneur.com/business-news/klarna-ceo-reverses-course-by-hiring-more-humans-not-ai/491396)（2025-05-09） |
+| AWS | AgentCore Policy：在工具网关处默认拒绝，用 Cedar 策略逐次判断工具调用（预览 2025-12-02，正式发布 2026-03-03）。对应候选 12，这一轮没做 | [AWS Security Blog](https://aws.amazon.com/blogs/security/why-policy-in-amazon-bedrock-agentcore-chose-cedar-for-securing-agentic-workflows/)；[GA 公告](https://aws.amazon.com/about-aws/whats-new/2026/03/policy-amazon-bedrock-agentcore-generally-available) |
+
+**这一版对应的做法**：τ²-bench 的模拟用户（角色对调、用户说 `###STOP###` 结束、结束语不发给 Agent）、严格的数据库终态评分、多个种子算 pass^k，以及 Sierra 那样把模拟放进 GitHub Actions、有一项不过就让运行失败的门禁（这里是“动钱错误必须为 0”）。
+
+**刻意不同的地方**：
+
+- **扮演顾客的是 4B 的小模型，跑在 CPU 上**，不是前沿模型：模拟器自己会犯错（泄露目标、编订单号、该停不停），所以这一版人工审计了固定的一份样本，把模拟器的错误和 Agent 的错误分开报。
+- **被测的是规则和工具（离线模型）**，不是大模型：没有密钥。同一个评测加 `--configured-model` 就测配置好的真实模型，这一轮没有跑。
+- **没有评判模型**：只比较五张表的终态，加上少数卡要求必须说到的原文（如快递单号）。回答写得好不好不评。
+- **规模和数据**：48 张卡、3 个种子、虚构数据；没有用真实对话挖画像（Decagon 的做法），因为没有真实对话。
+- **顾客没有自己的工具**：不是 τ² 的 dual-control，顾客只能说话。
+
 ## 结论
 
 | # | 候选 | 决定 | 理由 | 怎么验证 |

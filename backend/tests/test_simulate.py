@@ -135,3 +135,20 @@ def test_the_blind_set_loads_and_carries_no_sample_lines():
     assert len(blind) == 24 and not any("sample" in s for s in blind)
     assert {s["persona"] for s in blind} == set(PERSONAS)
     assert not {s["key"] for s in blind} & {s["key"] for s in DEV}
+
+
+GRADING = json.loads((SIM_DIR / "grading_cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", GRADING["cases"], ids=lambda c: c["name"])
+def test_grading_cases_shared_with_the_browser(case):
+    from app.evals.simulate import table_diff
+
+    start = GRADING["start"]
+    actual = {"orders": {**start["orders"], **case["actual"].get("orders", {})}, "refunds": case["actual"].get("refunds", {}),
+              "approvals": case["actual"].get("approvals", {}), "tickets": case["actual"].get("tickets", 0),
+              "handoff": case["actual"].get("handoff", False)}
+    accepted = expected_states(case["scenario"], start)
+    assert money_outcome(accepted, actual) == case["money"]
+    passed = any(all(t["ok"] for t in table_diff(e, actual, start["orders"]).values()) for e in accepted)
+    assert passed == case["passed"]

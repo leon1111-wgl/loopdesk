@@ -137,7 +137,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title="LoopDesk API",
-        version="1.0.0",
+        version="1.1.0",
         description="证据优先、会自我进化的企业客服 Agent 平台",
         lifespan=lifespan,
     )
