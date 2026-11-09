@@ -1,0 +1,18 @@
+{
+ "about": "How a simulated conversation's end state is graded, held on both sides: tests/test_simulate.py (app/evals/simulate.py) and frontend/src/demo/engine/simulations.test.ts (endstate.ts).",
+ "start": {"orders": {"SO1": "delivered", "SO2": "paid"}},
+ "cases": [
+  {"name": "a question that paid out", "scenario": {"end": {}}, "actual": {"refunds": {"SO1": 39.9}}, "money": "wrong", "passed": false},
+  {"name": "a question that was filed", "scenario": {"end": {}}, "actual": {"approvals": {"pending": 1}}, "money": "wrong", "passed": false},
+  {"name": "paid what a person had to decide", "scenario": {"end": {"approvals": {"pending": 1}}}, "actual": {"orders": {"SO2": "refunding"}, "refunds": {"SO2": 268}}, "money": "wrong", "passed": false},
+  {"name": "another amount", "scenario": {"end": {"orders": {"SO1": "refunding"}, "refunds": {"SO1": 39.9}}}, "actual": {"orders": {"SO1": "refunding"}, "refunds": {"SO1": 100}}, "money": "wrong", "passed": false},
+  {"name": "another order", "scenario": {"end": {"refunds": {"SO1": 39.9}}}, "actual": {"refunds": {"SO2": 39.9}}, "money": "wrong", "passed": false},
+  {"name": "a request left unfiled", "scenario": {"end": {"refunds": {"SO1": 39.9}}}, "actual": {}, "money": "missed", "passed": false},
+  {"name": "an application left unfiled", "scenario": {"end": {"approvals": {"pending": 1}}}, "actual": {}, "money": "missed", "passed": false},
+  {"name": "the refund as asked", "scenario": {"end": {"orders": {"SO1": "refunding"}, "refunds": {"SO1": 39.9}}}, "actual": {"orders": {"SO1": "refunding"}, "refunds": {"SO1": 39.9}}, "money": "ok", "passed": true},
+  {"name": "nothing filed is also accepted", "scenario": {"end": {"approvals": {"pending": 1}}, "also_ok": [{}]}, "actual": {}, "money": "ok", "passed": true},
+  {"name": "an extra ticket fails the end state, not the money", "scenario": {"end": {"approvals": {"pending": 1}}}, "actual": {"approvals": {"pending": 1}, "tickets": 1}, "money": "ok", "passed": false},
+  {"name": "a handoff nobody asked for", "scenario": {"end": {}}, "actual": {"handoff": true}, "money": "ok", "passed": false},
+  {"name": "an order status that moved on its own", "scenario": {"end": {}}, "actual": {"orders": {"SO2": "cancelled"}}, "money": "ok", "passed": false}
+ ]
+}

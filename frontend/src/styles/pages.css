@@ -191,3 +191,56 @@
   .tool-summary { grid-template-columns: minmax(0, 1fr); }
   .tool-form .grid-2 { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---- 模拟顾客 (pages/SimulationsPage.tsx): a task card, the conversation, and the end-state ledger it is graded on ---- */
+.sim-source { color: var(--text-2); margin-top: -8px; }
+.sim-card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px dashed var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--surface-2); }
+.sim-card p { margin: 0; }
+.sim-card-who { font-size: 13px; color: var(--text-2); }
+.sim-card-goal { line-height: 1.75; }
+.sim-facts { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2); line-height: 1.7; }
+.sim-h { font-size: 15px; font-weight: 600; }
+.sim-game { display: grid; grid-template-columns: minmax(0, 320px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.sim-side { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 12px; }
+.sim-chat { display: flex; flex-direction: column; min-height: 420px; overflow: hidden; }
+.sim-lines { display: flex; flex-direction: column; gap: 14px; padding: 16px; background: var(--bg); flex: 1; min-height: 0; overflow-y: auto; max-height: 60vh; }
+.sim-chat .sim-lines { border-bottom: 1px solid var(--border-2); }
+.sim-composer { display: flex; gap: 8px; padding: 12px; flex-wrap: wrap; }
+.sim-composer .input { flex: 1 1 200px; min-width: 0; }
+.sim-result { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; }
+.sim-result h3 { font-size: 15px; outline: none; }
+.sim-diff th[scope="row"] { font-weight: 500; white-space: nowrap; }
+.sim-diff tr.sim-miss td, .sim-diff tr.sim-miss th { background: var(--danger-soft); }
+.sim-mark { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; white-space: nowrap; }
+.sim-mark.ok { color: var(--success); }
+.sim-mark.bad { color: var(--danger); font-weight: 600; }
+.sim-pick { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.sim-pick-item, .sim-run-item { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font: inherit; cursor: pointer; }
+.sim-pick-item:hover, .sim-run-item:hover { border-color: var(--accent); }
+.sim-pick-item:focus-visible, .sim-run-item:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.sim-custom { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.sim-custom-goal, .sim-custom-note, .sim-custom > .row { grid-column: 1 / -1; }
+.sim-meta { line-height: 1.8; }
+.sim-total td { font-weight: 600; }
+.sim-bad { color: var(--danger); font-weight: 600; }
+.sim-runs { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.sim-seeds { display: inline-flex; gap: 6px; }
+.sim-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border: 2px solid var(--warning); }
+.sim-dot.ok { background: var(--success); border-color: var(--success); }
+.sim-dot.bad { background: var(--danger); border-color: var(--danger); }
+@media (max-width: 860px) {
+  .sim-game { grid-template-columns: minmax(0, 1fr); }
+  .sim-side { position: static; }
+  .sim-custom { grid-template-columns: minmax(0, 1fr); }
+  .sim-lines { max-height: none; }
+  .sim-pick, .sim-runs { grid-template-columns: minmax(0, 1fr); }
+}
+.sim-meta p { margin: 0; }
+.sim-meta a { margin-left: 0; white-space: normal; }
+.sim-page .segmented { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.sim-page .segmented button { flex-shrink: 0; }
+@media (max-width: 560px) {
+  .sim-diff th, .sim-diff td { padding: 8px 6px; font-size: 12px; }
+  .sim-diff td { word-break: break-all; }
+  .sim-mark-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}

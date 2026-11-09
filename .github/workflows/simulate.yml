@@ -1,0 +1,212 @@
+name: Simulated customers
+
+# An open-weight model plays customers with hidden goals (backend/evals/simulations/*.json) against LoopDesk's own backend
+# with the offline model, and every conversation is graded by the state it leaves: orders, refund ledger, approval queue,
+# tickets, handoff (app/evals/simulate.py, docs/EVALUATION.md 模拟顾客). τ²-bench's method on this product's data.
+#
+# No key and no paid API: llama.cpp's server runs the model on the runner's CPU. The weights and the llama.cpp build are
+# pinned by URL and SHA-256, downloaded only on the runner and kept in the Actions cache; nothing is committed. The model only
+# plays the customer. The agent, its rules and its tools are the product's.
+#
+# Run it with your own hidden goals: put a scenario list (same format as dev.json) in the `scenarios` input; it runs instead of
+# the sets. Results: the job summary table, and the artifact `simulations` (every transcript and per-table end-state diff).
+on:
+  workflow_dispatch:
+    inputs:
+      sets:
+        description: "Scenario sets in backend/evals/simulations, comma-separated"
+        default: "dev,blind_v1"
+      seeds:
+        description: "Customer seeds, comma-separated (pass^k needs k of them)"
+        default: "1,2,3"
+      model:
+        description: Model that plays the customer
+        type: choice
+        options: [qwen3-4b-instruct-2507, qwen3-8b]
+        default: qwen3-4b-instruct-2507
+      only:
+        description: "Only these scenario keys (comma-separated), or empty for all"
+        default: ""
+      scenarios:
+        description: "Your own scenarios as JSON (a list, or {\"scenarios\": [...]}); replaces the sets when given"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: simulate-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LLAMA_URL: https://github.com/ggml-org/llama.cpp/releases/download/b11899/llama-b11899-bin-ubuntu-x64.tar.gz
+  LLAMA_SHA256: 464e0dfdd70d18a3b758074ac58e04fa27f892a771805dd883b2d0f3c5ca0289
+
+jobs:
+  plan:
+    name: Fetch the model and plan the runs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      file: ${{ steps.model.outputs.file }}
+      url: ${{ steps.model.outputs.url }}
+      sha: ${{ steps.model.outputs.sha }}
+      label: ${{ steps.model.outputs.label }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: model
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          case "$MODEL" in
+            qwen3-8b)
+              echo "url=https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/7c41481f57cb95916b40956ab2f0b139b296d974/Qwen3-8B-Q4_K_M.gguf" >> "$GITHUB_OUTPUT"
+              echo "sha=d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785" >> "$GITHUB_OUTPUT"
+              echo "file=Qwen3-8B-Q4_K_M.gguf" >> "$GITHUB_OUTPUT"
+              echo "label=Qwen3-8B Q4_K_M (Qwen/Qwen3-8B-GGUF, Apache-2.0)" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "url=https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" >> "$GITHUB_OUTPUT"
+              echo "sha=3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597" >> "$GITHUB_OUTPUT"
+              echo "file=Qwen3-4B-Instruct-2507-Q4_K_M.gguf" >> "$GITHUB_OUTPUT"
+              echo "label=Qwen3-4B-Instruct-2507 Q4_K_M (GGUF by unsloth, Apache-2.0)" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/sim-model
+          key: sim-${{ steps.model.outputs.sha }}-${{ env.LLAMA_SHA256 }}
+      - name: Download the model and llama.cpp (checked by SHA-256)
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          URL: ${{ steps.model.outputs.url }}
+          SHA: ${{ steps.model.outputs.sha }}
+          FILE: ${{ steps.model.outputs.file }}
+        run: |
+          mkdir -p ~/sim-model
+          curl -fsSL --retry 3 -o ~/sim-model/llama.tar.gz "$LLAMA_URL"
+          echo "$LLAMA_SHA256  $HOME/sim-model/llama.tar.gz" | sha256sum -c -
+          curl -fsSL --retry 3 -o ~/sim-model/"$FILE" "$URL"
+          echo "$SHA  $HOME/sim-model/$FILE" | sha256sum -c -
+          ls -la ~/sim-model
+      - id: plan
+        env:
+          SETS: ${{ inputs.sets }}
+          SEEDS: ${{ inputs.seeds }}
+          CUSTOM: ${{ inputs.scenarios }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          import re, sys
+          sets = ["custom"] if os.environ["CUSTOM"].strip() else [s.strip() for s in os.environ["SETS"].split(",") if s.strip()]
+          bad = [s for s in sets if not re.fullmatch(r"[A-Za-z0-9_-]+", s)]
+          if bad:  # set names reach file names and artifact names: letters, digits, _ and - only
+              sys.exit(f"bad set name: {bad}")
+          seeds = [int(s) for s in os.environ["SEEDS"].split(",") if s.strip()][:5]
+          print("matrix=" + json.dumps({"include": [{"set": s, "seed": k} for s in sets for k in seeds]}))
+          PY
+
+  simulate:
+    name: ${{ matrix.set }} seed ${{ matrix.seed }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/sim-model
+          key: sim-${{ needs.plan.outputs.sha }}-${{ env.LLAMA_SHA256 }}
+          fail-on-cache-miss: true
+      - name: Start llama.cpp's server
+        env:
+          FILE: ${{ needs.plan.outputs.file }}
+        run: |
+          mkdir -p ~/llama && tar -xzf ~/sim-model/llama.tar.gz -C ~/llama
+          SERVER=$(find ~/llama -name llama-server -type f | head -1)
+          export LD_LIBRARY_PATH="$(dirname "$SERVER"):$LD_LIBRARY_PATH"
+          nohup "$SERVER" -m ~/sim-model/"$FILE" -c 8192 --host 127.0.0.1 --port 8080 --jinja > ~/llama-server.log 2>&1 &
+          for i in $(seq 1 120); do
+            if curl -fs http://127.0.0.1:8080/health > /dev/null; then echo "ready after ${i}s"; break; fi
+            sleep 1
+          done
+          curl -fs http://127.0.0.1:8080/health
+          nproc; free -g
+      - name: Your scenarios
+        if: matrix.set == 'custom'
+        env:
+          CUSTOM: ${{ inputs.scenarios }}
+        run: printf '%s' "$CUSTOM" > evals/simulations/custom.json && python -c "from app.evals.simulate import load, SIM_DIR; print(len(load(SIM_DIR / 'custom.json')), 'scenarios')"
+      - name: Simulate
+        shell: bash  # with -o pipefail: a crash of the harness fails the job instead of hiding behind tee
+        env:
+          SIM_MODEL_LABEL: ${{ needs.plan.outputs.label }}
+          SIM_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ONLY: ${{ inputs.only }}
+          SET: ${{ matrix.set }}
+          SEED: ${{ matrix.seed }}
+        run: |
+          python -m app.evals.simulate --set "$SET" --customer model --model-url http://127.0.0.1:8080 \
+            --seeds "$SEED" ${ONLY:+--only "$ONLY"} --report "../sim-$SET-$SEED.json" 2>&1 \
+            | { grep -v '^{' || true; } | tee "../sim-$SET-$SEED.log"
+      - name: Throughput
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          for p in pathlib.Path("..").glob("sim-*.json"):
+              print(f"`{p.name}` customer-model throughput: `{json.dumps(json.loads(p.read_text())['meta']['throughput'])}`")
+          PY
+          tail -5 ~/llama-server.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sim-${{ matrix.set }}-${{ matrix.seed }}
+          path: |
+            sim-${{ matrix.set }}-${{ matrix.seed }}.json
+            sim-${{ matrix.set }}-${{ matrix.seed }}.log
+          if-no-files-found: error
+
+  report:
+    name: Combine and summarise
+    needs: [plan, simulate]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          path: parts
+          pattern: sim-*
+          merge-multiple: true
+      - name: One report, and the gates (wrong money is 0; every scenario ran with every seed)
+        run: |
+          python -m app.evals.simulate --merge ../parts/sim-*.json --report ../simulations.json >> "$GITHUB_STEP_SUMMARY"
+          python -m app.evals.simulate --stats ../simulations.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulations
+          path: simulations.json
+          if-no-files-found: ignore

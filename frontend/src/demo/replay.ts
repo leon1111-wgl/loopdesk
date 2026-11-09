@@ -91,6 +91,13 @@ function loadEngine(): Promise<DemoEngine> {
   return engineLoading;
 }
 
+/** A separate engine for the hidden-goal game (pages/SimulationsPage.tsx): its own copy of the data, the same limits as this page, so
+ * a round starts from the seed state and is graded on its own, whatever the visitor did elsewhere in the tab. */
+export async function freshEngine(): Promise<DemoEngine> {
+  const module = await import("./engine");
+  return new module.DemoEngine((slug) => recordedTenant(slug));
+}
+
 /** The tenant's limits as the console shows them: the recording's /api/tenant, not numbers in the page's code. */
 function recordedTenant(slug: string): Record<string, number> | undefined {
   const admin = Object.entries(data?.users ?? {}).find(([, u]) => u.role === "admin" && (u.tenant as { slug?: string } | undefined)?.slug === slug)?.[0];

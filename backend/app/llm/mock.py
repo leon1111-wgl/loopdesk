@@ -275,10 +275,63 @@ def about_my_order(text: str) -> bool:
 _CLAUSE_SEP = re.compile(r"[，,。；;！!？?\s]*(?:另外|还有|以及|顺便问一下|顺便)?[，,\s]*(?=SO)", re.IGNORECASE)
 
 
-def order_clauses(text: str) -> dict[str, str]:
-    """Each order number with the words that come after it, up to the next one: "SO1 到哪了 另外 SO2 杯子能退吗"."""
+_PIECE_END = re.compile(r"(?<=[，,。；;！!？?\n])|(?<=\.)(?!\d)")
+# A piece that only says which order, perhaps with a few closing words: "订单号SO…", "单号是 SO… 谢谢", "SO… 可以吗". Words with
+# no number of their own right before it are about that order.
+_REFERENCE_ONLY = re.compile(
+    r"^[\s，,。；;！!？?:：.]*(?:(?:订单|单)号?(?:是|为)?|这单|那单)?[\s:：]*SO\d+[\s:：]*"
+    r"(?:可以吗|行吗|好吗|谢谢|麻烦了|麻烦|对吧|是吧|这单|那单|这个|吗|呢|吧|哈|啊|呀)*[\s，,。；;！!？?.~～]*$", re.IGNORECASE)
+ASK_WHICH_REFUND_TEXT = "您提到想退款，但没有写是哪一单：请回复要退的那一单，例如“订单号 申请退款”。"
+
+
+def _after_each_number(text: str) -> list[tuple[str | None, str]]:
+    """Each order number with the words after it, up to the next one; words before the first number on their own."""
     spans = [(m.start(), m.group().upper()) for m in ORDER_ID_RE.finditer(text)]
-    return {oid: text[start:(spans[i + 1][0] if i + 1 < len(spans) else len(text))] for i, (start, oid) in enumerate(spans)}
+    head = [(None, text[:spans[0][0]])] if spans and spans[0][0] > 0 else []
+    return head + [(oid, text[start:(spans[i + 1][0] if i + 1 < len(spans) else len(text))]) for i, (start, oid) in enumerate(spans)]
+
+
+def _order_pieces(text: str) -> tuple[dict[str, str], str]:
+    """(each order's words, the words that belong to no order for sure). Words after a number belong to it ("SO1 到哪了 另外
+    SO2 杯子能退吗"); a sentence or clause with no number belongs to the number right after it when that piece only names the
+    order ("抱枕想退，订单号SO2 谢谢"), as customers often put the number last. A clause with no number that sits between two
+    other numbers belongs to neither: guessing gave "抱枕想退" to the robot before it (simulations, run 42664792823)."""
+    if not ORDER_ID_RE.search(text):
+        return {}, ""
+    pieces: list[tuple[str | None, str]] = []
+    for piece in (p for p in _PIECE_END.split(text) if p):
+        pieces.extend(_after_each_number(piece) if ORDER_ID_RE.search(piece) else [(None, piece)])
+    owners: list[str | None] = [oid for oid, _ in pieces]
+    claimed = [False] * len(pieces)  # number-less words taken by a bare reference after them
+    for i in range(len(pieces) - 2, -1, -1):
+        after = i + 1
+        if owners[i] is None and owners[after] is not None and (claimed[after] or _REFERENCE_ONLY.match(pieces[after][1])):
+            owners[i], claimed[i] = owners[after], True
+    last_number = max((i for i, (oid, _) in enumerate(pieces) if oid is not None), default=-1)
+    last = None
+    for i, (oid, _) in enumerate(pieces):  # words after the last number follow it, as before; those between numbers do not
+        last = oid if oid is not None else last
+        if owners[i] is None and i > last_number:
+            owners[i] = last
+    clauses: dict[str, str] = {}
+    loose = ""
+    for owner, (_, words) in zip(owners, pieces):
+        if owner is not None:
+            clauses[owner] = clauses.get(owner, "") + words
+        else:
+            loose += words
+    return clauses, loose
+
+
+def order_clauses(text: str) -> dict[str, str]:
+    """Each order number with the words that are about it (_order_pieces)."""
+    return _order_pieces(text)[0]
+
+
+def loose_refund(text: str) -> bool:
+    """Refund words in a message with several orders that belong to none of them for sure: ask which one, never guess."""
+    loose = _order_pieces(text)[1]
+    return bool(loose) and _mentions_refund(loose) and not ORDER_ID_RE.search(loose)
 
 
 _LOOKUP_WORDS = re.compile(r"帮我|麻烦|请|查(?:一下|询|下)?|看(?:一下|看|下)?|订单号?|状态|的|一下|了|吧|呢|啊|这个|那个|这单|我")
@@ -727,6 +780,8 @@ class MockLLM(LLMProvider):
                              + f"如需为订单 {order['order_id']} 申请退款，回复“{order['order_id']} 申请退款”即可。")
         if len(orders) > 1 and refund_requested(text):
             parts.append(MULTI_REFUND_TEXT)
+        elif len(orders) > 1 and loose_refund(text):
+            parts.append(ASK_WHICH_REFUND_TEXT)
 
         for shipment in shipments:
             if shipment.get("error"):

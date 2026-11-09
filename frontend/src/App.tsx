@@ -13,9 +13,13 @@ import { SKIP_INTRO_KEY } from "./components/ui";
 import KnowledgePage from "./pages/KnowledgePage";
 import LoginPage from "./pages/LoginPage";
 import RefundsPage from "./pages/RefundsPage";
+import { lazy, Suspense } from "react";
 import TicketsPage from "./pages/TicketsPage";
 import ToolsPage from "./pages/ToolsPage";
 import TracesPage from "./pages/TracesPage";
+
+// The simulations page carries the recorded transcripts: loaded only when opened.
+const SimulationsPage = lazy(() => import("./pages/SimulationsPage"));
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -37,6 +41,7 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/chat/:conversationId" element={<ChatPage />} />
+        <Route path="/simulations" element={<Suspense fallback={<div className="empty">加载中…</div>}><SimulationsPage /></Suspense>} />
         {staff && (
           <>
             <Route path="/dashboard" element={<DashboardPage />} />
