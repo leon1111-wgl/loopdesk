@@ -275,10 +275,42 @@ def about_my_order(text: str) -> bool:
 _CLAUSE_SEP = re.compile(r"[，,。；;！!？?\s]*(?:另外|还有|以及|顺便问一下|顺便)?[，,\s]*(?=SO)", re.IGNORECASE)
 
 
-def order_clauses(text: str) -> dict[str, str]:
-    """Each order number with the words that come after it, up to the next one: "SO1 到哪了 另外 SO2 杯子能退吗"."""
+_PIECE_END = re.compile(r"(?<=[，,。；;！!？?\n])")
+# A piece that only says which order: "订单号SO…", "单号是 SO…。" Words with no number of their own before it are about that order.
+_REFERENCE_ONLY = re.compile(r"^[\s，,。；;！!？?:：]*(?:(?:订单|单)号?(?:是|为)?|这单|那单)?[\s:：]*SO\d+[\s，,。；;！!？?]*$", re.IGNORECASE)
+
+
+def _after_each_number(text: str) -> list[tuple[str | None, str]]:
+    """Each order number with the words after it, up to the next one; words before the first number on their own."""
     spans = [(m.start(), m.group().upper()) for m in ORDER_ID_RE.finditer(text)]
-    return {oid: text[start:(spans[i + 1][0] if i + 1 < len(spans) else len(text))] for i, (start, oid) in enumerate(spans)}
+    head = [(None, text[:spans[0][0]])] if spans and spans[0][0] > 0 else []
+    return head + [(oid, text[start:(spans[i + 1][0] if i + 1 < len(spans) else len(text))]) for i, (start, oid) in enumerate(spans)]
+
+
+def order_clauses(text: str) -> dict[str, str]:
+    """Each order number with the words about it. Words after a number belong to it ("SO1 到哪了 另外 SO2 杯子能退吗"); a sentence
+    or clause with no number belongs to the number right after it when that only names the order ("抱枕想退，订单号SO2"), as
+    customers often put the number last. Before this, "…到哪了？订单号SO1。另外想退抱枕，订单号SO2" gave the refund words to SO1."""
+    if not ORDER_ID_RE.search(text):
+        return {}
+    pieces: list[tuple[str | None, str]] = []
+    for piece in (p for p in _PIECE_END.split(text) if p):
+        pieces.extend(_after_each_number(piece) if ORDER_ID_RE.search(piece) else [(None, piece)])
+    owners: list[str | None] = [oid for oid, _ in pieces]
+    claimed = [False] * len(pieces)  # number-less words taken by a bare reference after them
+    for i in range(len(pieces) - 2, -1, -1):
+        after = i + 1
+        if owners[i] is None and owners[after] is not None and (claimed[after] or _REFERENCE_ONLY.match(pieces[after][1])):
+            owners[i], claimed[i] = owners[after], True
+    last = None
+    for i, (oid, _) in enumerate(pieces):  # what is left follows the number before it, as before
+        last = oid if oid is not None else last
+        owners[i] = owners[i] if owners[i] is not None else last
+    clauses: dict[str, str] = {}
+    for owner, (_, words) in zip(owners, pieces):
+        if owner is not None:
+            clauses[owner] = clauses.get(owner, "") + words
+    return clauses
 
 
 _LOOKUP_WORDS = re.compile(r"帮我|麻烦|请|查(?:一下|询|下)?|看(?:一下|看|下)?|订单号?|状态|的|一下|了|吧|呢|啊|这个|那个|这单|我")

@@ -225,6 +225,28 @@ def test_each_order_keeps_its_own_words():
         "SO20261008002": "SO20261008002 到哪了 另外 ", "SO20261008010": "SO20261008010 杯子能退吗"}
 
 
+@pytest.mark.parametrize("text, robot, pillow", [
+    # the simulated customer's wording (simulations dev/leon_two_things, run 42664792823): each number closes its own sentence
+    ("我的扫地机器人物流到哪了？订单号SO20261008002。另外想退三天前收到的抱枕，订单号SO20260918001。", "物流", "想退"),
+    ("扫地机器人到哪了 单号是SO20261008002，抱枕想退，订单号SO20260918001", "到哪", "想退"),
+    ("SO20261008002 物流到哪了，另外想退抱枕，订单号SO20260918001", "物流", "想退"),
+])
+def test_a_number_at_the_end_of_its_sentence_owns_that_sentence(text, robot, pillow):
+    clauses = order_clauses(text)
+    assert robot in clauses["SO20261008002"] and "退" not in clauses["SO20261008002"]
+    assert pillow in clauses["SO20260918001"]
+
+
+def test_two_asks_with_trailing_numbers_get_the_right_answers(ask, login):
+    """Simulations found the agent offering the robot's refund (¥1299) for the pillow's request, and no tracking number."""
+    _, events = ask(login("customer@leon.demo"),
+                    "我的扫地机器人物流到哪了？订单号SO20261008002。另外想退三天前收到的抱枕，订单号SO20260918001。")
+    text = by_type(events, "final")[0]["text"]
+    assert "SO20261008002 申请退款" not in text
+    assert "SO20260918001 申请退款" in text
+    assert "AT1402938475" in text
+
+
 # ---------------------------------------------------------------- second-model review
 @pytest.mark.parametrize("text", ["不要人工智能回复 我要真人", "别取消排队", "退款不需要人工审核吗"])
 def test_asking_for_a_person_in_the_queue_keeps_the_place(ask, login, text):

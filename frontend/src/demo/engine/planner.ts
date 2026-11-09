@@ -164,9 +164,36 @@ export function aboutMyOrder(text: string): boolean {
   return M._SHIPMENT.test(text) && M._MINE.test(text);
 }
 
-function orderClauses(text: string): Record<string, string> {
+/** Each order number with the words after it, up to the next one; words before the first number on their own (mock._after_each_number). */
+function afterEachNumber(text: string): [string | null, string][] {
   const spans = findAll(T.ORDER_ID_RE, text).map((m) => [m.index, m[0].toUpperCase()] as const);
-  return Object.fromEntries(spans.map(([start, id], i) => [id, text.slice(start, i + 1 < spans.length ? spans[i + 1][0] : text.length)]));
+  const head: [string | null, string][] = spans.length && spans[0][0] > 0 ? [[null, text.slice(0, spans[0][0])]] : [];
+  return [...head, ...spans.map(([start, id], i): [string | null, string] => [id, text.slice(start, i + 1 < spans.length ? spans[i + 1][0] : text.length)])];
+}
+
+/** mock.order_clauses: words after a number belong to it; number-less words belong to a bare reference right after them ("抱枕想退，订单号SO2"). */
+function orderClauses(text: string): Record<string, string> {
+  if (!T.ORDER_ID_RE.test(text)) return {};
+  const pieces: [string | null, string][] = text.split(M._PIECE_END).filter(Boolean).flatMap((piece) => (T.ORDER_ID_RE.test(piece) ? afterEachNumber(piece) : [[null, piece] as [string | null, string]]));
+  const owners = pieces.map(([id]) => id);
+  const claimed = pieces.map(() => false);
+  for (let i = pieces.length - 2; i >= 0; i--) {
+    if (owners[i] === null && owners[i + 1] !== null && (claimed[i + 1] || M._REFERENCE_ONLY.test(pieces[i + 1][1]))) {
+      owners[i] = owners[i + 1];
+      claimed[i] = true;
+    }
+  }
+  let last: string | null = null;
+  pieces.forEach(([id], i) => {
+    last = id ?? last;
+    owners[i] = owners[i] ?? last;
+  });
+  const clauses: Record<string, string> = {};
+  pieces.forEach(([, words], i) => {
+    const owner = owners[i];
+    if (owner !== null) clauses[owner] = (clauses[owner] ?? "") + words;
+  });
+  return clauses;
 }
 
 // What the order's own record answers.
