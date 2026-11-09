@@ -1,9 +1,12 @@
 # ---- build the console ----
 FROM node:22-alpine AS web
-WORKDIR /web
+WORKDIR /repo/frontend
 RUN corepack enable
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
+# The simulations page bundles the scenario cards and the recorded run, which live outside frontend/: same paths as the repo.
+COPY backend/evals/simulations/ /repo/backend/evals/simulations/
+COPY demo/simulations/ /repo/demo/simulations/
 COPY frontend/ ./
 RUN pnpm build
 
@@ -14,7 +17,7 @@ WORKDIR /app/backend
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt "psycopg[binary]>=3.2"
 COPY backend/ ./
-COPY --from=web /web/dist /app/frontend/dist
+COPY --from=web /repo/frontend/dist /app/frontend/dist
 # A numeric user, so Kubernetes can check runAsNonRoot (deploy/k8s runs it as 10001).
 RUN useradd --create-home --uid 10001 loopdesk && chown -R loopdesk /app
 USER 10001
