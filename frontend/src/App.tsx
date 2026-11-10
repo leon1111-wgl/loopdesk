@@ -20,6 +20,8 @@ import TracesPage from "./pages/TracesPage";
 
 // The simulations page carries the recorded transcripts: loaded only when opened.
 const SimulationsPage = lazy(() => import("./pages/SimulationsPage"));
+// The policy page loads the policy engine and, on demand, the recorded transcripts it replays.
+const PolicyPage = lazy(() => import("./pages/PolicyPage"));
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -53,6 +55,7 @@ export default function App() {
             <Route path="/traces" element={<TracesPage />} />
             <Route path="/traces/:runId" element={<TracesPage />} />
             <Route path="/tools" element={<ToolsPage />} />
+            <Route path="/policy" element={<Suspense fallback={<div className="empty">加载中…</div>}><PolicyPage /></Suspense>} />
             <Route path="/flywheel" element={<FlywheelPage />} />
             <Route path="/evals" element={<EvalsPage />} />
             {user.role === "admin" && <Route path="/audit" element={<AuditPage />} />}

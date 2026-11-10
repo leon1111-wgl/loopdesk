@@ -11,7 +11,7 @@ import { isRefusal } from "./text";
 import { reviewerRole, World, type ApprovalRow, type TicketRow } from "./tools";
 
 export type { ModelChoice } from "./runtime";
-export { cedarLoaded, cedarVersion, loadCedar } from "./policy";
+export { cedarLoaded, cedarVersion, loadCedar, policyEngine } from "./policy";
 
 type Body = Record<string, unknown>;
 

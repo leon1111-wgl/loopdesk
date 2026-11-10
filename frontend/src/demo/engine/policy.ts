@@ -160,11 +160,26 @@ export function policyEngine(text = POLICY_TEXT, disabled: ReadonlySet<string> =
   return engine;
 }
 
+const captures: Decision[][] = [];
+
+/** Every decision the gateway takes while ``run`` runs (the what-if panel lines two replays up by them). The approval
+ * queue's "who may approve" probes (principal ~agent) are not decisions about a call and are left out. */
+export function capture<T>(run: () => T): [T, Decision[]] {
+  const found: Decision[] = [];
+  captures.push(found);
+  try {
+    return [run(), found];
+  } finally {
+    captures.splice(captures.indexOf(found), 1);
+  }
+}
+
 /** What the gateway asks. ``engine``: the what-if panel's variant; the shipped policy otherwise. */
 export function decide(engine: PolicyEngine | null | undefined, principal: [string, string | number], action: string, resource: [string, string | number], context: Json, entities: Json[]): Decision {
   const e = engine ?? policyEngine();
-  if (!e) return { action, effect: "deny", reasons: [], errors: [NOT_LOADED], micros: 0, context };
-  return e.decide(principal, action, resource, context, entities);
+  const decision: Decision = e ? e.decide(principal, action, resource, context, entities) : { action, effect: "deny", reasons: [], errors: [NOT_LOADED], micros: 0, context };
+  if (!String(principal[1]).startsWith("~")) captures.at(-1)?.push(decision);
+  return decision;
 }
 
 /** The first deny.* reason checked at this stage. */
