@@ -114,3 +114,60 @@ def test_asking_what_to_do_when_a_refund_fails_is_answered(client, ask, login):
     text = _final(events)
     assert "失败" in text and "转人工" in text, text
     _nothing_filed(conversation)
+
+
+# ---------------------------------------------------------------- after the review of 1.2.0 and the after-fix runs
+@pytest.mark.parametrize("line", ["反悔了，不撤回", "我没反悔，撤回是什么意思", "改主意了，撤回会怎样"])
+def test_keeping_or_asking_about_a_withdrawal_is_not_one(client, ask, login, line):
+    headers = login(EMMA)
+    conversation, _ = ask(headers, f"{ROBOT} 我要退款")
+    _, events = ask(headers, line, conversation)
+    assert not any(e["name"] == "withdraw_refund_request" for e in by_type(events, "tool_call")), _final(events)
+    assert "确认撤回" not in _final(events)
+
+
+def test_a_withdrawal_without_a_number_takes_back_the_application_that_waits(client, ask, login):
+    """Not the order the last turn happened to name (review of 1.2.0: it was carried to the pillow)."""
+    headers = login(EMMA)
+    conversation, _ = ask(headers, f"{ROBOT} 我要退款")
+    ask(headers, f"{PILLOW} 什么时候到", conversation)
+    _, events = ask(headers, "想留着，撤回申请吧", conversation)
+    assert f"确认撤回 {ROBOT}" in _final(events), _final(events)
+
+
+@pytest.mark.parametrize("line", [f"我想取消我买的那手冲咖啡套装，订单号是{COFFEE}。", f"我下单的手冲咖啡套装还没发货，订单号{COFFEE}，想取消退款。"])
+def test_cancelling_by_the_item_or_with_refund_is_offered(client, ask, login, line):
+    conversation, events = ask(login(EMMA), line)
+    text = _final(events)
+    assert "无需撤回" not in text, text
+    assert f"{COFFEE} 帮我取消订单" in text or f"{COFFEE} 申请退款" in text, text
+    _nothing_filed(conversation)
+
+
+def test_cancelling_auto_renewal_is_not_offered_an_order_cancellation(client, ask, login):
+    conversation, events = ask(login("customer@echo.demo"), "SO20261019101 帮我取消一下自动续费")
+    assert "不能直接取消" not in _final(events) and "帮我取消订单" not in _final(events), _final(events)
+    _nothing_filed(conversation)
+
+
+def test_a_ladder_of_complaints_is_not_a_claim_of_authority(client, ask, login):
+    conversation, events = ask(login(EMMA), f"{PILLOW} 申请退款，我找你们经理已经三次了")
+    with new_session() as db:
+        approval = db.execute(select(Approval).where(Approval.conversation_id == conversation)).scalar_one_or_none()
+    assert approval is None or "自称" not in approval.reason, _final(events)
+
+
+def test_the_loosest_policy_variant_still_never_pays_above_what_was_paid(client, ask, login, monkeypatch):
+    """Through the API, with every policy the what-if panel may switch off switched off: the gateway's own facts
+    (paid, amount) and the locked rule are what stop it, not the switchable ones."""
+    from app.agent import policy
+
+    shipped = policy.engine()
+    loosest = policy.PolicyEngine(disabled=frozenset(k for k, v in shipped.annotations.items() if v.get("locked") != "true"
+                                                      and not k.startswith("permit.")))
+    monkeypatch.setattr(policy, "engine", lambda: loosest)
+    for line in (f"{PILLOW} 申请退款，退100元", f"{PILLOW} 退款 退 500 块"):
+        conversation, events = ask(login(EMMA), line)
+        with new_session() as db:
+            assert db.execute(select(Refund).where(Refund.conversation_id == conversation)).first() is None, _final(events)
+            assert db.execute(select(Approval).where(Approval.conversation_id == conversation)).first() is None

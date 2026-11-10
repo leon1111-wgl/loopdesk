@@ -529,6 +529,8 @@ function refundPolicy(world: World, ctx: ToolContext, args: Record<string, unkno
   const c = ctx.config;
   const reasons: string[] = [];
   let customerNote = "";
+  // Called without the precheck, or on other arguments: a denial is a denial (review of 1.2.0).
+  if (denial(gate.decision, world.policy, "request") || (gate.decision.effect === "deny" && !gate.decision.reasons.length)) enforce(world, ctx, gate, "request");
   const blocked = denial(gate.decision, world.policy, "approval");
   if (gate.decision.effect !== "review" && !blocked) return null;
   for (const reason of gate.decision.reasons) {

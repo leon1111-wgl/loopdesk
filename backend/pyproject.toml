@@ -16,6 +16,7 @@ dependencies = [
     "pypdf>=4.2",
     "jieba>=0.42",
     "pypinyin>=0.50",
+    "cedarpy==4.12.2",  # Cedar 4.12.0, the engine the static demo's @cedar-policy/cedar-wasm 4.12.0 runs (backend/policies)
 ]
 
 [project.optional-dependencies]

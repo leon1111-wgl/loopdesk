@@ -554,7 +554,8 @@ def _other_reviewers(ctx: ToolContext) -> dict[str, bool]:
     return {"other_admin": any_other(("admin",)), "other_staff": any_other(("admin", "agent"))}
 
 
-def _refund_gate(ctx: ToolContext, args: dict[str, Any], intent: bool = True, approval: bool = True) -> RefundGate:
+def _refund_gate(ctx: ToolContext, args: dict[str, Any], intent: bool = True, approval: bool = True,
+                 order: OrderInfo | None = None) -> RefundGate:
     """Read the facts in the order the checks were always made, ask the policy, keep both. A fact that already
     decides the call (the customer said not to refund) or a read that fails (no such order, an amount that is not a
     number) ends the reading: what comes after it is not asked of the order system or the ledger, and the policy,
@@ -579,7 +580,7 @@ def _refund_gate(ctx: ToolContext, args: dict[str, Any], intent: bool = True, ap
         context["customer_declined"] = True
         return decided()
     try:
-        order = _load_order(ctx, order_id)
+        order = order or _load_order(ctx, order_id)  # under the lock: the order this call already read
     except ToolUnavailable:
         raise
     except ToolError as exc:
@@ -861,6 +862,8 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
     amount = round(float(args["amount"]), 2)
     if gate is None or gate.order is None or gate.order.order_id != _order_id(args) or gate.amount != amount:
         gate = _refund_gate(ctx, args)
+    if gate.denial("request") is not None or (gate.decision.effect == "deny" and not gate.decision.reasons):
+        _enforce(ctx, gate, "request")  # called without the precheck, or on other arguments: a denial is a denial
     denial = gate.denial("approval")
     if denial == "deny.customer_has_no_account":  # found while counting the limits: the window was read before it
         _review_evidence(ctx, gate, window_only=True)
@@ -875,11 +878,11 @@ def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | Non
 
 
 
-def _decide_under_lock(ctx: ToolContext, args: dict[str, Any]) -> None:
+def _decide_under_lock(ctx: ToolContext, args: dict[str, Any], order: OrderInfo) -> None:
     """The limits once more, with the customer's refunds counted under the lock (N-039): two requests that passed
     the same decision concurrently must not both be paid. The first reason that holds goes to the reviewer (staff
     filing; else the velocity limit, with the history that triggered it)."""
-    again = _refund_gate(ctx, args, intent=False)
+    again = _refund_gate(ctx, args, intent=False, order=order)
     if again.decision.effect == "allow":
         return
     if again.decision.effect == "review":
@@ -949,7 +952,7 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             # already has one writer at a time. Every refund takes the order, then the customer.
             ctx.db.execute(select(User.id).where(User.id == customer_id).with_for_update(key_share=True))
             if ctx.approval_id is None:  # an automatic refund: the policy again, under the lock
-                _decide_under_lock(ctx, args)  # the savepoint's rollback removes the row: the order is free again
+                _decide_under_lock(ctx, args, order)  # the savepoint's rollback removes the row: the order is free again
             refund.status = "pending"
     except IntegrityError:
         ctx.db.commit()  # keep what the run had pending, and end the transaction (SQLite's write lock)

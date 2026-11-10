@@ -21,6 +21,7 @@ export const NOT_LOADED = "策略引擎（cedar-wasm）没有加载：默认拒�
 
 export interface Decision {
   action: string;
+  resource?: string; // the order, tool or application decided on
   effect: Effect;
   reasons: string[];
   errors: string[];
@@ -177,7 +178,7 @@ export function capture<T>(run: () => T): [T, Decision[]] {
 /** What the gateway asks. ``engine``: the what-if panel's variant; the shipped policy otherwise. */
 export function decide(engine: PolicyEngine | null | undefined, principal: [string, string | number], action: string, resource: [string, string | number], context: Json, entities: Json[]): Decision {
   const e = engine ?? policyEngine();
-  const decision: Decision = e ? e.decide(principal, action, resource, context, entities) : { action, effect: "deny", reasons: [], errors: [NOT_LOADED], micros: 0, context };
+  const decision: Decision = { ...(e ? e.decide(principal, action, resource, context, entities) : { action, effect: "deny", reasons: [], errors: [NOT_LOADED], micros: 0, context }), resource: String(resource[1]) };
   if (!String(principal[1]).startsWith("~")) captures.at(-1)?.push(decision);
   return decision;
 }

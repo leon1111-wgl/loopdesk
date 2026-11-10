@@ -36,7 +36,7 @@ export const SHIPPED: Variant = { limits: {}, disabled: [] };
 
 function step(d: Decision): Step {
   const refund = (d.context.refund ?? null) as { amount?: number } | null;
-  return { action: d.action, effect: d.effect, reasons: d.reasons, order: null, amount: refund?.amount === undefined ? null : refund.amount / 100 };
+  return { action: d.action, effect: d.effect, reasons: d.reasons, order: d.action === "request_refund" && d.resource && d.resource !== "?" ? d.resource : null, amount: refund?.amount === undefined ? null : refund.amount / 100 };
 }
 
 function engineFor(variant: Variant): DemoEngine {
@@ -126,5 +126,5 @@ export function flipOf(before: Replay, after: Replay): Flip | null {
   return change && change.tables.length ? change : null;
 }
 
-/** The tenants' shipped limits (the pack's, overridden by the recording's /api/tenant in the page). */
+/** The tenants' shipped limits: the pack's, which every replay here starts from (the same numbers as the recording's /api/tenant). */
 export const shippedLimit = (tenant: string): number => pack.tenants[tenant]?.auto_refund_limit ?? 0;

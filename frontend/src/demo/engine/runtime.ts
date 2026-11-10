@@ -181,8 +181,6 @@ function carryOrderLoosely(text: string, previous: string | null): [string, stri
   if (!previous || T.ORDER_ID_RE.test(text) || W._DISOWNED.test(previous) || W._DISOWNED.test(text) || T.OTHER_ORDER.test(text)) return null;
   const named = [...new Set(findAll(T.ORDER_ID_RE, previous).map((m) => m[0].toUpperCase()))];
   if (named.length !== 1 || text.trim().length > 40 || W._POLICY_WORDS.test(text)) return null;
-  // Taking back what was just filed: no money moves and the tool asks to confirm, naming the order (rewrite.carry_order_loosely).
-  if (refundWithdrawRequested(text)) return [`${named[0]} ${text.trim()}`, named[0]];
   if (!W._LOOSE_CARRY.test(text) || W._OTHER_ITEM.test(text)) return null;
   return [`${named[0]} ${text.trim()}`, named[0]];
 }

@@ -23,6 +23,7 @@ const POLICY_URL = `${REPO_URL}/blob/main/backend/policies/loopdesk.cedar`;
 const AGENTCORE = "https://aws.amazon.com/about-aws/whats-new/2026/03/policy-amazon-bedrock-agentcore-generally-available";
 const TENANTS = [["leon", "Leon优选"], ["echo", "Echo音乐"]] as const;
 const EFFECT_TEXT: Record<string, string> = { allow: "自动通过", review: "人工审批", deny: "拒绝" };
+const ASKS_BACK = new Set(["deny.not_asked", "deny.order_unconfirmed", "deny.item_not_on_order"]);
 const TABLE_TEXT: Record<Table, string> = { orders: "订单状态", refunds: "已退款", approvals: "审批队列", tickets: "售后工单", handoff: "转人工" };
 const ORDER_STATUS: Record<string, string> = { delivered: "已签收", shipped: "已发货", paid: "已付款", refunding: "退款中", refunded: "已退款", cancelled: "已取消" };
 const APPROVAL_STATUS: Record<string, string> = { pending: "待审批", approved: "已通过", rejected: "已驳回", withdrawn: "已撤回" };
@@ -276,7 +277,9 @@ function FlipItem({ flip, label, policies }: { flip: Flip; label: (id: string) =
   const [code, setCode] = useState<string | null>(null);
   const title = flip.kind === "journey" ? `完整对话 ${flip.key}` : `录制对话 ${flip.key}`;
   const card = flip.kind === "transcript" ? CARDS.get(flip.key.split("/")[1]) : undefined;
-  const step = (s: Flip["was"]) => (s ? `${EFFECT_TEXT[s.effect] ?? s.effect}${s.amount !== null ? `（¥${s.amount.toFixed(2)}）` : ""}` : "没有这一步");
+  // A refund the words did not ask for plainly is offered back to the customer, not refused: say so.
+  const effectText = (s: NonNullable<Flip["was"]>) => (s.effect === "deny" && s.reasons.some((r) => ASKS_BACK.has(r)) ? "不提交，先问顾客" : EFFECT_TEXT[s.effect] ?? s.effect);
+  const step = (s: Flip["was"]) => (s ? `${s.order ? `${s.order} ` : ""}${effectText(s)}${s.amount !== null ? `（¥${s.amount.toFixed(2)}）` : ""}` : "没有这一步");
   const policyLine = (id: string, change: string) => (
     <li key={`${change}-${id}`}>
       <span>{change}：{label(id)} </span>

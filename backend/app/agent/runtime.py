@@ -46,7 +46,8 @@ from .rewrite import Frame, carry_order, carry_order_loosely, frame_of, is_follo
 from ..observability import request_id_var
 from ..security import Principal
 from .. import telemetry
-from ..textutil import ORDER_ID_RE, asks_for_person, handoff_cancelled, normalize_width, offered_order
+from ..textutil import (ORDER_ID_RE, asks_for_person, handoff_cancelled, normalize_width, offered_order,
+                        refund_withdraw_requested)
 from ..voice.confirm import classify_reply
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
@@ -346,6 +347,8 @@ class AgentRuntime:
             # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
             question = pii.masked
             carried = f"{offered} 申请退款" if reply == "yes" else carry_order(pii.masked, previous)
+            if carried is None and reply != "yes":
+                carried = self._withdrawal_order(tenant, user, previous, pii.masked)
             unconfirmed = None
             if carried is None and (loose := carry_order_loosely(pii.masked, previous)) is not None:
                 carried, unconfirmed = loose  # "你没听懂吗 我说碎了！！要退钱": that order, but a refund is only offered
@@ -867,6 +870,20 @@ class AgentRuntime:
             ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False),
                              **_order_meta(call.arguments))
         return outcome
+
+    def _withdrawal_order(self, tenant: Tenant, user: User, previous: str | None, text: str) -> str | None:
+        """"想留着，能撤回申请吗" with no number: the application the conversation is about if it waits for review, else
+        the only one of this customer's that does (as the static demo does). Several, or none: no guess; the model asks."""
+        if ORDER_ID_RE.search(text) or not refund_withdraw_requested(text):
+            return None
+        waiting = list(dict.fromkeys(str((a.arguments or {}).get("order_id") or "") for a in self.db.execute(
+            select(Approval).join(Run, Run.id == Approval.run_id).where(
+                Approval.tenant_id == tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
+                Run.user_id == user.id).order_by(Approval.id)).scalars()))
+        named = list(dict.fromkeys(m.upper() for m in ORDER_ID_RE.findall(previous or "")))
+        talked = named[0] if len(named) == 1 else None
+        pick = talked if talked in waiting else waiting[0] if len(waiting) == 1 else None
+        return f"{pick} {text.strip()}" if pick else None
 
     @staticmethod
     def _policy_gate(ctx: ToolContext, tool: ToolDef) -> None:

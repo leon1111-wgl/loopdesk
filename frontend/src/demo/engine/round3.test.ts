@@ -84,3 +84,34 @@ describe("1.2.0 answers", () => {
     expect(talk(["我十天前收到的马克杯有裂纹，想换一个，订单号SO20261008010。"]).end.tickets).toBe(1);
   });
 });
+
+describe("after the review of 1.2.0 and the after-fix runs", () => {
+  it.each(["反悔了，不撤回", "我没反悔，撤回是什么意思", "改主意了，撤回会怎样"])("keeping or asking about a withdrawal is not one: %s", (line) => {
+    const engine = new DemoEngine(() => undefined);
+    engine.ask(EMMA, 1, `${ROBOT} 我要退款`);
+    const events = engine.ask(EMMA, 1, line);
+    expect(events.some((e) => e.type === "tool_call" && e.name === "withdraw_refund_request")).toBe(false);
+  });
+
+  it("a withdrawal without a number takes back the application that waits", () => {
+    const engine = new DemoEngine(() => undefined);
+    engine.ask(EMMA, 1, `${ROBOT} 我要退款`);
+    engine.ask(EMMA, 1, `${PILLOW} 什么时候到`);
+    const text = engine.ask(EMMA, 1, "想留着，撤回申请吧").find((e): e is Extract<AgentEvent, { type: "final" }> => e.type === "final")?.text ?? "";
+    expect(text).toContain(`确认撤回 ${ROBOT}`);
+  });
+
+  it.each([`我想取消我买的那手冲咖啡套装，订单号是${COFFEE}。`, `我下单的手冲咖啡套装还没发货，订单号${COFFEE}，想取消退款。`])("cancelling by the item or with a refund is offered: %s", (line) => {
+    const { text, end } = talk([line]);
+    expect(text).not.toContain("无需撤回");
+    expect(text.includes(`${COFFEE} 帮我取消订单`) || text.includes(`${COFFEE} 申请退款`)).toBe(true);
+    expect(end.approvals).toEqual({});
+  });
+
+  it("cancelling auto-renewal is not offered an order cancellation", () => {
+    const engine = new DemoEngine(() => undefined);
+    const text = engine.ask("customer@echo.demo", 1, "SO20261019101 帮我取消一下自动续费").find((e): e is Extract<AgentEvent, { type: "final" }> => e.type === "final")?.text ?? "";
+    expect(text).not.toContain("不能直接取消");
+    expect(text).not.toContain("帮我取消订单");
+  });
+});
