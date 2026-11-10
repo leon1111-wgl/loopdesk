@@ -164,6 +164,14 @@ def test_a_card_must_name_a_known_persona_and_tables():
         check_scenario({"key": "x", "tenant": "leon", "as": "a", "persona": "plain", "card": "c", "end": {"refund": {}}})
 
 
+def test_the_second_blind_set_loads_and_carries_no_sample_lines():
+    """blind_v2.json (1.2.0) was written by another model from the public brief alone and committed before its first run."""
+    blind = load(SIM_DIR / "blind_v2.json")
+    assert len(blind) == 12 and not any("sample" in s for s in blind)
+    for scenario in blind:
+        check_scenario(scenario)
+
+
 def test_the_blind_set_loads_and_carries_no_sample_lines():
     """blind_v1.json was written by another model from the public rules alone; it is run, never scripted or tuned against."""
     blind = load(SIM_DIR / "blind_v1.json")
