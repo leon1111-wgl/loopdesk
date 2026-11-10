@@ -265,3 +265,65 @@ test.describe("a conversation", () => {
     expect(problems).toEqual([]);
   });
 });
+
+// 1.2.0: every change of data is decided by the Cedar policy, in the tab, with cedar-wasm (docs/POLICY.md).
+test.describe("the approval policy", () => {
+  const enter = async (page: Page, email: string) => {
+    await page.goto("./");
+    await page.getByRole("button", { name: new RegExp(email.replace(".", "\\.")) }).first().click();
+    await expect(page.getByRole("button", { name: "账号菜单" })).toBeVisible();
+  };
+
+  for (const size of SIZES) {
+    test(`the what-if panel replays every conversation and names the policy that flipped it (${size.name})`, async ({ page }) => {
+      const problems = watch(page);
+      await page.setViewportSize(size.viewport);
+      await enter(page, "admin@echo.demo");
+      await page.goto("./policy");
+      await expect(page.getByText(/cedar-wasm 4\.12\.0 已加载/)).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("checkbox", { name: /退款金额不能超过实付金额/ })).toBeDisabled();
+      await page.getByRole("textbox", { name: "Echo音乐的自动审批额度（元）" }).or(page.getByLabel("Echo音乐的自动审批额度（元）")).fill("2000");
+      await page.getByRole("button", { name: "重算全部对话" }).click();
+      await expect(page.getByText(/159 段对话里，\d+ 段终态改变/)).toBeVisible({ timeout: 60_000 });
+      const first = page.locator(".policy-flip").first();
+      await expect(first).toContainText("Echo音乐");
+      await expect(first).toContainText("不再起作用：超过自动审批额度");
+      await first.getByRole("button", { name: "review.above_auto_limit" }).click();
+      await expect(first.locator(".policy-code")).toContainText("context.refund.amount > context.limits.auto_refund_limit");
+      await noSideScroll(page, "policy page");
+      await page.getByRole("button", { name: "恢复上线策略" }).click();
+      await expect(page.getByText("改一个额度或关掉一条规则")).toBeVisible();
+      expect(problems).toEqual([]);
+    });
+  }
+
+  test("each decision is its own span in the trace", async ({ page }) => {
+    const problems = watch(page);
+    await enter(page, "agent@leon.demo");
+    await page.goto("./chat");
+    const box = page.locator("textarea").first();
+    await box.fill("SO20261012003 申请退款");
+    await box.press("Enter");
+    await page.getByRole("link", { name: /查看完整链路/ }).click();
+    await expect(page.getByText("执行时间线")).toBeVisible();
+    await expect(page.getByText("cedar:request_refund").first()).toBeVisible();
+    expect(problems).toEqual([]);
+  });
+
+  test("without the policy engine nothing that changes data is done, and the answer says why", async ({ page }) => {
+    const problems = watch(page);
+    await page.route("**/*.wasm", (route) => route.abort());
+    page.on("console", () => undefined);
+    await enter(page, "customer@leon.demo");
+    await page.goto("./chat");
+    const box = page.locator("textarea").first();
+    await box.fill("SO20260918001 申请退款");
+    await box.press("Enter");
+    const answer = page.locator(".msg.assistant").last();
+    await expect(answer.locator(".engine-tag")).toHaveText(/规则引擎/, { timeout: 20_000 });
+    await expect(answer).toContainText("默认拒绝");
+    await expect(answer).not.toContainText(/已受理|已提交人工审核/);
+    // the failed download is logged as a warning, not an error, and nothing else breaks
+    expect(problems.filter((p) => !/wasm|Failed to load resource|net::ERR_FAILED/.test(p))).toEqual([]);
+  });
+});

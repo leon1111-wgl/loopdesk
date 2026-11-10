@@ -4,10 +4,10 @@ WORKDIR /repo/frontend
 RUN corepack enable
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
-# The simulations page bundles the scenario cards and the recorded run, and the engine the Cedar policy, which live outside
-# frontend/: same paths as the repo.
+# The simulations page bundles the scenario cards and the recorded run, the engine the Cedar policy, and the policy page the
+# journeys it replays; they live outside frontend/: same paths as the repo.
 COPY backend/evals/simulations/ /repo/backend/evals/simulations/
-COPY backend/evals/policy/ /repo/backend/evals/policy/
+COPY backend/evals/journeys.json /repo/backend/evals/journeys.json
 COPY backend/policies/ /repo/backend/policies/
 COPY demo/simulations/ /repo/demo/simulations/
 COPY frontend/ ./

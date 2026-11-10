@@ -18,6 +18,22 @@
 
 **为什么在 Actions 的 CPU 上跑模型。** GitHub Models 已于 2026-07-30 完全下线，推理 API 不再对任何人开放（[GitHub Docs](https://docs.github.com/en/github-models/use-github-models/prototyping-with-ai-models)，2026-11-10 核实）；厂商 API 要密钥和费用。公开仓库的标准 Linux 运行器是 4 核 16 GB（[GitHub Docs](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)），4-bit 的 4B 模型用 llama.cpp 在 CPU 上能跑：实测扮演顾客每轮约 3.6 秒、每秒生成 13.6 个 token（运行 [42664091779](https://github.com/leon1111-wgl/loopdesk/actions/runs/42664091779)）。模型是 Qwen3-4B-Instruct-2507（Apache-2.0，unsloth 转换的 Q4_K_M GGUF），llama.cpp 用固定版本 b11899，两者都按 SHA-256 校验，只下载到运行器并放进 Actions 缓存，不进仓库、不在本机运行。工作流也可以选 Qwen3-8B（Qwen 官方 GGUF），这一轮没有用它测量。
 
+## 第三轮（2026-11-10）：审批策略即代码
+
+第二轮把“动钱错误”变成了能自动发现的回归（模拟顾客 + 终态评分），第 12 项（把退款、审批分级、四眼原则写成 Cedar 策略）当时以“先有回归再动规则”为由没做。这一轮做了：先在原来的代码上记下每一次工具调用的判定，再切换，逐次比对。做法、证据和局限见 `docs/POLICY.md`。
+
+| # | 候选 | 决定 | 理由 |
+|---|---|---|---|
+| 12 | 退款、审批分级、四眼原则、语音确认写成 Cedar 策略，后端和浏览器判定同一份文件，“如果……会怎样”面板 | **采纳，已做** | 规则从散在代码里的条件变成一份能读、能校验、能比对的文件；看演示的人能在页面上改额度、关规则，看哪些结局会变 |
+| 16 | Cedar 的符号分析（`cedar-policy-symcc`，证明“任何请求都不会……”） | 不做 | 没有 Python 和 wasm 版本；这一版用生成的请求在上线策略和面板能做出的每种变体上检查不变式，`docs/POLICY.md` 写明这不是证明 |
+| 17 | 用自然语言生成策略（AgentCore 的做法之一） | 不做 | 没有密钥，也不该让模型写动钱规则；策略随代码发布、经 CI 校验 |
+| 18 | 每个租户一份策略模板（Cedar templates） | 不做 | 三个租户的规则相同、只是额度不同，额度作为事实送进请求就够了 |
+| 19 | 换成 OPA / Rego | 不做 | Cedar 有同一引擎版本的 Python 绑定和 wasm 包，语言可分析、默认拒绝、forbid 优先；Rego 在浏览器里要另一套运行时 |
+
+**后端为什么用现成的绑定。** cedarpy 是社区项目（k9securityio），2026-11-10 查看：4.12.2 发布于 2026-10-14，对应 Cedar 4.12.0，最近提交 2026-11-02，有三大平台的预编译 wheel。它在维护，所以直接用；浏览器固定 `@cedar-policy/cedar-wasm` 4.12.0，两边引擎版本相同，`policy_cases.json` 的 1130 个请求两边答案相同。
+
+**同一轮修的回答问题**（不涉及策略，同一份评测）：主会话对 1.1.0 的探查记下的五处、1.1.0 自己留下的四处，见 `CHANGELOG.md` 1.2.0 和 `docs/EVALUATION.md`“审批策略”。动钱的封闭语法没有放宽。
+
 ## What large companies run in production（大公司在生产里怎么做）
 
 下表只列有一手来源和日期的做法。厂商的效果数字（解决率、“最高 90%”）都是自报的，没有独立审计，这里不引用。
@@ -31,11 +47,11 @@
 | Salesforce AI Research：CRMArena-Pro | 用模型扮演的用户做多轮测试：领先的 Agent 单轮约 58%、多轮约 35% 成功，几乎没有保密意识。这是对厂商宣传最有用的可复现对照 | [arXiv 2505.18878](https://arxiv.org/abs/2505.18878)（2025-05） |
 | Anthropic | 评测指南：优先确定性评分，评结果多于评路径，用 pass^k 衡量一致性 | [Demystifying evals for AI agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)（2026-01-09） |
 | Klarna | 2024-02 称 AI 助手处理了三分之二的客服对话；2025-05 CEO 表示要投资人工客服的质量并重新招人，变成人机混合、随时能找到人 | [新闻稿](https://www.klarna.com/international/press/klarna-ai-assistant-handles-two-thirds-of-customer-service-chats-in-its-first-month/)（2024-02-27）；[Entrepreneur](https://www.entrepreneur.com/business-news/klarna-ceo-reverses-course-by-hiring-more-humans-not-ai/491396)（2025-05-09） |
-| AWS | AgentCore Policy：在工具网关处默认拒绝，用 Cedar 策略逐次判断工具调用（正式发布 2026-03-03）。对应候选 12，这一轮没做 | [AWS Security Blog](https://aws.amazon.com/blogs/security/why-policy-in-amazon-bedrock-agentcore-chose-cedar-for-securing-agentic-workflows/)；[GA 公告](https://aws.amazon.com/about-aws/whats-new/2026/03/policy-amazon-bedrock-agentcore-generally-available) |
+| AWS | AgentCore Policy：网关拦截 Agent 对工具的每一次调用，按 Cedar 策略判定；默认全部拦截，由策略逐条放开（正式发布 2026-03-03）。对应 OWASP Agentic Top 10 的 ASI02 工具滥用、ASI03 身份与权限。**1.2.0 对应这一做法**（第三轮） | [GA 公告](https://aws.amazon.com/about-aws/whats-new/2026/03/policy-amazon-bedrock-agentcore-generally-available)（2026-03-03）；[AWS Security Blog](https://aws.amazon.com/blogs/security/why-policy-in-amazon-bedrock-agentcore-chose-cedar-for-securing-agentic-workflows/)（2026-05-20）；两页均于 2026-11-10 重新核对 |
 
-**这一版对应的做法**：τ²-bench 的模拟用户（角色对调、用户说 `###STOP###` 结束、结束语不发给 Agent）、严格的数据库终态评分、多个种子算 pass^k，以及 Sierra 那样把模拟放进 GitHub Actions、有一项不过就让运行失败的门禁（这里是“动钱错误必须为 0”）。
+**第二轮对应的做法**：τ²-bench 的模拟用户（角色对调、用户说 `###STOP###` 结束、结束语不发给 Agent）、严格的数据库终态评分、多个种子算 pass^k，以及 Sierra 那样把模拟放进 GitHub Actions、有一项不过就让运行失败的门禁（这里是“动钱错误必须为 0”）。
 
-**刻意不同的地方**：
+**第二轮刻意不同的地方**：
 
 - **扮演顾客的是 4B 的小模型，跑在 CPU 上**，不是前沿模型：模拟器自己会犯错（泄露目标、编订单号、该停不停），所以这一版人工审计了固定的一份样本，把模拟器的错误和 Agent 的错误分开报。
 - **被测的是规则和工具（离线模型）**，不是大模型：没有密钥。同一个评测加 `--configured-model` 就测配置好的真实模型，这一轮没有跑。
@@ -97,8 +113,8 @@
 | 风险 | LoopDesk 的做法 | 测试 |
 |---|---|---|
 | ASI01 目标劫持 | 注入不被拦截但被记录；权限在工具层强制，文字改变不了额度 | `test_guardrails_and_verifier.py`、`test_traditional_injection.py`、`journeys.json` 的 `injection_changes_nothing` |
-| ASI02 工具滥用 | 动钱只认明确请求；工具再查一遍顾客原话；金额超订单实付直接拒绝 | `test_refund_intent.py`、`test_refund_stated_amount.py`、`test_tool_schema_egress.py` |
-| ASI03 身份与权限 | 身份取自登录用户，不取自模型；金额分级审批；四眼原则 | `test_refund_policy.py`、`test_staff_refund.py`、`test_approval_resume.py` |
+| ASI02 工具滥用 | 每次改动数据的工具调用先问 Cedar 策略，默认拒绝（1.2.0）；动钱只认明确请求；工具再查一遍顾客原话；金额超订单实付直接拒绝（不变式，任何策略变体都关不掉） | `test_policy.py`、`policy.test.ts`、`test_refund_intent.py`、`test_refund_stated_amount.py`、`test_tool_schema_egress.py` |
+| ASI03 身份与权限 | 身份取自登录用户，不取自模型；金额分级审批和四眼原则写在策略里（审批人不是提交人是不变式）；消息里自称员工或系统通知的退款交给人工 | `test_policy.py`、`test_refund_policy.py`、`test_staff_refund.py`、`test_approval_resume.py` |
 | ASI04 供应链 | 租户工具有出站白名单、定义哈希，定义变了要重新确认 | `test_mcp_client.py`、`test_tool_schema_egress.py` |
 | ASI06 记忆与上下文投毒 | 入库扫描，可疑片段人工放行前不进检索；没有长期记忆 | `test_knowledge_scan.py`、`test_poisoned_set.py` |
 | ASI08 级联故障 | 模型和向量服务故障有熔断和降级，退款台账先写后付 | `test_model_outage.py`、`test_embedding_outage.py`、`test_refund_race.py` |
