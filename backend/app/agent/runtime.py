@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit
 from ..channels.wecom import notify_approval
-from . import decision_log
+from . import decision_log, policy
 from ..config import Settings
 from ..governance import script
 from ..guardrails.injection import Channels, detect_injection, unsafe_answer
@@ -796,6 +796,7 @@ class AgentRuntime:
         tool = self._tools(ctx).get(call.name)
         allowed = {t.name for t in self._tools(ctx).for_role(ctx.user.role)}
         args = call.arguments
+        ctx.policy_log.clear()
         with (tracer.span("tool", call.name, {"arguments": call.arguments, "risk": tool.risk if tool else None}) as span,
               _integration_calls(span, ctx.deadline)):
             if tool is None or call.name not in allowed:
@@ -805,6 +806,8 @@ class AgentRuntime:
             else:
                 try:
                     args = call.arguments
+                    if tool.risk != "read" and not tool.gated:
+                        self._policy_gate(ctx, tool)
                     if tool.precheck:
                         # The precheck returns the arguments as they would be executed (e.g. an
                         # omitted refund amount made explicit). The approval policy, the approval
@@ -818,6 +821,7 @@ class AgentRuntime:
                                  arguments=args)
                         decision_log.tool_call(call.name, ctx.user.role, args, "approval", None, False, need.reason,
                                                need.approver_role)
+                        self._policy_spans(tracer, ctx)
                         return ToolOutcome("approval", reason=need.reason, customer_note=need.customer_note,
                                            arguments=args, approver_role=need.approver_role)
                     try:
@@ -827,6 +831,7 @@ class AgentRuntime:
                                  customer_note=exc.need.customer_note, arguments=args, rechecked=True)
                         decision_log.tool_call(call.name, ctx.user.role, args, "approval", None, False,
                                                exc.need.reason, exc.need.approver_role)
+                        self._policy_spans(tracer, ctx)
                         return ToolOutcome("approval", reason=exc.need.reason, customer_note=exc.need.customer_note,
                                            arguments=args, approver_role=exc.need.approver_role)
                     # Tool output is untrusted text (a merchant system, an MCP server): what tries to
@@ -857,10 +862,34 @@ class AgentRuntime:
                 span.set(retrieval=debug)
             span.set(output=outcome.output)
             decision_log.tool_call(call.name, ctx.user.role, args, "result", outcome.output, outcome.is_error)
+            self._policy_spans(tracer, ctx)
         if call.name != "search_knowledge" or outcome.is_error:
             ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False),
                              **_order_meta(call.arguments))
         return outcome
+
+    @staticmethod
+    def _policy_gate(ctx: ToolContext, tool: ToolDef) -> None:
+        """Deny by default for every tool that changes data and has no gate of its own (backend/policies): a call
+        runs only if a Cedar permit names its action for this role. A tenant's own tools share one action."""
+        action = tool.name if tool.source == "builtin" else "call_tenant_tool"
+        decision = policy.decide(("User", ctx.user.id), action, ("Tool", tool.name), {"reviewed": ctx.approval_id is not None},
+                                 [policy.entity("User", ctx.user.id, role=ctx.user.role),
+                                  policy.entity("Tool", tool.name, risk=tool.risk)])
+        ctx.policy_log.append(decision)
+        if decision.effect != "allow":
+            raise ToolError(f"工具 {tool.name} 不存在或当前身份无权使用")
+
+    @staticmethod
+    def _policy_spans(tracer: Tracer, ctx: ToolContext) -> None:
+        """Each policy decision of the call as its own span, after the call: a span written in the middle of a
+        handler would commit its transaction (per-span trace writes)."""
+        for decision in ctx.policy_log:
+            with tracer.span("policy", f"cedar:{decision.action}", {"context": decision.context}) as span:
+                span.set(**decision.span())
+                if decision.effect == "deny":
+                    span.status = "rejected"
+        ctx.policy_log.clear()
 
     def _tools(self, ctx: ToolContext) -> ToolRegistry:
         """This tenant's tools (built-in plus declared, app/tooling); the process registry for a

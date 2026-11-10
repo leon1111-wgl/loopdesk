@@ -15,6 +15,7 @@ import json
 import math
 import re
 import uuid
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -34,7 +35,7 @@ from ..textutil import (ORDER_ID_RE, REFUND_RE, cancel_requested, fix_typos, nor
                         refund_turned_down,
                         refund_requested,
                         refund_withdraw_requested, stated_refund_amount, withdraw_confirmed)
-from . import handoff
+from . import handoff, policy
 from .tools import ApprovalNeed, ApprovalRequired, ToolContext, ToolDef, ToolError, ToolRegistry, ToolUnavailable
 
 STATUS_TEXT = {
@@ -444,41 +445,6 @@ def _application_time(ctx: ToolContext) -> datetime:
     return _as_utc(approval.created_at) if approval is not None else datetime.now(timezone.utc)
 
 
-def _validated(ctx: ToolContext, args: dict[str, Any]) -> tuple[OrderInfo, float]:
-    """The order as the order system has it now, and the amount that would be paid."""
-    order = _load_order(ctx, _order_id(args))
-    raw = args.get("amount")
-    try:  # an omitted amount means the full paid amount (see the tool schema); 0 is not "omitted"
-        amount = round(float(order.amount if raw is None or raw == "" else raw), 2)
-    except (TypeError, ValueError) as exc:
-        raise ToolError("退款金额格式不正确") from exc
-    if not math.isfinite(amount):
-        raise ToolError("退款金额格式不正确")
-    if amount <= 0:
-        raise ToolError("退款金额必须大于 0")
-    if amount > order.amount + 1e-6:
-        raise ToolError(f"退款金额 ¥{amount:.2f} 超过订单实付金额 ¥{order.amount:.2f}，最多可退 ¥{order.amount:.2f}；"
-                        f"如需按 ¥{order.amount:.2f} 申请，请回复“退{order.amount:g}元”")
-    if order.status not in REFUNDABLE:
-        raise ToolError(f"该订单当前状态为“{_status_text(order)}”，不能发起退款")
-    if _no_online_refund(order):
-        raise ToolError(_no_online_refund(order))
-    days = _days_since_delivery(order, _application_time(ctx))
-    if days is not None and days > _last_refund_day(ctx.tenant):
-        # A hard rule, not an approval: the policy leaves nothing to decide. Exceptions
-        # (goodwill, warranty) belong to a human in the back office, not to the agent.
-        raise ToolError(f"订单已{_words(order)['since']} {days} 天，超过 {_last_refund_day(ctx.tenant)} 天的售后期限，"
-                        "不能在线申请退款；如有特殊情况，可以转人工客服处理")
-    if ctx.approval_id is None:
-        pending = ctx.db.execute(select(Approval).where(
-            Approval.tenant_id == ctx.tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
-        )).scalars()
-        waiting = next((a for a in pending if a.arguments.get("order_id") == order.order_id), None)
-        if waiting is not None:
-            raise _already_waiting(ctx, waiting, amount)
-    return order, amount
-
-
 class RefundWaiting(ToolError):
     """The order's application already waits for a person (N-180): not a failure to tell the customer
     about, and not something to file again."""
@@ -538,37 +504,222 @@ def _turned_down(customer_text: str) -> bool:
     return refund_turned_down(text) or (not ORDER_ID_RE.search(text) and classify_reply(text) == "no")
 
 
+# ---------------------------------------------------------------- the refund gate (policy: backend/policies)
+@dataclass
+class RefundGate:
+    """One refund call as the policy saw it: the facts the gateway read, Cedar's decision, and what the
+    refusals and the reviewer's card need to say it in words. ``error``: the order or the amount could not be
+    read, so there was nothing to permit (deny by default) and the customer hears why."""
+
+    decision: policy.Decision
+    order: OrderInfo | None = None
+    amount: float | None = None
+    error: ToolError | None = None
+    waiting: Approval | None = None
+    days: int | None = None
+    stated: float | None = None
+    history: tuple[int, float] = (0, 0.0)
+    customer: int | None = None
+    rejected: str | None = None
+
+    def denial(self, stage: str) -> str | None:
+        """The first deny.* reason checked at this stage ("request": before the channel gateway; "approval": after)."""
+        engine = policy.engine()
+        for reason in self.decision.reasons:
+            if reason.startswith("deny.") and engine.annotations.get(reason, {}).get("stage", "request") == stage:
+                return reason
+        return None
+
+
+def limits(tenant: Tenant, settings: Any) -> dict[str, int]:
+    """The tenant's limits as the policy reads them (fen and whole days)."""
+    return {
+        "auto_refund_limit": policy.fen(tenant.auto_refund_limit),
+        "approval_admin_threshold": policy.fen(tenant.approval_admin_threshold),
+        "return_window_days": int(tenant.return_window_days),
+        "last_refund_day": int(_last_refund_day(tenant)),
+        "window_max_count": int(settings.refund_window_max_count),
+        "window_max_total": policy.fen(settings.refund_window_max_amount),
+    }
+
+
+def _other_reviewers(ctx: ToolContext) -> dict[str, bool]:
+    """Who else could approve what this member of staff files: an active administrator, and any active member of
+    staff (the review queue refuses the requester, so without one the application would wait for good, N-162)."""
+    def any_other(roles: tuple[str, ...]) -> bool:
+        return ctx.db.execute(select(func.count(User.id)).where(
+            User.tenant_id == ctx.tenant.id, User.role.in_(roles), User.disabled_at.is_(None), User.id != ctx.user.id,
+        )).scalar_one() > 0
+
+    return {"other_admin": any_other(("admin",)), "other_staff": any_other(("admin", "agent"))}
+
+
+def _refund_gate(ctx: ToolContext, args: dict[str, Any], intent: bool = True, approval: bool = True) -> RefundGate:
+    """Read the facts in the order the checks were always made, ask the policy, keep both. A fact that already
+    decides the call (the customer said not to refund) or a read that fails (no such order, an amount that is not a
+    number) ends the reading: what comes after it is not asked of the order system or the ledger, and the policy,
+    missing those facts, cannot permit the call. At execution time the order is checked again (``intent=False``:
+    the customer's words were checked when they asked), and under the customer's lock the limits (``approval``)."""
+    reviewed = ctx.approval_id is not None
+    context: dict[str, Any] = {"reviewed": reviewed, "customer_declined": False, "customer_asked": True,
+                               "limits": limits(ctx.tenant, ctx.settings),
+                               "reviewers": {"other_admin": True, "other_staff": True}}
+    order_id = _order_id(args)
+    gate = RefundGate(policy.Decision("request_refund", "deny"))
+
+    def decided() -> RefundGate:
+        gate.decision = policy.decide(("User", ctx.user.id), "request_refund", ("Order", order_id or "?"), context,
+                                      [policy.entity("User", ctx.user.id, role=ctx.user.role)])
+        ctx.policy_log.append(gate.decision)
+        return gate
+
+    # Whatever the model makes of it, "先别退款" does not move money (N-091).
+    if intent and not reviewed and ctx.customer_text and _turned_down(ctx.customer_text):
+        context["customer_declined"] = True
+        return decided()
+    try:
+        order = _load_order(ctx, order_id)
+    except ToolUnavailable:
+        raise
+    except ToolError as exc:
+        gate.error = exc
+        return decided()
+    raw = args.get("amount")
+    try:  # an omitted amount means the full paid amount (see the tool schema); 0 is not "omitted"
+        amount = round(float(order.amount if raw is None or raw == "" else raw), 2)
+    except (TypeError, ValueError):
+        amount = math.nan
+    if not math.isfinite(amount):
+        gate.error = ToolError("退款金额格式不正确")
+        return decided()
+    gate.order, gate.amount = order, amount
+    gate.days = _days_since_delivery(order, _application_time(ctx))
+    if not reviewed:
+        pending = ctx.db.execute(select(Approval).where(
+            Approval.tenant_id == ctx.tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
+        )).scalars()
+        gate.waiting = next((a for a in pending if a.arguments.get("order_id") == order.order_id), None)
+    facts: dict[str, Any] = {
+        "amount": policy.fen(amount), "paid": policy.fen(order.amount), "refundable_status": order.status in REFUNDABLE,
+        "online_refund": not _no_online_refund(order), "awaiting_review": gate.waiting is not None,
+        "unconfirmed": False, "item_mismatch": False, "refunds_in_window": 0, "refunded_in_window": 0,
+        "rejected_recently": False, "customer_has_account": True,
+    }
+    if gate.days is not None:
+        facts["days_since_delivery"] = gate.days
+    context["refund"] = facts
+    if intent and not reviewed:
+        facts["unconfirmed"] = bool(ctx.unconfirmed_order) and order.order_id == ctx.unconfirmed_order.upper()
+        # Nor does anything else that is not a plain request: a question, a condition, a plan, a line the rule
+        # cannot read. It costs the customer one reply, so they are told which one.
+        context["customer_asked"] = not ctx.customer_text or _is_a_request(ctx, order)
+        # The customer named an amount and the call files another (N-218): only the customer's own words, about one order.
+        one_order = len({m.upper() for m in ORDER_ID_RE.findall(normalize_width(ctx.customer_text))}) <= 1
+        gate.stated = stated_refund_amount(ctx.customer_text) if not ctx.is_staff and one_order else None
+        if gate.stated is not None:
+            facts["stated_amount"] = policy.fen(gate.stated)
+    if approval and not reviewed:
+        _approval_facts(ctx, gate, facts, context)
+    return decided()
+
+
+def _approval_facts(ctx: ToolContext, gate: RefundGate, facts: dict[str, Any], context: dict[str, Any]) -> None:
+    """What decides whether a person looks: the customer's recent refunds (per customer, not per operator: staff
+    filing for a customer must not reset the counter), an earlier rejection, who else could approve."""
+    if gate.amount <= ctx.tenant.auto_refund_limit:
+        try:
+            gate.customer = _customer_id(ctx, gate.order)
+        except ToolError:
+            facts["customer_has_account"] = False
+        else:
+            gate.history = _refund_history(ctx, gate.customer)
+            facts["refunds_in_window"], facts["refunded_in_window"] = gate.history[0], policy.fen(gate.history[1])
+    gate.rejected = _rejected_before(ctx, gate.order.order_id)
+    facts["rejected_recently"] = gate.rejected is not None
+    if ctx.is_staff:
+        context["reviewers"] = _other_reviewers(ctx)
+
+
+def _offer(order: OrderInfo) -> RefundWaiting:
+    names = "、".join(str(item.get("name", "")) for item in order.items)
+    message = f"需要为订单 {order.order_id}（{names}）申请退款吗？回复“是的”或“{order.order_id} 申请退款”即可提交"
+    return RefundWaiting(message, {"error": message, "confirm_order": order.order_id})
+
+
+def _refusal_for(ctx: ToolContext, gate: RefundGate, reason: str) -> ToolError:
+    """A deny.* reason in the words the customer (or the model) reads."""
+    order, amount = gate.order, gate.amount
+    if reason == "deny.customer_declined":
+        return ToolError("顾客这句话说了先不退，并没有申请退款，不能发起退款。请回答顾客的问题；顾客明确要求退款时再申请。")
+    if reason == "deny.amount_not_positive":
+        return ToolError("退款金额必须大于 0")
+    if reason == "deny.amount_above_paid":
+        return ToolError(f"退款金额 ¥{amount:.2f} 超过订单实付金额 ¥{order.amount:.2f}，最多可退 ¥{order.amount:.2f}；"
+                         f"如需按 ¥{order.amount:.2f} 申请，请回复“退{order.amount:g}元”")
+    if reason == "deny.order_not_refundable":
+        return ToolError(f"该订单当前状态为“{_status_text(order)}”，不能发起退款")
+    if reason == "deny.no_online_refund":
+        return ToolError(_no_online_refund(order))
+    if reason == "deny.after_sales_deadline":
+        # A hard rule, not an approval: the policy leaves nothing to decide. Exceptions (goodwill, warranty)
+        # belong to a human in the back office, not to the agent.
+        return ToolError(f"订单已{_words(order)['since']} {gate.days} 天，超过 {_last_refund_day(ctx.tenant)} 天的售后期限，"
+                         "不能在线申请退款；如有特殊情况，可以转人工客服处理")
+    if reason == "deny.already_waiting":
+        return _already_waiting(ctx, gate.waiting, amount)
+    if reason in ("deny.not_asked", "deny.order_unconfirmed", "deny.item_not_on_order"):
+        # Not a refusal: a request is never refused for its wording. Asked outright, a yes files (N-091 and after).
+        return _offer(order)
+    if reason == "deny.stated_amount_differs":
+        stated = gate.stated
+        if stated > order.amount + 1e-6:
+            return ToolError(f"顾客要退 ¥{stated:.2f}，超过订单实付金额 ¥{order.amount:.2f}，最多可退 ¥{order.amount:.2f}；"
+                             f"请先和顾客确认是否按 ¥{order.amount:.2f} 申请，顾客确认后再提交")
+        return ToolError(f"顾客要退 ¥{stated:.2f}，这次申请的是 ¥{amount:.2f}，金额不一致，没有提交；"
+                         "请按顾客说的金额申请，顾客改了金额时以顾客最新说的为准")
+    if reason == "deny.customer_has_no_account":
+        return ToolError("这笔订单的顾客没有本系统的账号，请在订单系统里为其办理退款")
+    if reason == "deny.no_other_reviewer":
+        # Filed anyway it could only be rejected, and meanwhile it blocks the customer's own application.
+        tenant = ctx.tenant
+        if amount > tenant.approval_admin_threshold:
+            who, account = (f"没有其他管理员可以审批（金额 ¥{amount:.2f} 超过 ¥{tenant.approval_admin_threshold:.0f} "
+                            "的审批分级线，需要管理员通过，提交人不能审批自己的申请）"), "管理员"
+        else:
+            who, account = "没有其他员工可以审批（提交人不能审批自己的申请）", "员工"
+        return ToolError(f"本租户除你之外{who}。请先为本租户开通另一位{account}账号，"
+                         "或请顾客本人在对话里发起退款申请")
+    return ToolError(f"按退款策略不能办理（{policy.engine().label(reason)}）")
+
+
+def _enforce(ctx: ToolContext, gate: RefundGate, stage: str) -> None:
+    """Raise what the decision says at this stage. Nothing permitted and nothing forbade: the facts were missing
+    (the order or the amount could not be read), and the customer hears why."""
+    reason = gate.denial(stage)
+    if reason is not None:
+        raise _refusal_for(ctx, gate, reason)
+    if stage == "request" and gate.decision.effect == "deny" and not any(
+            r.startswith("deny.") for r in gate.decision.reasons):
+        raise gate.error or ToolError("按退款策略不能办理：没有一条策略允许这次调用（默认拒绝）")
+
+
+def _validated(ctx: ToolContext, args: dict[str, Any]) -> tuple[OrderInfo, float]:
+    """The order as the order system has it now, and the amount that would be paid: the policy's hard rules,
+    checked again when a call runs (the order may have changed while an application waited)."""
+    gate = _refund_gate(ctx, args, intent=False, approval=False)
+    _enforce(ctx, gate, "request")
+    return gate.order, gate.amount
+
+
 def _refund_precheck(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     done = _refund_for_approval(ctx)
     if done is not None:  # already filed; the order is held now, so skip re-validation
         return {"order_id": done.order_id, "amount": done.amount}
-    # Whatever the model makes of it, "先别退款" does not move money (N-091).
-    if ctx.approval_id is None and ctx.customer_text and _turned_down(ctx.customer_text):
-        raise ToolError("顾客这句话说了先不退，并没有申请退款，不能发起退款。"
-                        "请回答顾客的问题；顾客明确要求退款时再申请。")
-    order, amount = _validated(ctx, args)
-    # Nor does anything else that is not a plain request: a question, a condition, a plan, a line the rule cannot read. It costs the
-    # customer one reply, so they are told which one; a request is never refused for its wording.
-    if ctx.approval_id is None and (
-            (ctx.unconfirmed_order and order.order_id == ctx.unconfirmed_order.upper())
-            or (ctx.customer_text and not _is_a_request(ctx, order))):
-        names = "、".join(str(item.get("name", "")) for item in order.items)
-        message = f"需要为订单 {order.order_id}（{names}）申请退款吗？回复“是的”或“{order.order_id} 申请退款”即可提交"
-        raise RefundWaiting(message, {"error": message, "confirm_order": order.order_id})
-    # The customer named an amount and the call files another (N-218): "退我20就行" filed as the full ¥45, or
-    # "退我500" quietly capped at the ¥32 paid. A reviewer who reads only the card would pay what nobody asked for.
-    # Only the customer's own words, about one order: a member of staff writes "顾客要退 50，只能退 30", and in
-    # "SO…009 退我20，SO…010 全退" the 20 belongs to one of the two calls.
-    one_order = len({m.upper() for m in ORDER_ID_RE.findall(normalize_width(ctx.customer_text))}) <= 1
-    stated = (stated_refund_amount(ctx.customer_text)
-              if ctx.approval_id is None and not ctx.is_staff and one_order else None)
-    if stated is not None and abs(stated - amount) > 0.005:
-        if stated > order.amount + 1e-6:
-            raise ToolError(f"顾客要退 ¥{stated:.2f}，超过订单实付金额 ¥{order.amount:.2f}，最多可退 ¥{order.amount:.2f}；"
-                            f"请先和顾客确认是否按 ¥{order.amount:.2f} 申请，顾客确认后再提交")
-        raise ToolError(f"顾客要退 ¥{stated:.2f}，这次申请的是 ¥{amount:.2f}，金额不一致，没有提交；"
-                        "请按顾客说的金额申请，顾客改了金额时以顾客最新说的为准")
-    return {"order_id": order.order_id, "amount": amount}
+    gate = _refund_gate(ctx, args)
+    _enforce(ctx, gate, "request")
+    ctx.refund_gate = gate  # the approval step reads the same decision
+    return {"order_id": gate.order.order_id, "amount": gate.amount}
+
 
 
 def _refund_history(ctx: ToolContext, customer_id: int) -> tuple[int, float]:
@@ -583,29 +734,9 @@ def _refund_history(ctx: ToolContext, customer_id: int) -> tuple[int, float]:
     return int(count), float(total)
 
 
-def _velocity_reason(ctx: ToolContext, customer_id: int, amount: float) -> str | None:
-    """Velocity check, counted per customer (not per operator: a support agent filing on the
-    customer's behalf must not reset the counter). It stops "many small refunds". When it fires,
-    the reviewer gets the history that triggered it in the evidence package."""
-    settings, window = ctx.settings, ctx.settings.refund_window_days
-    count, total = _refund_history(ctx, customer_id)
-    reason = None
-    if count + 1 > settings.refund_window_max_count:
-        reason = (f"近 {window} 天已有 {count} 笔退款，超过自动审批的次数上限"
-                  f"（{settings.refund_window_max_count} 笔）")
-    elif total + amount > settings.refund_window_max_amount + 1e-6:
-        reason = (f"近 {window} 天累计退款将达到 ¥{total + amount:.2f}，"
-                  f"超过 ¥{settings.refund_window_max_amount:.2f} 的累计自动审批上限")
-    if reason:
-        ctx.add_evidence("tool", "refund_history", json.dumps({
-            "customer_id": customer_id, "window_days": window, "refund_count": count,
-            "refund_total": round(total, 2), "this_request": amount,
-        }, ensure_ascii=False))
-    return reason
-
-
 STAFF_FILED_REASON = "员工代顾客发起，需另一位员工审批"
 REJECTED_BEFORE_DAYS = 30
+
 
 
 def order_applications(db: Session, tenant_id: int, order_ids: list[str], before_id: int | None = None,
@@ -649,9 +780,16 @@ def _rejected_before(ctx: ToolContext, order_id: str) -> str | None:
     return None
 
 
-def reviewer_role(tenant: Tenant, amount: float) -> str:
-    """Who may approve a refund of this amount: above the tenant's threshold, an administrator only."""
-    return "admin" if amount > tenant.approval_admin_threshold else "agent"
+def reviewer_role(tenant: Tenant, amount: float, approver: str = "") -> str:
+    """Who may approve an application of this amount, as the policy says: an agent if one who did not file it would be
+    permitted to approve (deny.approver_tier), else an administrator. ``approver``: a tenant tool's declared one."""
+    requester, probe = policy.entity("User", "~requester", role="customer"), policy.entity("User", "~agent", role="agent")
+    application = policy.entity("Application", "~probe", requester={"__entity": policy.uid("User", "~requester")},
+                                amount=policy.fen(amount), approver=approver or "")
+    decision = policy.decide(("User", "~agent"), "approve", ("Application", "~probe"),
+                             {"approval_admin_threshold": policy.fen(tenant.approval_admin_threshold)},
+                             [requester, probe, application])
+    return "agent" if decision.effect == "allow" else "admin"
 
 
 def has_other_reviewer(db: Session, tenant: Tenant, requester_id: int, amount: float) -> bool:
@@ -664,55 +802,91 @@ def has_other_reviewer(db: Session, tenant: Tenant, requester_id: int, amount: f
     )).scalar_one() > 0
 
 
-def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | None:
-    # args went through _refund_precheck, so "amount" is the amount that would be paid.
-    amount = round(float(args["amount"]), 2)
-    order = _load_order(ctx, _order_id(args))
-    tenant, settings = ctx.tenant, ctx.settings
-    reasons: list[str] = []
-    customer_note = ""
-    # A member of staff filing for a customer is never paid out automatically (N-146): the automatic
-    # limit is the customer's own allowance, and spent by an agent nobody would see who moved the
-    # money. Another person approves it (the review queue refuses the requester), which leaves the
-    # requester on the approval and both names in the audit log.
-    if ctx.is_staff:
-        reasons.append(STAFF_FILED_REASON)
+def _review_reasons(ctx: ToolContext, gate: RefundGate) -> tuple[str, str]:
+    """The review.* reasons in words, in the policy's order: (for the reviewer, for the customer). Amount and
+    velocity limits are risk controls: the reviewer sees them, the customer does not."""
+    tenant, settings, order, amount = ctx.tenant, ctx.settings, gate.order, gate.amount
+    reasons, customer_note = [], ""
+    for reason in gate.decision.reasons:
+        if reason == "review.staff_filed":
+            # A member of staff filing for a customer is never paid out automatically (N-146): another person
+            # approves it (the review queue refuses the requester), which leaves both names in the audit log.
+            reasons.append(STAFF_FILED_REASON)
+        elif reason == "review.past_return_window":
+            # Between the no-reason and the quality window only a quality problem qualifies, and the tool cannot
+            # look at the customer's photos: a person decides, whatever the amount.
+            words = _words(order)
+            customer_note = (f"订单已{words['since']} {gate.days} 天，超过 {tenant.return_window_days} 天{words['first']}期限，"
+                             f"{tenant.quality_window_days} 天内{words['second']}")
+            reasons.append(customer_note)  # published policy, so the customer may hear it too
+        elif reason == "review.above_auto_limit":
+            reasons.append(f"超过自动审批额度 ¥{tenant.auto_refund_limit:.2f}")
+        elif reason == "review.velocity_count":
+            reasons.append(f"近 {settings.refund_window_days} 天已有 {gate.history[0]} 笔退款，超过自动审批的次数上限"
+                           f"（{settings.refund_window_max_count} 笔）")
+        elif reason == "review.velocity_total":
+            reasons.append(f"近 {settings.refund_window_days} 天累计退款将达到 ¥{gate.history[1] + amount:.2f}，"
+                           f"超过 ¥{settings.refund_window_max_amount:.2f} 的累计自动审批上限")
+        elif reason == "review.rejected_before":
+            reasons.append(gate.rejected)
+        elif reason.startswith("review."):
+            reasons.append(policy.engine().label(reason))
+    return "；".join(reasons), customer_note
 
-    # Between the no-reason and the quality window only a quality problem qualifies, and
-    # the tool cannot look at the customer's photos: a person decides, whatever the amount.
-    days = _days_since_delivery(order, datetime.now(timezone.utc))
-    if days is not None and days > tenant.return_window_days:
-        words = _words(order)
-        customer_note = (f"订单已{words['since']} {days} 天，超过 {tenant.return_window_days} 天{words['first']}期限，"
-                         f"{tenant.quality_window_days} 天内{words['second']}")
-        reasons.append(customer_note)  # published policy, so the customer may hear it too
+
+def _review_evidence(ctx: ToolContext, gate: RefundGate, window_only: bool = False) -> None:
+    """What the reviewer's card shows next to the reasons: the window, and the history that triggered a limit."""
+    if gate.decision.fired("review.past_return_window"):
+        tenant, order = ctx.tenant, gate.order
         ctx.add_evidence("tool", "after_sales_window", json.dumps({
             "order_id": order.order_id, "delivered_at": local_date(order.delivered_at, zone_of(tenant)),
-            "days_since_delivery": days, "return_window_days": tenant.return_window_days,
+            "days_since_delivery": gate.days, "return_window_days": tenant.return_window_days,
             "quality_window_days": tenant.quality_window_days,
         }, ensure_ascii=False))
+    if not window_only and (gate.decision.fired("review.velocity_count") or gate.decision.fired("review.velocity_total")):
+        ctx.add_evidence("tool", "refund_history", json.dumps({
+            "customer_id": gate.customer, "window_days": ctx.settings.refund_window_days,
+            "refund_count": gate.history[0], "refund_total": round(gate.history[1], 2), "this_request": gate.amount,
+        }, ensure_ascii=False))
 
-    limit = tenant.auto_refund_limit
-    if amount > limit:
-        reasons.append(f"超过自动审批额度 ¥{limit:.2f}")
-    else:
-        velocity = _velocity_reason(ctx, _customer_id(ctx, order), amount)
-        if velocity:
-            reasons.append(velocity)
-    rejected = _rejected_before(ctx, order.order_id)
-    if rejected:
-        reasons.append(rejected)
-    if reasons and ctx.is_staff and not has_other_reviewer(ctx.db, tenant, ctx.user.id, amount):
-        # Filed anyway it could only be rejected, and meanwhile it blocks the customer's own application.
-        if reviewer_role(tenant, amount) == "admin":
-            who, account = (f"没有其他管理员可以审批（金额 ¥{amount:.2f} 超过 ¥{tenant.approval_admin_threshold:.0f} "
-                            "的审批分级线，需要管理员通过，提交人不能审批自己的申请）"), "管理员"
-        else:
-            who, account = "没有其他员工可以审批（提交人不能审批自己的申请）", "员工"
-        raise ToolError(f"本租户除你之外{who}。请先为本租户开通另一位{account}账号，"
-                        "或请顾客本人在对话里发起退款申请")
-    # Amount and velocity limits are risk controls: the reviewer sees them, the customer does not.
-    return ApprovalNeed("；".join(reasons), customer_note) if reasons else None
+
+def _refund_policy(ctx: ToolContext, args: dict[str, Any]) -> ApprovalNeed | None:
+    # args went through _refund_precheck, so "amount" is the amount that would be paid; the decision is the one
+    # the precheck took (a direct call, as in the tests, takes it here).
+    gate = ctx.refund_gate
+    amount = round(float(args["amount"]), 2)
+    if gate is None or gate.order is None or gate.order.order_id != _order_id(args) or gate.amount != amount:
+        gate = _refund_gate(ctx, args)
+    denial = gate.denial("approval")
+    if denial == "deny.customer_has_no_account":  # found while counting the limits: the window was read before it
+        _review_evidence(ctx, gate, window_only=True)
+        raise _refusal_for(ctx, gate, denial)
+    if gate.decision.effect != "review" and denial is None:
+        return None
+    _review_evidence(ctx, gate)
+    if denial is not None:
+        raise _refusal_for(ctx, gate, denial)
+    reason, customer_note = _review_reasons(ctx, gate)
+    return ApprovalNeed(reason, customer_note)
+
+
+
+def _decide_under_lock(ctx: ToolContext, args: dict[str, Any]) -> None:
+    """The limits once more, with the customer's refunds counted under the lock (N-039): two requests that passed
+    the same decision concurrently must not both be paid. The first reason that holds goes to the reviewer (staff
+    filing; else the velocity limit, with the history that triggered it)."""
+    again = _refund_gate(ctx, args, intent=False)
+    if again.decision.effect == "allow":
+        return
+    if again.decision.effect == "review":
+        first = next((r for r in again.decision.reasons
+                      if r in ("review.staff_filed", "review.velocity_count", "review.velocity_total")), None)
+        if first is not None:
+            again = replace(again, decision=replace(again.decision, reasons=(first,)))
+        _review_evidence(ctx, again)
+        raise ApprovalRequired(ApprovalNeed(_review_reasons(ctx, again)[0]))
+    _enforce(ctx, again, "request")
+    raise _refusal_for(ctx, again, again.denial("approval") or "")
 
 
 def _settle(ctx: ToolContext, refund: Refund, status: str) -> dict[str, Any]:
@@ -770,12 +944,8 @@ def request_refund(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             # customer but not inserts that merely reference them (a ticket, a message); SQLite
             # already has one writer at a time. Every refund takes the order, then the customer.
             ctx.db.execute(select(User.id).where(User.id == customer_id).with_for_update(key_share=True))
-            if ctx.approval_id is None:  # an automatic refund: the velocity limit again, under the lock
-                if ctx.is_staff:  # the policy already said so; a handler called without it must not pay
-                    raise ApprovalRequired(ApprovalNeed(STAFF_FILED_REASON))
-                velocity = _velocity_reason(ctx, customer_id, amount)
-                if velocity:  # the savepoint's rollback removes the row: the order is free again
-                    raise ApprovalRequired(ApprovalNeed(velocity))
+            if ctx.approval_id is None:  # an automatic refund: the policy again, under the lock
+                _decide_under_lock(ctx, args)  # the savepoint's rollback removes the row: the order is free again
             refund.status = "pending"
     except IntegrityError:
         ctx.db.commit()  # keep what the run had pending, and end the transaction (SQLite's write lock)
@@ -1060,6 +1230,7 @@ def build_registry() -> ToolRegistry:
         precheck=_refund_precheck,
         approval=_refund_policy,
         executed=_refund_executed,
+        gated=True,
         repeat_on=("order_id",),
     ))
     registry.register(ToolDef(

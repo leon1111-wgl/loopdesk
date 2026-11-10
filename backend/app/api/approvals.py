@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit
 from ..admission import get_admission
-from ..agent import decision_log
+from ..agent import decision_log, policy
 from ..agent.business_tools import WITHDRAWN_COMMENT, end_paused_run, order_applications, reviewer_role
 from ..agent.runtime import REQUESTER_WITHDREW, ResumeError, decided_text
 from ..channels.feishu import FeishuClient
@@ -30,14 +30,24 @@ class DecisionIn(BaseModel):
     comment: str = Field(default="", max_length=500)
 
 
+def queue_decision(db: Session, a: Approval, principal: Principal, action: str) -> policy.Decision:
+    """The approval queue's rules, asked of the policy (backend/policies): four eyes and the approver tier."""
+    requester = db.get(User, a.requested_by) if a.requested_by else None
+    entities = [policy.entity("User", principal.user.id, role=principal.user.role),
+                policy.entity("Application", a.id, requester={"__entity": policy.uid("User", a.requested_by or "?")},
+                              amount=policy.fen(float((a.arguments or {}).get("amount") or 0)), approver=a.approver_role or "")]
+    if requester is not None and requester.id != principal.user.id:
+        entities.append(policy.entity("User", requester.id, role=requester.role))
+    return policy.decide(("User", principal.user.id), action, ("Application", a.id),
+                         {"approval_admin_threshold": policy.fen(principal.tenant.approval_admin_threshold)}, entities)
+
+
 def required_role(a: Approval, tenant: Tenant) -> str:
     """Who may approve: above the tenant's threshold, an administrator only. The four-eyes rule
     alone (no self-approval) left any single agent able to release any amount, because the
     requester is usually the customer. A tenant-declared tool's policy names the role itself (in its
-    own amounts and currency), and that is the one enforced."""
-    if a.approver_role:
-        return a.approver_role
-    return reviewer_role(tenant, float((a.arguments or {}).get("amount") or 0))
+    own amounts and currency), and that is the one enforced. Answered by the policy (deny.approver_tier)."""
+    return reviewer_role(tenant, float((a.arguments or {}).get("amount") or 0), a.approver_role or "")
 
 
 def approval_out(db: Session, a: Approval, refunds: dict[int, Refund] | None = None,
@@ -134,21 +144,24 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
     if approval.status != "pending":
         raise HTTPException(status.HTTP_409_CONFLICT, decided_text(approval.status, approval.comment))
     needed = required_role(approval, principal.tenant)
+    verdict = queue_decision(db, approval, principal, body.decision)
 
     def refuse(code: int, text: str) -> HTTPException:
         decision_log.approval_decision(principal.user.role, approval.requested_by == principal.user.id, body.decision,
                                        needed, code, text)
         return HTTPException(code, text)
 
-    if approval.requested_by == principal.user.id:
+    if verdict.fired("deny.four_eyes"):
         raise refuse(status.HTTP_403_FORBIDDEN, "不能审批自己发起的申请（四眼原则）")
     if body.decision == "reject" and not body.comment.strip():
         raise refuse(status.HTTP_400_BAD_REQUEST, "驳回必须填写原因：顾客会看到这条意见")
-    if body.decision == "approve" and needed == "admin" and principal.user.role != "admin":
+    if verdict.fired("deny.approver_tier"):
         threshold = principal.tenant.approval_admin_threshold
         if approval.approver_role:
             raise refuse(status.HTTP_403_FORBIDDEN, "按这个工具的审批策略，需要管理员审批（坐席可以驳回）")
         raise refuse(status.HTTP_403_FORBIDDEN, f"金额超过 ¥{threshold:.0f}，需要管理员审批（坐席可以驳回）")
+    if verdict.effect != "allow":  # deny by default: no policy permits this account to decide
+        raise refuse(status.HTTP_403_FORBIDDEN, "按审批策略，这个账号不能处理这笔申请")
     decision_log.approval_decision(principal.user.role, False, body.decision, needed, 200)
     services = get_services()
     # Resuming runs the agent (and may call the model): it takes a slot like a chat message (N-189).
@@ -188,7 +201,7 @@ def withdraw(approval_id: int, principal: Principal = Depends(require_staff), db
     stand in the way; nothing is sent to the customer (a rejection's comment would be). Customers withdraw
     their own in the chat, with a confirmation (N-145)."""
     approval = get_owned(db, Approval, approval_id, principal.tenant.id)
-    if approval.requested_by != principal.user.id:
+    if queue_decision(db, approval, principal, "withdraw_application").effect != "allow":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "只有提交人可以撤回这笔申请")
     if approval.status != "pending":
         raise HTTPException(status.HTTP_409_CONFLICT, decided_text(approval.status, approval.comment))
