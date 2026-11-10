@@ -141,15 +141,15 @@ def test_on_postgresql_the_customer_lock_queues_refunds_but_not_the_customers_ch
         db.commit()
 
     inside, release = threading.Event(), threading.Event()
-    real_velocity = business_tools._velocity_reason
+    real_recheck = business_tools._decide_under_lock
 
-    def hold_the_lock(ctx, customer_id, amount):  # the re-check runs under the customer's lock
+    def hold_the_lock(ctx, args, order):  # the policy's re-check runs under the customer's lock
         if threading.current_thread().name == "refund-first":
             inside.set()
             release.wait(10)
-        return real_velocity(ctx, customer_id, amount)
+        return real_recheck(ctx, args, order)
 
-    monkeypatch.setattr(business_tools, "_velocity_reason", hold_the_lock)
+    monkeypatch.setattr(business_tools, "_decide_under_lock", hold_the_lock)
     results: dict[str, dict] = {}
 
     def refund(order_id: str, lock_timeout: str | None):

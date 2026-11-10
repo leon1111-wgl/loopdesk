@@ -1,0 +1,79 @@
+// What the tool gateway tells the policy about a call. The backend (cedarpy) and the static demo (cedar-wasm) build the
+// same request from their own data; CI validates backend/policies/loopdesk.cedar against this schema on both engines.
+//
+// Money is in fen (1/100 yuan) as Long: no floating point in a decision about money.
+namespace LoopDesk {
+  // The tenant's limits, from its configuration (never from the model or the customer).
+  type Limits = {
+    auto_refund_limit: Long,         // up to this a refund needs no person
+    approval_admin_threshold: Long,  // above this only an administrator approves
+    return_window_days: Long,        // no-reason returns
+    last_refund_day: Long,           // after this no refund can be filed online at all
+    window_max_count: Long,          // refunds per customer in the velocity window before a person looks
+    window_max_total: Long,          // and their total
+  };
+
+  // The order and the request, read from the order system and the ledger. Absent when the order could not be read
+  // (unknown, not this customer's, or an amount that is not a number): then nothing permits the call.
+  type RefundFacts = {
+    amount: Long,                    // what this call would pay
+    paid: Long,                      // what the customer paid
+    refundable_status: Bool,         // delivered / paid / shipped, as the order system says
+    online_refund: Bool,             // false: coins, digital albums, app-store billing
+    days_since_delivery?: Long,      // whole days at the time of the application; absent before delivery
+    awaiting_review: Bool,           // an application for this order already waits for a person
+    unconfirmed: Bool,               // the order was carried over from an earlier turn, not named in this one
+    item_mismatch: Bool,             // the message names an item that is not on this order (static demo)
+    stated_amount?: Long,            // the amount the customer wrote, when they wrote one for this order
+    refunds_in_window: Long,         // the customer's refunds in the velocity window
+    refunded_in_window: Long,        // and their total
+    rejected_recently: Bool,         // a person rejected an application for this order in the last 30 days
+    customer_has_account: Bool,      // staff filing for a customer this system knows
+  };
+
+  // Whether someone other than the requester could approve (four eyes), for each tier.
+  type Reviewers = { other_admin: Bool, other_staff: Bool };
+
+  entity User = { role: String };    // customer | agent | admin
+  entity Order;
+  entity Tool = { risk: String };    // write | high (money)
+  entity Application = {
+    requester: User,
+    amount: Long,
+    approver: String,                // "" for a refund (the tier decides); a tenant tool's declared approver otherwise
+  };
+
+  action request_refund appliesTo {
+    principal: User,
+    resource: Order,
+    context: {
+      reviewed: Bool,                // carrying out a person's approval
+      customer_declined: Bool,       // the customer said not to refund (or made it conditional, static demo)
+      customer_asked: Bool,          // the message is a plain request in the closed grammar, or a yes to a direct question
+      claimed_authority: Bool,       // the message claims a notice, an approval or a staff role (textutil.claims_authority)
+      limits: Limits,
+      reviewers: Reviewers,
+      refund?: RefundFacts,
+    }
+  };
+
+  // The channel gateway: a money movement on the voice channel needs the customer's spoken yes to the read-back.
+  action move_money appliesTo {
+    principal: User,
+    resource: Tool,
+    context: { channel: String, reviewed: Bool, spoken_confirmation: Bool }
+  };
+
+  action withdraw_refund_request, create_ticket, handoff_to_human, call_tenant_tool appliesTo {
+    principal: User,
+    resource: Tool,
+    context: { reviewed: Bool }
+  };
+
+  // The approval queue.
+  action approve, reject, withdraw_application appliesTo {
+    principal: User,
+    resource: Application,
+    context: { approval_admin_threshold: Long }
+  };
+}

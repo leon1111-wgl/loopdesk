@@ -79,8 +79,16 @@ let engine: DemoEngine | null = null;
 let EngineError: typeof EngineErrorType | null = null;
 let engineLoading: Promise<DemoEngine> | null = null;
 
+/** The engine's code, and the policy engine every change of data asks (cedar-wasm). A policy engine that fails to load
+ * leaves the chat answering and every money call refused (deny by default), and the answer says so. */
+async function engineModule() {
+  const module = await import("./engine");
+  await module.loadCedar().catch((error) => console.warn("cedar-wasm did not load; money calls are refused", error));
+  return module;
+}
+
 function loadEngine(): Promise<DemoEngine> {
-  engineLoading ??= import("./engine").then((module) => {
+  engineLoading ??= engineModule().then((module) => {
     EngineError = module.EngineError;
     engine = new module.DemoEngine((slug) => recordedTenant(slug));
     return engine;
@@ -94,7 +102,7 @@ function loadEngine(): Promise<DemoEngine> {
 /** A separate engine for the hidden-goal game (pages/SimulationsPage.tsx): its own copy of the data, the same limits as this page, so
  * a round starts from the seed state and is graded on its own, whatever the visitor did elsewhere in the tab. */
 export async function freshEngine(): Promise<DemoEngine> {
-  const module = await import("./engine");
+  const module = await engineModule();
   return new module.DemoEngine((slug) => recordedTenant(slug));
 }
 

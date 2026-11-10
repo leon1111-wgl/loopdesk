@@ -7,6 +7,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+from ..agent import policy
 from ..agent.tools import ToolContext, ToolDef, ToolError, ToolRegistry
 
 _PUNCT = re.compile(r"[\s，,。.！!？?~～、…]+")
@@ -110,6 +111,11 @@ class Confirmations:
         with self.lock:
             self.allowed.clear()
 
+    def peek(self, tool: str, args: dict) -> bool:
+        """Whether the customer confirmed exactly this call, without using the confirmation up."""
+        with self.lock:
+            return _key(tool, args.get("order_id"), args.get("amount")) in self.allowed
+
     def take(self, tool: str, args: dict) -> bool:
         key = _key(tool, args.get("order_id"), args.get("amount"))
         with self.lock:
@@ -130,6 +136,19 @@ class Confirmations:
             self.pending = None
 
 
+def channel_decision(ctx: ToolContext, tool: str, confirmed: bool) -> policy.Decision:
+    """The channel rule, asked of the policy (deny.voice_unconfirmed in backend/policies/loopdesk.cedar)."""
+    user = getattr(ctx, "user", None)
+    who = (user.id, user.role) if user is not None else ("voice-caller", "customer")
+    decision = policy.decide(("User", who[0]), "move_money", ("Tool", tool),
+                             {"channel": "voice", "reviewed": ctx.approval_id is not None, "spoken_confirmation": confirmed},
+                             [policy.entity("User", who[0], role=who[1]), policy.entity("Tool", tool, risk="high")])
+    log = getattr(ctx, "policy_log", None)
+    if log is not None:
+        log.append(decision)
+    return decision
+
+
 def gate_registry(base: ToolRegistry, confirmations: Confirmations, utterance: Callable[[], str]) -> ToolRegistry:
     """The same tools, with every money-moving tool (risk "high") behind a spoken confirmation.
     The check sits in the precheck, after the tool's own validation and normalisation, so what is
@@ -145,9 +164,11 @@ def gate_registry(base: ToolRegistry, confirmations: Confirmations, utterance: C
         def precheck(ctx: ToolContext, args: dict, tool: ToolDef = tool) -> dict | None:
             extra = tool.precheck(ctx, args) if tool.precheck else None
             normalized = {**args, **(extra or {})}
-            if ctx.approval_id is None and not confirmations.take(tool.name, normalized):
-                confirmations.request(tool.name, normalized, utterance())
-                raise ToolError(VOICE_CONFIRM_ERROR)
+            if ctx.approval_id is None:
+                if channel_decision(ctx, tool.name, confirmations.peek(tool.name, normalized)).effect != "allow":
+                    confirmations.request(tool.name, normalized, utterance())
+                    raise ToolError(VOICE_CONFIRM_ERROR)
+                confirmations.take(tool.name, normalized)
             return extra
 
         registry.register(replace(tool, precheck=precheck))

@@ -244,3 +244,42 @@
   .sim-diff td { word-break: break-all; }
   .sim-mark-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }
+
+/* 审批策略 (pages/PolicyPage.tsx): the policy's rules on the left, what flips on the right */
+.policy-intro p { margin: 0; line-height: 1.8; }
+.policy-intro a { margin-left: 0; white-space: normal; }
+.policy-grid { display: grid; grid-template-columns: minmax(0, 380px) minmax(0, 1fr); gap: 16px; align-items: start; }
+.policy-side, .policy-result { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; }
+.policy-side-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.policy-side p, .policy-result p { margin: 0; }
+.policy-limits, .policy-rules { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.policy-limits legend, .policy-rules legend { font-weight: 600; color: var(--text-2); margin-bottom: 4px; padding: 0; }
+.policy-limits .field { display: grid; grid-template-columns: minmax(0, 1fr) 120px; align-items: center; gap: 8px; }
+.policy-rule { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 4px 8px; padding: 6px 0; border-top: 1px solid var(--border-2); }
+.policy-rule-main { display: flex; align-items: flex-start; gap: 8px; min-width: 0; cursor: pointer; }
+.policy-rule-main input { margin-top: 3px; flex-shrink: 0; }
+.policy-rule-main input:disabled { cursor: not-allowed; }
+.policy-rule-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13px; line-height: 1.5; }
+.policy-rule-text .mono { overflow-wrap: anywhere; }
+.policy-lock { color: var(--text-3); flex-shrink: 0; margin-top: 3px; }
+.policy-code { grid-column: 1 / -1; margin: 0; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border-2); border-radius: var(--radius); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.policy-actions { flex-wrap: wrap; }
+.policy-progress { width: 100%; accent-color: var(--primary-solid); }
+.policy-summary { line-height: 1.8; }
+.policy-summary .faint { display: block; }
+.policy-flips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.policy-flip { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--surface); min-width: 0; }
+.policy-flip p { margin: 0; }
+.policy-flip-title { min-width: 0; font-weight: 500; }
+.policy-diff th[scope="row"] { font-weight: 500; white-space: nowrap; }
+.policy-diff td { overflow-wrap: anywhere; }
+.policy-why ul { margin: 4px 0 0; padding-left: 18px; line-height: 1.8; }
+.policy-quiet summary { cursor: pointer; padding: 4px 0; }
+.policy-quiet .policy-flips { margin-top: 8px; }
+@media (max-width: 860px) {
+  .policy-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 560px) {
+  .policy-diff th, .policy-diff td { padding: 8px 6px; font-size: 12px; }
+  .policy-limits .field { grid-template-columns: minmax(0, 1fr) 96px; }
+}

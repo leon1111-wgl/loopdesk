@@ -74,6 +74,9 @@ class ToolContext:
     reranker: Any = None  # app.rag.rerank.Reranker, when one is configured (W5)
     tools: "ToolRegistry | None" = None  # the tools of this tenant's agent (app/tooling/toolset.py)
     commerce: Any = None  # the Commerce the run uses: routes tenant tools in the sandbox (app/integrations)
+    # The policy decisions (app/agent/policy.py) taken during the current tool call: the runtime writes each as a span.
+    policy_log: list[Any] = field(default_factory=list)
+    refund_gate: Any = None  # the refund precheck's decision, read again by the approval step of the same call
 
     def __post_init__(self) -> None:
         if self.orders is None:
@@ -141,6 +144,9 @@ class ToolDef:
     # The arguments that make a write the same one again later in a run (N-201): a refund on an order
     # already refunded is a repeat whatever its reason says. None compares every argument.
     repeat_on: tuple[str, ...] | None = None
+    # Its precheck asks the policy itself (request_refund); every other tool that changes data is decided by the
+    # runtime's generic gate (deny by default) before its precheck.
+    gated: bool = False
     # Tenant-declared tools (app/tooling): where it comes from, what people call it, how an
     # amount in its arguments is written ("HKD 120.00"), and the offline model's hints.
     source: str = "builtin"  # builtin | http | mcp

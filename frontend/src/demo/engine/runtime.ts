@@ -7,7 +7,8 @@ import { INJECTION, M, PII, T, W, pack, type TenantConfig } from "./pack";
 import { compose, mentionsRefund, nextCall, readsAsOrder, refundRequested, theOneOrder, understood, type Results, type Turn } from "./planner";
 import { ANSWERS_IN_CHINESE, DECLINE_TEXT, NEW_TICKET, NOTHING_FILED, NOT_FOR_A_PERSON, NOT_GRANTED, NO_ORDERS_HERE, NO_TICKET_LOOKUP, asksAboutTickets, asksIfHuman, asksWhatItIs, canDo, declines, holdsOff, inEnglish, isCanDo, nextSteps, onlyAcknowledges } from "./reading";
 import { search } from "./retrieval";
-import { addEvidence, availableTools, queueNotice, runTool, type ApprovalRow, type Evidence, type ToolContext, type World, SIMULATED } from "./tools";
+import { cedarVersion } from "./policy";
+import { addEvidence, availableTools, queueNotice, runTool, type ApprovalRow, type Evidence, type Outcome, type ToolContext, type World, SIMULATED } from "./tools";
 import { asksForPerson, canonical, classifyReply, extractNumbers, findAll, handoffCancelled, isRefusal, money, normalizeWidth, overlapRecall, refundWithdrawRequested, splitSentences, stripCitations, sub, withdrawConfirmed } from "./text";
 
 const LEADING = pack.texts.leading;
@@ -263,6 +264,12 @@ function span(kindName: string, name: string, input: Record<string, unknown>, ou
   return { id: spanId, kind: kindName, name, input, output, status, latency_ms: started === undefined ? 0 : Math.max(0, Math.round(performance.now() - started)), prompt_tokens: 0, completion_tokens: 0 };
 }
 
+/** Each policy decision of a tool call as its own span (app/agent/runtime.Runtime._policy_spans). */
+function policySpans(outcome: Outcome): SpanRow[] {
+  return (outcome.decisions ?? []).map((d) => span("policy", `cedar:${d.action}`, { context: d.context },
+    { engine: `cedar-wasm ${cedarVersion() ?? "(not loaded)"}`, action: d.action, effect: d.effect, policies: d.reasons, errors: d.errors, micros: d.micros }, d.effect === "deny" ? "rejected" : "ok"));
+}
+
 function evidenceItem(e: Evidence): EvidenceItem {
   return e as unknown as EvidenceItem;
 }
@@ -361,7 +368,7 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     const toolStart = performance.now();
     const outcome = runTool(world, ctx, call.name, call.arguments);
     const output = outcome.kind === "result" ? outcome.output : {};
-    run.spans.push(span("tool", call.name, { arguments: call.arguments, risk: "write" }, { output }, "ok", toolStart));
+    run.spans.push(span("tool", call.name, { arguments: call.arguments, risk: "write" }, { output }, "ok", toolStart), ...policySpans(outcome));
     events.push({ type: "tool_result", id: call.id, name: call.name, output, is_error: false });
     noteHandoff(world, conversation, output);
     events.push(...handoffEvent(conversation));
@@ -541,14 +548,14 @@ export function runTurn(options: TurnOptions): AgentEvent[] {
     const outcome = runTool(world, ctx, toolName, args);
     if (outcome.kind === "approval") {
       const approval = fileApproval(world, ctx, run, toolName, callId, outcome.args, outcome.reason, outcome.approverRole, turnText);
-      run.spans.push(span("tool", toolName, { arguments: args, risk: "high" }, { approval_required: true, reason: outcome.reason, customer_note: outcome.customerNote, arguments: outcome.args }, "ok", toolStart));
+      run.spans.push(span("tool", toolName, { arguments: args, risk: "high" }, { approval_required: true, reason: outcome.reason, customer_note: outcome.customerNote, arguments: outcome.args }, "ok", toolStart), ...policySpans(outcome));
       const shown = role === "customer" ? outcome.customerNote : outcome.reason;
       events.push({ type: "approval_required", approval_id: approval.id, tool: toolName, arguments: outcome.args, reason: shown });
       noteOrder(conversation, planned);
       return finish(preface + pausedText(ctx, toolName, outcome.args, shown), "waiting_approval", false, { approval_id: approval.id });
     }
     (results[toolName] ??= []).push(outcome.output);
-    run.spans.push(span("tool", toolName, { arguments: args, risk: toolName === "request_refund" ? "high" : "read" }, { output: outcome.output }, outcome.isError ? "rejected" : "ok", toolStart));
+    run.spans.push(span("tool", toolName, { arguments: args, risk: toolName === "request_refund" ? "high" : "read" }, { output: outcome.output }, outcome.isError ? "rejected" : "ok", toolStart), ...policySpans(outcome));
     events.push({ type: "tool_result", id: callId, name: toolName, output: outcome.output, is_error: outcome.isError });
     if (toolName === "handoff_to_human") noteHandoff(world, conversation, outcome.output);
     if (toolName === "withdraw_refund_request" && outcome.output.confirm_required) conversation.withdrawOffer = outcome.output;
@@ -639,6 +646,7 @@ export function resumeApproval(world: World, approval: ApprovalRow, decision: "a
     const outcome = runTool(world, ctx, approval.tool, approval.args);
     const output = outcome.kind === "result" ? outcome.output : {};
     text = String(output.message ?? output.error ?? `${SIMULATED}您的申请已通过人工审核并处理完成。`);
+    run?.spans.push(...policySpans(outcome));
   } else {
     text = `${SIMULATED}${label}申请未通过人工审核。审核意见：${comment || "无"}。${pack.texts.mock.REJECTED_NEXT_STEP}`;
   }

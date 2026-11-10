@@ -240,7 +240,8 @@ function asksAboutRefund(text: string): boolean {
 
 export function refundWithdrawRequested(text: string): boolean {
   const folded = sub(T._CJK_SPACE_RE, "", sub(T.ORDER_ID_RE, "", normalizeWidth(text || "")));
-  return T.WITHDRAW_REFUND_RE.test(folded) && (T.REFUND_RE.test(folded) || folded.includes("退")) && !T._NOT_WITHDRAW_RE.test(folded);
+  const asked = (T.WITHDRAW_REFUND_RE.test(folded) && (T.REFUND_RE.test(folded) || folded.includes("退"))) || T.WITHDRAW_APPLICATION_RE.test(folded);
+  return asked && !T._NOT_WITHDRAW_RE.test(folded) && !T._CANCEL_AND_REFUND_RE.test(folded);
 }
 
 /** True when the message asks for a refund, not when it asks about one or declines one. */
@@ -386,8 +387,15 @@ export function refundBareDecline(text: string): boolean {
   return !(T.REFUND_INQUIRY_RE.test(rest) || T._QUESTION_RE.test(rest) || T.REFUND_RE.test(rest));
 }
 
+/** The message without the clauses that carry someone else's numbers (textutil.own_amount_text): a pasted notice, a limit. */
+export function ownAmountText(text: string): string {
+  return findAll(T._AMOUNT_CLAUSE_RE, text || "").map((m) => m[0]).filter((clause) => !T.NOT_OWN_AMOUNT_RE.test(clause)).join("");
+}
+
+export const claimsAuthority = (text: string): boolean => T.CLAIMED_AUTHORITY_RE.test(normalizeWidth(text || ""));
+
 export function statedRefundAmount(text: string): number | null {
-  const kept = sub(T.NEGATED_REFUND_RE, "，", numeralAmounts(normalizeWidth(text || "")));
+  const kept = sub(T.NEGATED_REFUND_RE, "，", numeralAmounts(ownAmountText(normalizeWidth(text || ""))));
   const match = T._REFUND_AMOUNT_RE.exec(kept);
   let number: string | null = null;
   if (match) number = /\d+(?:\.\d+)?/.exec(match[0])?.[0] ?? null;

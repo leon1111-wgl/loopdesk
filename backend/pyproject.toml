@@ -1,6 +1,6 @@
 [project]
 name = "loopdesk"
-version = "1.1.0"
+version = "1.2.0"
 description = "证据优先、会自我进化的企业客服 Agent 平台"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,6 +16,7 @@ dependencies = [
     "pypdf>=4.2",
     "jieba>=0.42",
     "pypinyin>=0.50",
+    "cedarpy==4.12.2",  # Cedar 4.12.0, the engine the static demo's @cedar-policy/cedar-wasm 4.12.0 runs (backend/policies)
 ]
 
 [project.optional-dependencies]

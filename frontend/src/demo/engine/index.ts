@@ -3,12 +3,15 @@
  * and the runs it made, in the shape the console's API returns them. replay.ts sends it every question nobody recorded.
  */
 import type { AgentEvent } from "../../types";
+import { noteApprovalDecision } from "./decisionlog";
+import { decide, entity, fen, NOT_LOADED, uid, type Decision } from "./policy";
 import { pack, type TenantConfig } from "./pack";
 import { resumeApproval, runTurn, type EngineConversation, type Message, type ModelChoice, type RunRecord } from "./runtime";
 import { isRefusal } from "./text";
 import { reviewerRole, World, type ApprovalRow, type TicketRow } from "./tools";
 
 export type { ModelChoice } from "./runtime";
+export { cedarLoaded, cedarVersion, loadCedar, policyEngine } from "./policy";
 
 type Body = Record<string, unknown>;
 
@@ -123,7 +126,17 @@ export class DemoEngine {
   }
 
   private requiredRole(a: ApprovalRow): "admin" | "agent" {
-    return a.approverRole ?? reviewerRole(this.config(a.tenant), Number(a.args.amount ?? 0));
+    return reviewerRole(this.config(a.tenant), Number(a.args.amount ?? 0), a.approverRole ?? "", this.world.policy);
+  }
+
+  /** The approval queue's rules, asked of the policy (backend/policies): four eyes and the approver tier. */
+  private queueDecision(a: ApprovalRow, email: string, action: string): Decision {
+    const account = pack.accounts[email];
+    const requester = pack.accounts[a.requester];
+    const entities = [entity("User", email, { role: account.role }),
+      entity("Application", a.id, { requester: { __entity: uid("User", a.requester) }, amount: fen(Number(a.args.amount ?? 0)), approver: a.approverRole ?? "" })];
+    if (a.requester !== email) entities.push(entity("User", a.requester, { role: requester?.role ?? "customer" }));
+    return decide(this.world.policy, ["User", email], action, ["Application", a.id], { approval_admin_threshold: fen(this.config(a.tenant).approval_admin_threshold) }, entities);
   }
 
   approvals(tenant: string, filter: string): Body[] {
@@ -137,12 +150,20 @@ export class DemoEngine {
     const approval = this.world.approvals.find((a) => a.id === id && a.tenant === account.tenant && !a.recorded);
     if (!approval) throw new EngineError(404, "审批单不存在");
     if (approval.status !== "pending") throw new EngineError(409, "这笔申请已经处理过了");
-    if (approval.requester === email) throw new EngineError(403, "不能审批自己发起的申请（四眼原则）");
-    if (decision === "reject" && !comment.trim()) throw new EngineError(400, "驳回必须填写原因：顾客会看到这条意见");
+    const needed = this.requiredRole(approval);
+    const verdict = this.queueDecision(approval, email, decision === "approve" ? "approve" : "reject");
+    const refuse = (status: number, text: string) => {
+      noteApprovalDecision(account.role, approval.requester === email, decision, needed, status, text);
+      return new EngineError(status, text);
+    };
+    if (verdict.reasons.includes("deny.four_eyes")) throw refuse(403, "不能审批自己发起的申请（四眼原则）");
+    if (decision === "reject" && !comment.trim()) throw refuse(400, "驳回必须填写原因：顾客会看到这条意见");
     const config = this.config(account.tenant);
-    if (decision === "approve" && this.requiredRole(approval) === "admin" && account.role !== "admin") {
-      throw new EngineError(403, approval.approverRole ? "按这个工具的审批策略，需要管理员审批（坐席可以驳回）" : `金额超过 ¥${Math.round(config.approval_admin_threshold)}，需要管理员审批（坐席可以驳回）`);
+    if (verdict.reasons.includes("deny.approver_tier")) {
+      throw refuse(403, approval.approverRole ? "按这个工具的审批策略，需要管理员审批（坐席可以驳回）" : `金额超过 ¥${Math.round(config.approval_admin_threshold)}，需要管理员审批（坐席可以驳回）`);
     }
+    if (verdict.effect !== "allow") throw refuse(403, verdict.errors.includes(NOT_LOADED) ? `${NOT_LOADED}，这次没有处理` : "按审批策略，这个账号不能处理这笔申请");
+    noteApprovalDecision(account.role, false, decision, needed, 200);
     const conversation = approval.conversationId === null ? undefined : this.conversations.get(approval.conversationId);
     const { text } = resumeApproval(this.world, approval, decision === "approve" ? "approve" : "reject", { email, name: account.name, role: account.role as "admin" | "agent" }, comment, config, conversation, this.runs.get(approval.runId));
     return { approval: this.approvalBody(approval), final: { text }, delivery: null };
@@ -153,7 +174,7 @@ export class DemoEngine {
     if (account.role === "customer") throw new EngineError(403, "只有员工可以在审批队列里撤回");
     const approval = this.world.approvals.find((a) => a.id === id && a.tenant === account.tenant && !a.recorded);
     if (!approval) throw new EngineError(404, "审批单不存在");
-    if (approval.requester !== email) throw new EngineError(403, "只有提交人可以撤回这笔申请");
+    if (this.queueDecision(approval, email, "withdraw_application").effect !== "allow") throw new EngineError(403, "只有提交人可以撤回这笔申请");
     if (approval.status !== "pending") throw new EngineError(409, "这笔申请已经处理过了");
     approval.status = "withdrawn";
     approval.comment = "提交人已撤回";

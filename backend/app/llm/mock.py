@@ -17,9 +17,10 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..textutil import (CANCEL_ORDER_RE, NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, OTHER_ORDER,
+from ..textutil import (_CANCEL_AND_REFUND_RE, CANCEL_ORDER_RE, CANCEL_TALK_RE, NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, OTHER_ORDER,
                         REFUND_APPLY_RE, REFUND_RE, cancel_requested, handoff_cancelled,
-                        estimate_tokens, expand_query, fix_typos, normalize_width, other_question, reads_as_request, refund_bare_decline,
+                        estimate_tokens, expand_query, fix_typos, normalize_width, other_question, own_amount_text, reads_as_request,
+                        refund_bare_decline,
                         refund_requested, refund_withdraw_requested, stated_refund_amount, withdraw_confirmed,
                         split_sentences, strip_citations, token_set)
 from ..rag.chunking import CUT_MARK
@@ -49,6 +50,15 @@ _NOT_RECEIVED = re.compile(r"签收了?.{0,8}(?:没|未)(?:有)?收到|没收到
 _CHANGE_INFO = re.compile(r"(?:改|修改|更改|换)(?:个|一下|下)?(?:收货|收件)?(?:地址|电话|手机号?|收件人)|地址(?:写错|填错)|搬家")
 _CANCEL = CANCEL_ORDER_RE
 _REPAIR = re.compile(r"维修|修理|返修|修一下|修好|换(?:个|一个)?新的?|换货")
+# "想换一个" next to a fault is an exchange too (simulations, dev card leon_mug_replace): on its own it may be an address.
+_SWAP = re.compile(r"换(?:个|一个|一件|一只|一台)(?!地址|号码|手机号|电话|收货|颜色|尺码)")
+# Words that say not this order, said of one of two ("抱枕 SO1 想退，机器人 SO2 别退"): it gets no offer.
+_NOT_THIS_ONE = re.compile(r"(?:先|就|还是)?(?<!退)(?:别|不要|不用|不需要|先不|暂时不|暂不|不)(?:给我|帮我)?退(?!货)")
+# What a number shares with the next one: "SO2 和 SO1 都退了" asks of both.
+_ONLY_A_LINK = re.compile(r"[\s，,、]*(?:和|与|跟|及|以及|还有)?[\s，,、]*")
+_REFUND_FAILED = re.compile(r"退款(?:失败|没成功|不成功|被退回|退回来了)|退(?:款)?不成功|没退成功")
+REFUND_FAILED_TEXT = ("知识库里没有写退款失败后怎么处理。{status}如果退款没有成功或被退回，可以回复“转人工”，"
+                      "人工客服会帮您核实。")
 # What is wrong with it: a repair or exchange asked as a question ("能换个新的吗") is still a report then.
 _FAULTY = re.compile(r"坏|碎|破|裂|漏|没声|不响|开线|划痕|瑕疵|质量问题|有问题|不能用|用不了|连不上|打不开|开不了|没反应|故障")
 # Damage the customer caused is not a quality problem (N-200).
@@ -632,7 +642,7 @@ class MockLLM(LLMProvider):
                     return "search_knowledge", {"query": "退款 到账 工作日"}
                 return None
             items = _item_names(order)
-            if _CANCEL.search(text) and not _mentions_refund(text, items):  # N-063: an unshipped order is cancelled by refunding it
+            if (_CANCEL.search(text) or CANCEL_TALK_RE.search(text)) and not _mentions_refund(text, items):  # N-063: an unshipped order is cancelled by refunding it
                 if (cancel_requested(text, items) and order.get("status") == "paid" and order.get("refundable")
                         and can("request_refund")):
                     return "request_refund", {"order_id": order_id, "amount": float(order.get("amount", 0)),
@@ -641,7 +651,8 @@ class MockLLM(LLMProvider):
             # "我买的收纳盒碎了": a fault on the order it found is a report, ticket words or not (N-223, review)
             reported = ((_TICKET.search(text) and (_REPORTED.search(text) or not _ASKING.search(text.strip())))
                         or (not ORDER_ID_RE.search(text) and fault_report(text)))
-            repair = _REPAIR.search(text) and (_FAULTY.search(text) or not _ASKING.search(text.strip()))
+            repair = ((_REPAIR.search(text) and (_FAULTY.search(text) or not _ASKING.search(text.strip())))
+                      or (_SWAP.search(text) and _FAULTY.search(text) and not _NOT_FAULTY.search(text)))
             if (repair or reported) and not refund_requested(text, items):  # N-198: a repair or an exchange is a ticket
                 if can("search_knowledge"):
                     return "search_knowledge", {"query": "质量问题 退货 换货"}
@@ -666,7 +677,7 @@ class MockLLM(LLMProvider):
                     # A gullible model takes the user's number: the one after 退 ("899 块买的 退 100 块"), never a declined one.
                     # "退我20就行" names 20 without a unit (N-218).
                     stated = stated_refund_amount(text)
-                    amount_match = None if stated is not None else _AMOUNT.search(NEGATED_REFUND_RE.sub("，", text))
+                    amount_match = None if stated is not None else _AMOUNT.search(NEGATED_REFUND_RE.sub("，", own_amount_text(text)))
                     amount = (stated if stated is not None
                               else float(re.search(r"\d+(?:\.\d+)?", amount_match.group()).group()) if amount_match
                               else round(float(order.get("amount", 0)) / 2, 2) if _HALF.search(text)
@@ -771,14 +782,23 @@ class MockLLM(LLMProvider):
                 if len(orders) == 1 and _mentions_refund(text) and not order.get("refundable", False):
                     parts.append(f"该订单暂不能发起退款：{order.get('refund_note', '')}。")
         clauses = order_clauses(text) if len(orders) > 1 else {}
-        for order in orders if len(orders) > 1 else []:  # "另外 SO2 杯子能退吗": that order's refund answer (N-094)
+
+        def asked_of(order: dict[str, Any]) -> str:  # its own words; "SO2 和 SO1 都退了": SO2 shares SO1's
             clause = clauses.get(order.get("order_id"), "")
-            if not order.get("error") and _mentions_refund(clause) and not refund_requested(text):
+            return text if _ONLY_A_LINK.fullmatch(ORDER_ID_RE.sub("", clause)) else clause
+
+        # "另外 SO2 杯子能退吗": that order's refund answer (N-094); not for one the customer said not to refund (probe of 1.1.0)
+        wanted = [o for o in (orders if len(orders) > 1 else []) if not o.get("error") and _mentions_refund(asked_of(o))
+                  and not _NOT_THIS_ONE.search(asked_of(o))]
+        # One order asked for, the other only talked about ("SO2 物流太慢了。SO1 退款。"): offered, not "one at a time"
+        only_one = len(wanted) == 1 and not any(_mentions_refund(asked_of(o)) for o in orders if o is not wanted[0])
+        for order in wanted:
+            if not refund_requested(text) or only_one:
                 parts.append(f"订单 {order['order_id']} 暂不能发起退款：{order.get('refund_note', '')}。"
                              if not order.get("refundable") else
                              (f"订单 {order['order_id']}：{order['refund_note']}。" if order.get("refund_note") else "")
                              + f"如需为订单 {order['order_id']} 申请退款，回复“{order['order_id']} 申请退款”即可。")
-        if len(orders) > 1 and refund_requested(text):
+        if len(orders) > 1 and refund_requested(text) and not only_one:
             parts.append(MULTI_REFUND_TEXT)
         elif len(orders) > 1 and loose_refund(text):
             parts.append(ASK_WHICH_REFUND_TEXT)
@@ -808,7 +828,9 @@ class MockLLM(LLMProvider):
         knowledge = last("search_knowledge")
         self_damage = bool(_SELF_DAMAGE.search(text))
         eta = bool(shipments) and bool(_ETA.search(text))
-        rush = bool(orders) and not shipments and bool(_RUSH.search(text))
+        cancel_and_refund = bool(_CANCEL_AND_REFUND_RE.search(ORDER_ID_RE.sub("", normalize_width(text))))  # "还没发货，想取消退款"
+        cancelling = bool(_CANCEL.search(text) or CANCEL_TALK_RE.search(text)) or cancel_and_refund
+        rush = bool(orders) and not shipments and bool(_RUSH.search(text)) and not cancelling
         # A question about refunds on one of the customer's orders, answered without filing one (N-091).
         inquiry = (len(orders) == 1 and not refund and not orders[0].get("error") and orders[0].get("refundable")
                    and _mentions_refund(text, _item_names(orders[0])) and not refund_requested(text, _item_names(orders[0])))
@@ -828,11 +850,17 @@ class MockLLM(LLMProvider):
                 elif not parts and not ticket:
                     down = knowledge.get("error") or knowledge.get("degraded")
                     parts.append(SEARCH_DOWN if down else REFUSAL)
+        if inquiry and _REFUND_FAILED.search(text) and not any("失败" in p for p in parts):
+            # "SO… 退款失败怎么办": the documents say nothing about it; say so, and what this order's ledger shows (probe of 1.1.0)
+            ledger = orders[0].get("refunds") or []
+            parts.append(REFUND_FAILED_TEXT.format(status=f"订单 {orders[0]['order_id']} 目前没有退款记录。" if not ledger else ""))
         if inquiry:
             oid = orders[0]["order_id"]
             # Only a customer who said "别退 / 不退" is told nothing will be filed; otherwise ask (N-126): an angry
             # customer misread as asking is offered to apply, not told "不会为您发起退款".
-            if NEGATED_REFUND_RE.search(normalize_width(text)):
+            if cancel_and_refund and orders[0].get("status") == "paid":  # to cancel, not to take a refund back
+                parts.append(f"如需取消这个订单，回复“{oid} 帮我取消订单”即可，未发货的订单按全额退款提交审核。")
+            elif NEGATED_REFUND_RE.search(normalize_width(text)):
                 parts.append(f"如需退款，可以直接回复“{oid} 申请退款”，这次只解答问题、不会为您发起退款。")
             elif reads_as_request(text):  # they want it, in words the grammar leaves out: asked outright, and a yes files it
                 parts.append(f"需要为订单 {oid} 申请退款吗？如需提交，回复“是的”或“{oid} 申请退款”即可。")
@@ -854,7 +882,7 @@ class MockLLM(LLMProvider):
             parts.append(CHASE_TEXT)
         if rush:
             parts.append(RUSH_TEXT)
-        if len(orders) == 1 and not refund and _CANCEL.search(text) and not _mentions_refund(text) and not orders[0].get("error"):
+        if len(orders) == 1 and not refund and cancelling and not _mentions_refund(text) and not orders[0].get("error"):
             oid = orders[0]["order_id"]
             parts.append(f"如需取消这个订单，回复“{oid} 帮我取消订单”即可，未发货的订单按全额退款提交审核。"
                          if orders[0].get("status") == "paid" and orders[0].get("refundable") else

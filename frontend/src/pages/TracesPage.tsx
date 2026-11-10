@@ -6,6 +6,7 @@ import { Empty, ErrorBanner, Json, Kpi, ROLE_TEXT, StatusBadge, VerdictBadge, ms
 import type { EvidenceItem, RunRow, SpanRow } from "../types";
 
 const KIND_TEXT: Record<string, string> = {
+  policy: "策略判定",
   guardrail: "护栏", router: "路由", llm: "模型", tool: "工具", verify: "校验", approval: "审批", notify: "通知",
   cache: "缓存",
   rewrite: "改写",

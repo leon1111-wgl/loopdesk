@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit
 from ..channels.wecom import notify_approval
+from . import decision_log, policy
 from ..config import Settings
 from ..governance import script
 from ..guardrails.injection import Channels, detect_injection, unsafe_answer
@@ -45,7 +46,8 @@ from .rewrite import Frame, carry_order, carry_order_loosely, frame_of, is_follo
 from ..observability import request_id_var
 from ..security import Principal
 from .. import telemetry
-from ..textutil import ORDER_ID_RE, asks_for_person, handoff_cancelled, normalize_width, offered_order
+from ..textutil import (ORDER_ID_RE, asks_for_person, handoff_cancelled, normalize_width, offered_order,
+                        refund_withdraw_requested)
 from ..voice.confirm import classify_reply
 from .prompts import build_system_prompt, choose_prompt_version
 from . import handoff
@@ -345,6 +347,8 @@ class AgentRuntime:
             # Multi-turn: turn an explicit follow-up ("那运费谁出？") into a standalone question.
             question = pii.masked
             carried = f"{offered} 申请退款" if reply == "yes" else carry_order(pii.masked, previous)
+            if carried is None and reply != "yes":
+                carried = self._withdrawal_order(tenant, user, previous, pii.masked)
             unconfirmed = None
             if carried is None and (loose := carry_order_loosely(pii.masked, previous)) is not None:
                 carried, unconfirmed = loose  # "你没听懂吗 我说碎了！！要退钱": that order, but a refund is only offered
@@ -794,6 +798,8 @@ class AgentRuntime:
     def _run_tool(self, tracer: Tracer, ctx: ToolContext, call: ToolCall) -> ToolOutcome:
         tool = self._tools(ctx).get(call.name)
         allowed = {t.name for t in self._tools(ctx).for_role(ctx.user.role)}
+        args = call.arguments
+        ctx.policy_log.clear()
         with (tracer.span("tool", call.name, {"arguments": call.arguments, "risk": tool.risk if tool else None}) as span,
               _integration_calls(span, ctx.deadline)):
             if tool is None or call.name not in allowed:
@@ -803,6 +809,8 @@ class AgentRuntime:
             else:
                 try:
                     args = call.arguments
+                    if tool.risk != "read" and not tool.gated:
+                        self._policy_gate(ctx, tool)
                     if tool.precheck:
                         # The precheck returns the arguments as they would be executed (e.g. an
                         # omitted refund amount made explicit). The approval policy, the approval
@@ -814,6 +822,9 @@ class AgentRuntime:
                     if need:
                         span.set(approval_required=True, reason=need.reason, customer_note=need.customer_note,
                                  arguments=args)
+                        decision_log.tool_call(call.name, ctx.user.role, args, "approval", None, False, need.reason,
+                                               need.approver_role)
+                        self._policy_spans(tracer, ctx)
                         return ToolOutcome("approval", reason=need.reason, customer_note=need.customer_note,
                                            arguments=args, approver_role=need.approver_role)
                     try:
@@ -821,6 +832,9 @@ class AgentRuntime:
                     except ApprovalRequired as exc:  # a re-check under the handler's locks (N-039)
                         span.set(approval_required=True, reason=exc.need.reason,
                                  customer_note=exc.need.customer_note, arguments=args, rechecked=True)
+                        decision_log.tool_call(call.name, ctx.user.role, args, "approval", None, False,
+                                               exc.need.reason, exc.need.approver_role)
+                        self._policy_spans(tracer, ctx)
                         return ToolOutcome("approval", reason=exc.need.reason, customer_note=exc.need.customer_note,
                                            arguments=args, approver_role=exc.need.approver_role)
                     # Tool output is untrusted text (a merchant system, an MCP server): what tries to
@@ -850,10 +864,49 @@ class AgentRuntime:
             if debug is not None:
                 span.set(retrieval=debug)
             span.set(output=outcome.output)
+            decision_log.tool_call(call.name, ctx.user.role, args, "result", outcome.output, outcome.is_error)
+            self._policy_spans(tracer, ctx)
         if call.name != "search_knowledge" or outcome.is_error:
             ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False),
                              **_order_meta(call.arguments))
         return outcome
+
+    def _withdrawal_order(self, tenant: Tenant, user: User, previous: str | None, text: str) -> str | None:
+        """"想留着，能撤回申请吗" with no number: the application the conversation is about if it waits for review, else
+        the only one of this customer's that does (as the static demo does). Several, or none: no guess; the model asks."""
+        if ORDER_ID_RE.search(text) or not refund_withdraw_requested(text):
+            return None
+        waiting = list(dict.fromkeys(str((a.arguments or {}).get("order_id") or "") for a in self.db.execute(
+            select(Approval).join(Run, Run.id == Approval.run_id).where(
+                Approval.tenant_id == tenant.id, Approval.tool_name == "request_refund", Approval.status == "pending",
+                Run.user_id == user.id).order_by(Approval.id)).scalars()))
+        named = list(dict.fromkeys(m.upper() for m in ORDER_ID_RE.findall(previous or "")))
+        talked = named[0] if len(named) == 1 else None
+        pick = talked if talked in waiting else waiting[0] if len(waiting) == 1 else None
+        return f"{pick} {text.strip()}" if pick else None
+
+    @staticmethod
+    def _policy_gate(ctx: ToolContext, tool: ToolDef) -> None:
+        """Deny by default for every tool that changes data and has no gate of its own (backend/policies): a call
+        runs only if a Cedar permit names its action for this role. A tenant's own tools share one action."""
+        action = tool.name if tool.source == "builtin" else "call_tenant_tool"
+        decision = policy.decide(("User", ctx.user.id), action, ("Tool", tool.name), {"reviewed": ctx.approval_id is not None},
+                                 [policy.entity("User", ctx.user.id, role=ctx.user.role),
+                                  policy.entity("Tool", tool.name, risk=tool.risk)])
+        ctx.policy_log.append(decision)
+        if decision.effect != "allow":
+            raise ToolError(f"工具 {tool.name} 不存在或当前身份无权使用")
+
+    @staticmethod
+    def _policy_spans(tracer: Tracer, ctx: ToolContext) -> None:
+        """Each policy decision of the call as its own span, after the call: a span written in the middle of a
+        handler would commit its transaction (per-span trace writes)."""
+        for decision in ctx.policy_log:
+            with tracer.span("policy", f"cedar:{decision.action}", {"context": decision.context}) as span:
+                span.set(**decision.span())
+                if decision.effect == "deny":
+                    span.status = "rejected"
+        ctx.policy_log.clear()
 
     def _tools(self, ctx: ToolContext) -> ToolRegistry:
         """This tenant's tools (built-in plus declared, app/tooling); the process registry for a

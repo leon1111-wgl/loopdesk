@@ -4,9 +4,11 @@
  * limit, the velocity limit, four eyes. Thresholds come from the tenant's configuration, never from this file.
  * Nothing leaves the page: a reload starts again from the seed data.
  */
+import { noteToolCall } from "./decisionlog";
+import { decide, denial, entity, fen, NOT_LOADED, policyEngine, uid, type Decision, type PolicyEngine } from "./policy";
 import { pack, T, TOOLS, type SeedOrder, type TenantConfig, type TenantTool } from "./pack";
 import { clauseHits, search } from "./retrieval";
-import { classifyReply, conditionalRefund, findAll, fixTypos, itemWords, money, normalizeWidth, plainRequest, refundBareDecline, refundDeclined, refundRequested, refundWithdrawRequested, statedRefundAmount, withdrawConfirmed } from "./text";
+import { claimsAuthority, classifyReply, conditionalRefund, findAll, fixTypos, itemWords, money, normalizeWidth, plainRequest, refundBareDecline, refundDeclined, refundRequested, refundWithdrawRequested, statedRefundAmount, withdrawConfirmed } from "./text";
 
 const TX = pack.texts.tools;
 const HOUR = 3_600_000;
@@ -39,9 +41,10 @@ export interface ApprovalNeed {
   approverRole?: "admin" | "agent";
 }
 
-export type Outcome =
+export type Outcome = (
   | { kind: "result"; output: Record<string, unknown>; isError: boolean }
-  | { kind: "approval"; reason: string; customerNote: string; args: Record<string, unknown>; approverRole?: "admin" | "agent" };
+  | { kind: "approval"; reason: string; customerNote: string; args: Record<string, unknown>; approverRole?: "admin" | "agent" }
+) & { decisions?: Decision[] }; // the policy decisions the call took: each becomes a span
 
 interface OrderRow {
   id: string;
@@ -115,6 +118,9 @@ export interface ToolContext {
   approvalId: number | null;
   /** The answer before this turn, for the second step of a withdrawal. */
   withdrawOffer: Record<string, unknown> | null;
+  /** The policy decisions taken during the current tool call, and the refund precheck's, read again by its approval step. */
+  decisions?: Decision[];
+  refundGate?: RefundGate | null;
 }
 
 const isStaff = (ctx: ToolContext) => ctx.role === "admin" || ctx.role === "agent";
@@ -164,6 +170,8 @@ export class World {
   approvals: ApprovalRow[] = [];
   tickets: TicketRow[] = [];
   vouchers: { id: string; amount: number; reason: string; owner: string }[] = [];
+  /** The policy this copy of the data is decided by: the shipped one (null), or a what-if variant (pages/PolicyPage.tsx). */
+  policy: PolicyEngine | null = null;
   private seq = 900_000;
 
   constructor(public now: () => number = () => Date.now()) {
@@ -335,74 +343,167 @@ function applicationTime(world: World, ctx: ToolContext): number {
   return approval ? approval.createdAt : world.now();
 }
 
-function validated(world: World, ctx: ToolContext, args: Record<string, unknown>): { order: OrderRow; amount: number } {
-  const order = loadOrder(world, ctx, orderIdOf(args));
+// ---------------------------------------------------------------- the refund gate (policy.ts, backend/policies)
+/** One refund call as the policy saw it: the facts, Cedar's decision, and what the refusals and the card need. */
+export interface RefundGate {
+  decision: Decision;
+  order: OrderRow | null;
+  amount: number | null;
+  error: ToolError | null;
+  waiting: ApprovalRow | undefined;
+  days: number | null;
+  stated: number | null;
+  history: [number, number];
+  rejected: string | null;
+}
+
+const REFUSED_WORDING = "顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。请回答顾客的问题；顾客明确要求退款时再申请。";
+
+export function limitsOf(config: TenantConfig): Record<string, number> {
+  return {
+    auto_refund_limit: fen(config.auto_refund_limit), approval_admin_threshold: fen(config.approval_admin_threshold),
+    return_window_days: config.return_window_days, last_refund_day: lastRefundDay(config),
+    window_max_count: pack.settings.refund_window_max_count, window_max_total: fen(pack.settings.refund_window_max_amount),
+  };
+}
+
+function otherReviewers(ctx: ToolContext): { other_admin: boolean; other_staff: boolean } {
+  const others = Object.entries(pack.accounts).filter(([email, a]) => a.tenant === ctx.tenant && email !== ctx.user);
+  return { other_admin: others.some(([, a]) => a.role === "admin"), other_staff: others.some(([, a]) => a.role !== "customer") };
+}
+
+/** The facts in the order the checks were always made, then the policy (app/agent/business_tools._refund_gate). */
+function refundGate(world: World, ctx: ToolContext, args: Record<string, unknown>, intent = true, approval = true): RefundGate {
+  const reviewed = ctx.approvalId !== null;
+  const context: Record<string, unknown> = { reviewed, customer_declined: false, customer_asked: true, claimed_authority: intent && !reviewed && claimsAuthority(ctx.customerText),
+    limits: limitsOf(ctx.config), reviewers: { other_admin: true, other_staff: true } };
+  const gate: RefundGate = { decision: { action: "request_refund", effect: "deny", reasons: [], errors: [], micros: 0, context }, order: null, amount: null, error: null, waiting: undefined, days: null, stated: null, history: [0, 0], rejected: null };
+  const decided = () => {
+    gate.decision = decide(world.policy, ["User", ctx.user], "request_refund", ["Order", String(args.order_id ?? "?") || "?"], context, [entity("User", ctx.user, { role: ctx.role })]);
+    ctx.decisions?.push(gate.decision);
+    return gate;
+  };
+  // Whatever the planner or the model makes of it, a question or a "先别退款" does not move money.
+  if (intent && !reviewed) {
+    const declined = refundDeclined(ctx.customerText) || conditionalRefund(ctx.customerText);
+    const asked = plainRequest(ctx.customerText);
+    if (declined || !asked) {
+      Object.assign(context, { customer_declined: declined, customer_asked: asked });
+      return decided();
+    }
+  }
+  let order: OrderRow;
+  try {
+    order = loadOrder(world, ctx, orderIdOf(args));
+  } catch (error) {
+    if (!(error instanceof ToolError)) throw error;
+    gate.error = error;
+    return decided();
+  }
   const raw = args.amount;
   const amount = Math.round(Number(raw === null || raw === undefined || raw === "" ? order.amount : raw) * 100) / 100;
-  if (!Number.isFinite(amount)) throw new ToolError("退款金额格式不正确");
-  if (amount <= 0) throw new ToolError("退款金额必须大于 0");
-  if (amount > order.amount + 1e-6) {
-    throw new ToolError(`退款金额 ¥${money(amount)} 超过订单实付金额 ¥${money(order.amount)}，最多可退 ¥${money(order.amount)}；如需按 ¥${money(order.amount)} 申请，请回复“退${order.amount}元”`);
+  if (!Number.isFinite(amount)) {
+    gate.error = new ToolError("退款金额格式不正确");
+    return decided();
   }
-  if (!REFUNDABLE.has(order.status)) throw new ToolError(`该订单当前状态为“${statusText(order)}”，不能发起退款`);
-  const blocked = noOnlineRefund(order);
-  if (blocked) throw new ToolError(blocked);
-  const days = daysSince(order, applicationTime(world, ctx));
-  if (days !== null && days > lastRefundDay(ctx.config)) {
-    throw new ToolError(`订单已${words(order).since} ${days} 天，超过 ${lastRefundDay(ctx.config)} 天的售后期限，不能在线申请退款；如有特殊情况，可以转人工客服处理`);
+  Object.assign(gate, { order, amount, days: daysSince(order, applicationTime(world, ctx)) });
+  if (!reviewed) gate.waiting = world.approvals.find((a) => a.tenant === ctx.tenant && a.tool === "request_refund" && a.status === "pending" && a.args.order_id === order.id);
+  const facts: Record<string, unknown> = {
+    amount: fen(amount), paid: fen(order.amount), refundable_status: REFUNDABLE.has(order.status), online_refund: !noOnlineRefund(order), awaiting_review: gate.waiting !== undefined,
+    unconfirmed: false, item_mismatch: false, refunds_in_window: 0, refunded_in_window: 0, rejected_recently: false, customer_has_account: true,
+  };
+  if (gate.days !== null) facts.days_since_delivery = gate.days;
+  context.refund = facts;
+  if (intent && !reviewed) {
+    // A clause naming an item names one on this order, or it is not part of a request for this order.
+    facts.item_mismatch = !plainRequest(ctx.customerText, itemWords(order.items.map((i) => i.name)));
+    facts.unconfirmed = Boolean(ctx.unconfirmedOrder) && order.id === ctx.unconfirmedOrder!.toUpperCase();
+    const oneOrder = new Set(findAll(T.ORDER_ID_RE, normalizeWidth(ctx.customerText)).map((m) => m[0].toUpperCase())).size <= 1;
+    gate.stated = !isStaff(ctx) && oneOrder ? statedRefundAmount(ctx.customerText) : null;
+    if (gate.stated !== null) facts.stated_amount = fen(gate.stated);
   }
-  if (ctx.approvalId === null) {
-    const waiting = world.approvals.find((a) => a.tenant === ctx.tenant && a.tool === "request_refund" && a.status === "pending" && a.args.order_id === order.id);
-    if (waiting) {
+  if (approval && !reviewed) {
+    if (amount <= ctx.config.auto_refund_limit) {
+      const since = world.now() - pack.settings.refund_window_days * DAY;
+      const rows = world.refunds.filter((r) => r.tenant === ctx.tenant && r.customer === order.customer && r.createdAt >= since && LIVE.has(r.status));
+      gate.history = [rows.length, rows.reduce((n, r) => n + r.amount, 0)];
+      Object.assign(facts, { refunds_in_window: gate.history[0], refunded_in_window: fen(gate.history[1]) });
+    }
+    gate.rejected = rejectedBefore(world, ctx, order.id);
+    facts.rejected_recently = gate.rejected !== null;
+    if (isStaff(ctx)) context.reviewers = otherReviewers(ctx);
+  }
+  return decided();
+}
+
+/** A deny.* reason in the words the customer (or the planner) reads. */
+function refusalFor(world: World, ctx: ToolContext, gate: RefundGate, reason: string): ToolError {
+  const order = gate.order!;
+  const amount = gate.amount!;
+  switch (reason) {
+    case "deny.customer_declined":
+    case "deny.not_asked":
+    case "deny.item_not_on_order":
+      return new ToolError(REFUSED_WORDING);
+    case "deny.amount_not_positive":
+      return new ToolError("退款金额必须大于 0");
+    case "deny.amount_above_paid":
+      return new ToolError(`退款金额 ¥${money(amount)} 超过订单实付金额 ¥${money(order.amount)}，最多可退 ¥${money(order.amount)}；如需按 ¥${money(order.amount)} 申请，请回复“退${order.amount}元”`);
+    case "deny.order_not_refundable":
+      return new ToolError(`该订单当前状态为“${statusText(order)}”，不能发起退款`);
+    case "deny.no_online_refund":
+      return new ToolError(noOnlineRefund(order)!);
+    case "deny.after_sales_deadline":
+      return new ToolError(`订单已${words(order).since} ${gate.days} 天，超过 ${lastRefundDay(ctx.config)} 天的售后期限，不能在线申请退款；如有特殊情况，可以转人工客服处理`);
+    case "deny.already_waiting": {
+      const waiting = gate.waiting!;
       const filedAt = shanghai(waiting.createdAt, true);
       const first = Math.round(Number(waiting.args.amount ?? 0) * 100) / 100;
       let message = `您在 ${filedAt} 提交的 ¥${money(first)} 退款申请正在等待人工审核，无需重复申请，审核结果会在这里通知您`;
       if (Math.abs(first - amount) > 0.005) message += `；如需改成 ¥${money(amount)}，可以先回复“撤回退款申请”，再重新申请`;
-      throw new RefundWaiting(message, { error: message, awaiting_review: { approval_id: waiting.id, amount: money(first), filed_at: filedAt } });
+      return new RefundWaiting(message, { error: message, awaiting_review: { approval_id: waiting.id, amount: money(first), filed_at: filedAt } });
     }
+    case "deny.order_unconfirmed": {
+      const names = order.items.map((i) => i.name).join("、");
+      const note = String(getOrder(world, ctx, { order_id: order.id }).refund_note ?? "");
+      const message = `需要为订单 ${order.id}（${names}）申请退款吗？${note ? `${note}。` : ""}回复“是的”或“${order.id} 申请退款”即可提交`;
+      return new RefundWaiting(message, { error: message, confirm_order: order.id });
+    }
+    case "deny.stated_amount_differs": {
+      const stated = gate.stated!;
+      if (stated > order.amount + 1e-6) {
+        return new ToolError(`顾客要退 ¥${money(stated)}，超过订单实付金额 ¥${money(order.amount)}，最多可退 ¥${money(order.amount)}；请先和顾客确认是否按 ¥${money(order.amount)} 申请，顾客确认后再提交`);
+      }
+      return new ToolError(`顾客要退 ¥${money(stated)}，这次申请的是 ¥${money(amount)}，金额不一致，没有提交；请按顾客说的金额申请，顾客改了金额时以顾客最新说的为准`);
+    }
+    case "deny.customer_has_no_account":
+      return new ToolError("这笔订单的顾客没有本系统的账号，请在订单系统里为其办理退款");
+    case "deny.no_other_reviewer":
+      return new ToolError(amount > ctx.config.approval_admin_threshold ? "本租户除你之外没有其他管理员可以审批（提交人不能审批自己的申请）。" : "本租户除你之外没有其他员工可以审批（提交人不能审批自己的申请）。");
+    default:
+      return new ToolError(`按退款策略不能办理（${(world.policy ?? policyEngine())?.label(reason) ?? reason}）`);
   }
-  return { order, amount };
+}
+
+function enforce(world: World, ctx: ToolContext, gate: RefundGate, stage: "request" | "approval"): void {
+  const reason = denial(gate.decision, world.policy, stage);
+  if (reason) throw refusalFor(world, ctx, gate, reason);
+  if (stage === "request" && gate.decision.effect === "deny" && !gate.decision.reasons.some((r) => r.startsWith("deny."))) {
+    throw gate.error ?? new ToolError(gate.decision.errors.includes(NOT_LOADED) ? `${NOT_LOADED}，这次没有提交退款` : "按退款策略不能办理：没有一条策略允许这次调用（默认拒绝）");
+  }
+}
+
+function validated(world: World, ctx: ToolContext, args: Record<string, unknown>): { order: OrderRow; amount: number } {
+  const gate = refundGate(world, ctx, args, false, false);
+  enforce(world, ctx, gate, "request");
+  return { order: gate.order!, amount: gate.amount! };
 }
 
 function refundPrecheck(world: World, ctx: ToolContext, args: Record<string, unknown>): Record<string, unknown> {
-  // Whatever the planner or the model makes of it, a question or a "先别退款" does not move money.
-  if (ctx.approvalId === null && (refundDeclined(ctx.customerText) || conditionalRefund(ctx.customerText) || !plainRequest(ctx.customerText))) {
-    throw new ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。请回答顾客的问题；顾客明确要求退款时再申请。");
-  }
-  const { order, amount } = validated(world, ctx, args);
-  // A clause naming an item names one on this order, or it is not part of a request for this order.
-  if (ctx.approvalId === null && !plainRequest(ctx.customerText, itemWords(order.items.map((i) => i.name)))) {
-    throw new ToolError("顾客这句话是在咨询退款或说了先不退，并没有申请退款，不能发起退款。请回答顾客的问题；顾客明确要求退款时再申请。");
-  }
-  if (ctx.approvalId === null && ctx.unconfirmedOrder && order.id === ctx.unconfirmedOrder.toUpperCase()) {
-    const names = order.items.map((i) => i.name).join("、");
-    const note = String(getOrder(world, ctx, { order_id: order.id }).refund_note ?? "");
-    const message = `需要为订单 ${order.id}（${names}）申请退款吗？${note ? `${note}。` : ""}回复“是的”或“${order.id} 申请退款”即可提交`;
-    throw new RefundWaiting(message, { error: message, confirm_order: order.id });
-  }
-  const oneOrder = new Set(findAll(T.ORDER_ID_RE, normalizeWidth(ctx.customerText)).map((m) => m[0].toUpperCase())).size <= 1;
-  const stated = ctx.approvalId === null && !isStaff(ctx) && oneOrder ? statedRefundAmount(ctx.customerText) : null;
-  if (stated !== null && Math.abs(stated - amount) > 0.005) {
-    if (stated > order.amount + 1e-6) {
-      throw new ToolError(`顾客要退 ¥${money(stated)}，超过订单实付金额 ¥${money(order.amount)}，最多可退 ¥${money(order.amount)}；请先和顾客确认是否按 ¥${money(order.amount)} 申请，顾客确认后再提交`);
-    }
-    throw new ToolError(`顾客要退 ¥${money(stated)}，这次申请的是 ¥${money(amount)}，金额不一致，没有提交；请按顾客说的金额申请，顾客改了金额时以顾客最新说的为准`);
-  }
-  return { order_id: order.id, amount };
-}
-
-function velocityReason(world: World, ctx: ToolContext, customer: string, amount: number): string | null {
-  const { refund_window_days: window, refund_window_max_count: maxCount, refund_window_max_amount: maxAmount } = pack.settings;
-  const since = world.now() - window * DAY;
-  const rows = world.refunds.filter((r) => r.tenant === ctx.tenant && r.customer === customer && r.createdAt >= since && LIVE.has(r.status));
-  const total = rows.reduce((n, r) => n + r.amount, 0);
-  let reason: string | null = null;
-  if (rows.length + 1 > maxCount) reason = `近 ${window} 天已有 ${rows.length} 笔退款，超过自动审批的次数上限（${maxCount} 笔）`;
-  else if (total + amount > maxAmount + 1e-6) reason = `近 ${window} 天累计退款将达到 ¥${money(total + amount)}，超过 ¥${money(maxAmount)} 的累计自动审批上限`;
-  if (reason) {
-    addEvidence(ctx, "tool", "refund_history", JSON.stringify({ customer, window_days: window, refund_count: rows.length, refund_total: Math.round(total * 100) / 100, this_request: amount }));
-  }
-  return reason;
+  const gate = refundGate(world, ctx, args);
+  enforce(world, ctx, gate, "request");
+  ctx.refundGate = gate;
+  return { order_id: gate.order!.id, amount: gate.amount! };
 }
 
 function rejectedBefore(world: World, ctx: ToolContext, orderId: string): string | null {
@@ -412,31 +513,44 @@ function rejectedBefore(world: World, ctx: ToolContext, orderId: string): string
   return `该订单 ${shanghai(earlier.decidedAt ?? world.now())} 被${earlier.reviewer ?? "审批人"}驳回过（审批单 #${earlier.id}，意见：${(earlier.comment || "无").slice(0, 60)}），重新申请需人工复核`;
 }
 
-export function reviewerRole(config: TenantConfig, amount: number): "admin" | "agent" {
-  return amount > config.approval_admin_threshold ? "admin" : "agent";
+/** Who may approve an application of this amount, as the policy says (deny.approver_tier): an agent who did not file it, or an administrator. */
+export function reviewerRole(config: TenantConfig, amount: number, approver = "", engine?: PolicyEngine | null): "admin" | "agent" {
+  const application = entity("Application", "~probe", { requester: { __entity: uid("User", "~requester") }, amount: fen(amount), approver });
+  const decision = decide(engine, ["User", "~agent"], "approve", ["Application", "~probe"], { approval_admin_threshold: fen(config.approval_admin_threshold) },
+    [entity("User", "~requester", { role: "customer" }), entity("User", "~agent", { role: "agent" }), application]);
+  return decision.effect === "allow" ? "agent" : "admin";
 }
 
 function refundPolicy(world: World, ctx: ToolContext, args: Record<string, unknown>): ApprovalNeed | null {
+  let gate = ctx.refundGate;
   const amount = Math.round(Number(args.amount) * 100) / 100;
-  const order = loadOrder(world, ctx, orderIdOf(args));
+  if (!gate || !gate.order || gate.order.id !== String(args.order_id) || gate.amount !== amount) gate = refundGate(world, ctx, args);
+  const order = gate.order!;
   const c = ctx.config;
   const reasons: string[] = [];
   let customerNote = "";
-  if (isStaff(ctx)) reasons.push(TX.STAFF_FILED_REASON);
-  const days = daysSince(order, world.now());
-  if (days !== null && days > c.return_window_days) {
-    const w = words(order);
-    customerNote = `订单已${w.since} ${days} 天，超过 ${c.return_window_days} 天${w.first}期限，${c.quality_window_days} 天内${w.second}`;
-    reasons.push(customerNote);
-    addEvidence(ctx, "tool", "after_sales_window", JSON.stringify({ order_id: order.id, days_since_delivery: days, return_window_days: c.return_window_days, quality_window_days: c.quality_window_days }));
+  // Called without the precheck, or on other arguments: a denial is a denial (review of 1.2.0).
+  if (denial(gate.decision, world.policy, "request") || (gate.decision.effect === "deny" && !gate.decision.reasons.length)) enforce(world, ctx, gate, "request");
+  const blocked = denial(gate.decision, world.policy, "approval");
+  if (gate.decision.effect !== "review" && !blocked) return null;
+  for (const reason of gate.decision.reasons) {
+    if (reason === "review.staff_filed") reasons.push(TX.STAFF_FILED_REASON);
+    else if (reason === "review.past_return_window") {
+      const w = words(order);
+      customerNote = `订单已${w.since} ${gate.days} 天，超过 ${c.return_window_days} 天${w.first}期限，${c.quality_window_days} 天内${w.second}`;
+      reasons.push(customerNote);
+      addEvidence(ctx, "tool", "after_sales_window", JSON.stringify({ order_id: order.id, days_since_delivery: gate.days, return_window_days: c.return_window_days, quality_window_days: c.quality_window_days }));
+    } else if (reason === "review.above_auto_limit") reasons.push(`超过自动审批额度 ¥${money(c.auto_refund_limit)}`);
+    else if (reason === "review.velocity_count" || reason === "review.velocity_total") {
+      const { refund_window_days: window, refund_window_max_count: maxCount, refund_window_max_amount: maxAmount } = pack.settings;
+      const [count, total] = gate.history;
+      reasons.push(reason === "review.velocity_count" ? `近 ${window} 天已有 ${count} 笔退款，超过自动审批的次数上限（${maxCount} 笔）` : `近 ${window} 天累计退款将达到 ¥${money(total + amount)}，超过 ¥${money(maxAmount)} 的累计自动审批上限`);
+      addEvidence(ctx, "tool", "refund_history", JSON.stringify({ customer: order.customer, window_days: window, refund_count: count, refund_total: Math.round(total * 100) / 100, this_request: amount }));
+    } else if (reason === "review.rejected_before") reasons.push(gate.rejected!);
+    else if (reason === "review.claimed_authority") reasons.push(TX.CLAIMED_AUTHORITY_REASON);
+    else if (reason.startsWith("review.")) reasons.push((world.policy ?? policyEngine())?.label(reason) ?? reason);
   }
-  if (amount > c.auto_refund_limit) reasons.push(`超过自动审批额度 ¥${money(c.auto_refund_limit)}`);
-  else {
-    const velocity = velocityReason(world, ctx, order.customer, amount);
-    if (velocity) reasons.push(velocity);
-  }
-  const rejected = rejectedBefore(world, ctx, order.id);
-  if (rejected) reasons.push(rejected);
+  if (blocked) throw refusalFor(world, ctx, gate, blocked);
   return reasons.length ? { reason: reasons.join("；"), customerNote } : null;
 }
 
@@ -571,17 +685,36 @@ export const BUILTIN_ROLES: Record<string, string[]> = {
   create_ticket: ["admin", "agent", "customer"], handoff_to_human: ["admin", "agent", "customer"],
 };
 
+/** What changes data and has no gate of its own: decided by the policy before it runs (deny by default). */
+const WRITE_TOOLS = new Set(["withdraw_refund_request", "create_ticket", "handoff_to_human"]);
+
+function policyGate(world: World, ctx: ToolContext, action: string, name: string, risk: string): void {
+  const decision = decide(world.policy, ["User", ctx.user], action, ["Tool", name], { reviewed: ctx.approvalId !== null }, [entity("User", ctx.user, { role: ctx.role }), entity("Tool", name, { risk })]);
+  ctx.decisions?.push(decision);
+  if (decision.effect !== "allow") throw new ToolError(decision.errors.includes(NOT_LOADED) ? `${NOT_LOADED}，这次没有办理` : `工具 ${name} 不存在或当前身份无权使用`);
+}
+
 export function availableTools(ctx: Pick<ToolContext, "tenant" | "role">): Set<string> {
   const names = Object.entries(BUILTIN_ROLES).filter(([, roles]) => roles.includes(ctx.role)).map(([name]) => name);
   return new Set([...names, ...tenantTools(ctx.tenant).map((t) => t.name)]);
 }
 
 export function runTool(world: World, ctx: ToolContext, name: string, rawArgs: Record<string, unknown>): Outcome {
+  ctx.decisions = [];
+  const outcome: Outcome = { ...gateAndRun(world, ctx, name, rawArgs), decisions: ctx.decisions };
+  ctx.decisions = undefined;
+  if (outcome.kind === "approval") noteToolCall(name, ctx.role, outcome.args, "approval", null, false, outcome.reason, outcome.approverRole ?? null);
+  else noteToolCall(name, ctx.role, rawArgs, "result", outcome.output, outcome.isError);
+  return outcome;
+}
+
+function gateAndRun(world: World, ctx: ToolContext, name: string, rawArgs: Record<string, unknown>): Outcome {
   const tenantTool = tenantTools(ctx.tenant).find((t) => t.name === name);
   if (!availableTools(ctx).has(name)) return { kind: "result", output: { error: `工具 ${name} 不存在或当前身份无权使用` }, isError: true };
   try {
     let args = rawArgs;
     let need: ApprovalNeed | null = null;
+    if (WRITE_TOOLS.has(name) || (tenantTool && tenantTool.risk !== "read")) policyGate(world, ctx, tenantTool ? "call_tenant_tool" : name, name, tenantTool?.risk === "money" ? "high" : "write");
     if (name === "request_refund") {
       args = { ...args, ...refundPrecheck(world, ctx, args) };
       if (ctx.approvalId === null) need = refundPolicy(world, ctx, args);

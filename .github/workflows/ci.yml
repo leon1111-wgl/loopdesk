@@ -25,6 +25,10 @@ jobs:
         run: pytest -q
         env:
           LOOPDESK_TEST_TRACE_WRITES: buffered
+      - name: Cedar policy validates against its schema (cedarpy; the browser's cedar-wasm check runs in the frontend job)
+        run: python -c "import cedarpy, sys; r = cedarpy.validate_policies(open('policies/loopdesk.cedar').read(), open('policies/loopdesk.cedarschema').read()); print(r); sys.exit(0 if r.validation_passed else 1)"
+      - name: Every tool-gate decision on the parity sets is the one recorded (journeys, cards, 144 transcripts, money probes)
+        run: python -m app.evals.decisions --check evals/policy/decisions_backend.json > decisions-check.log 2>&1 || (tail -c 20000 decisions-check.log; exit 1)
       - name: The refund rule on its own (no browser; lists already read, so a floor and not a measurement)
         run: python -m app.evals.money_rule --whole --gate --report money-rule.json
       - name: Regression eval gate (offline model, synthetic data)
