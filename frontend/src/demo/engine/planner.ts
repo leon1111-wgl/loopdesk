@@ -721,7 +721,8 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   const knowledge = last("search_knowledge");
   const selfDamage = M._SELF_DAMAGE.test(text);
   const eta = shipments.length > 0 && (M._ETA.test(text) || wantsTracking(text) && ARRIVAL.test(text));
-  const cancelling = M._CANCEL.test(text) || T.CANCEL_TALK_RE.test(text);
+  const cancelAndRefund = T._CANCEL_AND_REFUND_RE.test(sub(T.ORDER_ID_RE, "", normalizeWidth(text))); // "还没发货，想取消退款"
+  const cancelling = M._CANCEL.test(text) || T.CANCEL_TALK_RE.test(text) || cancelAndRefund;
   const rush = orders.length > 0 && !shipments.length && M._RUSH.test(text) && !cancelling;
   const inquiry = orders.length === 1 && !refund && !orders[0].error && orders[0].refundable && mentionsRefund(text) && !refundRequested(text);
   if (knowledge) {
@@ -759,7 +760,8 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   }
   if (inquiry) {
     const oid = orders[0].order_id;
-    if (T.NEGATED_REFUND_RE.test(normalizeWidth(text))) parts.push(`如需退款，可以直接回复“${oid} 申请退款”，这次只解答问题、不会为您发起退款。`);
+    if (cancelAndRefund && orders[0].status === "paid") parts.push(`如需取消这个订单，回复“${oid} 帮我取消订单”即可，未发货的订单按全额退款提交审核。`);
+    else if (T.NEGATED_REFUND_RE.test(normalizeWidth(text))) parts.push(`如需退款，可以直接回复“${oid} 申请退款”，这次只解答问题、不会为您发起退款。`);
     // They want it, in words the grammar leaves out: asked outright, and a yes files it (as in the backend's offline model).
     else if (readsAsRequest(text)) parts.push(`需要为订单 ${oid} 申请退款吗？如需提交，回复“是的”或“${oid} 申请退款”即可。`);
     else parts.push(`如需现在申请退款，回复“${oid} 申请退款”即可，我马上为您提交。`);

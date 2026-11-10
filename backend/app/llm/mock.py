@@ -17,7 +17,7 @@ import time
 from collections.abc import Iterator
 from typing import Any
 
-from ..textutil import (CANCEL_ORDER_RE, CANCEL_TALK_RE, NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, OTHER_ORDER,
+from ..textutil import (_CANCEL_AND_REFUND_RE, CANCEL_ORDER_RE, CANCEL_TALK_RE, NEGATED_PERSON_RE, NEGATED_REFUND_RE, ORDER_ID_RE, OTHER_ORDER,
                         REFUND_APPLY_RE, REFUND_RE, cancel_requested, handoff_cancelled,
                         estimate_tokens, expand_query, fix_typos, normalize_width, other_question, own_amount_text, reads_as_request,
                         refund_bare_decline,
@@ -828,7 +828,8 @@ class MockLLM(LLMProvider):
         knowledge = last("search_knowledge")
         self_damage = bool(_SELF_DAMAGE.search(text))
         eta = bool(shipments) and bool(_ETA.search(text))
-        cancelling = bool(_CANCEL.search(text) or CANCEL_TALK_RE.search(text))
+        cancel_and_refund = bool(_CANCEL_AND_REFUND_RE.search(ORDER_ID_RE.sub("", normalize_width(text))))  # "还没发货，想取消退款"
+        cancelling = bool(_CANCEL.search(text) or CANCEL_TALK_RE.search(text)) or cancel_and_refund
         rush = bool(orders) and not shipments and bool(_RUSH.search(text)) and not cancelling
         # A question about refunds on one of the customer's orders, answered without filing one (N-091).
         inquiry = (len(orders) == 1 and not refund and not orders[0].get("error") and orders[0].get("refundable")
@@ -857,7 +858,9 @@ class MockLLM(LLMProvider):
             oid = orders[0]["order_id"]
             # Only a customer who said "别退 / 不退" is told nothing will be filed; otherwise ask (N-126): an angry
             # customer misread as asking is offered to apply, not told "不会为您发起退款".
-            if NEGATED_REFUND_RE.search(normalize_width(text)):
+            if cancel_and_refund and orders[0].get("status") == "paid":  # to cancel, not to take a refund back
+                parts.append(f"如需取消这个订单，回复“{oid} 帮我取消订单”即可，未发货的订单按全额退款提交审核。")
+            elif NEGATED_REFUND_RE.search(normalize_width(text)):
                 parts.append(f"如需退款，可以直接回复“{oid} 申请退款”，这次只解答问题、不会为您发起退款。")
             elif reads_as_request(text):  # they want it, in words the grammar leaves out: asked outright, and a yes files it
                 parts.append(f"需要为订单 {oid} 申请退款吗？如需提交，回复“是的”或“{oid} 申请退款”即可。")

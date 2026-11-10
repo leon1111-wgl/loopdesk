@@ -104,7 +104,9 @@ describe("after the review of 1.2.0 and the after-fix runs", () => {
   it.each([`我想取消我买的那手冲咖啡套装，订单号是${COFFEE}。`, `我下单的手冲咖啡套装还没发货，订单号${COFFEE}，想取消退款。`])("cancelling by the item or with a refund is offered: %s", (line) => {
     const { text, end } = talk([line]);
     expect(text).not.toContain("无需撤回");
-    expect(text.includes(`${COFFEE} 帮我取消订单`) || text.includes(`${COFFEE} 申请退款`)).toBe(true);
+    expect(text).not.toContain("不会为您发起退款");
+    expect(text).not.toContain("催促发货");
+    expect(text).toContain(`${COFFEE} 帮我取消订单`);
     expect(end.approvals).toEqual({});
   });
 

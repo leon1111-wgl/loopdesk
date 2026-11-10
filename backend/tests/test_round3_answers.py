@@ -139,8 +139,8 @@ def test_a_withdrawal_without_a_number_takes_back_the_application_that_waits(cli
 def test_cancelling_by_the_item_or_with_refund_is_offered(client, ask, login, line):
     conversation, events = ask(login(EMMA), line)
     text = _final(events)
-    assert "无需撤回" not in text, text
-    assert f"{COFFEE} 帮我取消订单" in text or f"{COFFEE} 申请退款" in text, text
+    assert "无需撤回" not in text and "不会为您发起退款" not in text and "催促发货" not in text, text
+    assert f"{COFFEE} 帮我取消订单" in text, text
     _nothing_filed(conversation)
 
 
