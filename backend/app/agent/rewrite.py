@@ -202,6 +202,10 @@ def carry_order_loosely(text: str, previous_user_question: str | None) -> tuple[
     named = list(dict.fromkeys(m.upper() for m in ORDER_ID_RE.findall(previous_user_question)))
     if len(named) != 1 or len(text.strip()) > _LOOSE_MAX or _POLICY_WORDS.search(text):
         return None
+    # Taking back what was just filed ("想留着，能撤回取消申请吗"): it moves no money and the tool asks to confirm, naming
+    # the order and the amount, so it carries even when the item is named ("想保留这个套装"; simulations, blind card b13).
+    if refund_withdraw_requested(text):
+        return f"{named[0]} {text.strip()}", named[0]
     if not _LOOSE_CARRY.search(text) or _OTHER_ITEM.search(text):
         return None
     return f"{named[0]} {text.strip()}", named[0]

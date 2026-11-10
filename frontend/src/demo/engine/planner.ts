@@ -9,7 +9,7 @@ import { answerSentences } from "./retrieval";
 import { tenantTools } from "./tools";
 import {
   cancelRequested, expandQuery, findAll, fixTypos, fullMatch, handoffCancelled, money, normalizeWidth, otherQuestion, refundBareDecline,
-  readsAsRequest, refundRequested, refundWithdrawRequested, splitSentences, statedRefundAmount, sub, tokenSet, withdrawConfirmed,
+  ownAmountText, readsAsRequest, refundRequested, refundWithdrawRequested, splitSentences, statedRefundAmount, sub, tokenSet, withdrawConfirmed,
 } from "./text";
 
 export { refundRequested };
@@ -454,7 +454,7 @@ function mainCall(text: string, called: string[], results: Results, available: S
       if (live && can("search_knowledge")) return ["search_knowledge", { query: "退款 到账 工作日" }];
       return null;
     }
-    if (M._CANCEL.test(text) && !mentionsRefund(text)) {
+    if ((M._CANCEL.test(text) || T.CANCEL_TALK_RE.test(text)) && !mentionsRefund(text)) {
       if (cancelRequested(text) && order.status === "paid" && order.refundable && can("request_refund")) {
         return ["request_refund", { order_id: orderId, amount: Number(order.amount ?? 0), reason: `顾客要求取消未发货订单：${text.slice(0, 100)}` }];
       }
@@ -479,7 +479,7 @@ function mainCall(text: string, called: string[], results: Results, available: S
       if (can("search_knowledge")) return ["search_knowledge", { query: "退款 到账 工作日" }];
       if (can("request_refund")) {
         const stated = statedRefundAmount(text);
-        const amountMatch = stated !== null ? null : M._AMOUNT.exec(sub(T.NEGATED_REFUND_RE, "，", text));
+        const amountMatch = stated !== null ? null : M._AMOUNT.exec(sub(T.NEGATED_REFUND_RE, "，", ownAmountText(text)));
         const amount = stated !== null ? stated
           : amountMatch ? Number(/\d+(?:\.\d+)?/.exec(amountMatch[0])![0])
           : M._HALF.test(text) ? Math.round((Number(order.amount ?? 0) / 2) * 100) / 100
@@ -683,14 +683,21 @@ export function compose(input: string, allResults: Results, tenant: string, excl
     }
   }
   const clauses = orders.length > 1 ? orderClauses(text) : {};
-  for (const order of orders.length > 1 ? orders : []) {
+  // Each order's own words; "SO2 和 SO1 都退了": SO2 shares SO1's (the backend's MockLLM._compose).
+  const askedOf = (order: Output) => {
     const clause = clauses[order.order_id] ?? "";
-    if (!order.error && mentionsRefund(clause) && !refundRequested(text)) {
+    return fullMatch(M._ONLY_A_LINK, sub(T.ORDER_ID_RE, "", clause)) ? text : clause;
+  };
+  // Not for an order the customer said not to refund; one order asked for, the other only talked about: offered.
+  const wanted = (orders.length > 1 ? orders : []).filter((o) => !o.error && mentionsRefund(askedOf(o)) && !M._NOT_THIS_ONE.test(askedOf(o)));
+  const onlyOne = wanted.length === 1 && !orders.some((o) => o !== wanted[0] && mentionsRefund(askedOf(o)));
+  for (const order of wanted) {
+    if (!refundRequested(text) || onlyOne) {
       parts.push(!order.refundable ? `订单 ${order.order_id} 暂不能发起退款：${order.refund_note ?? ""}。`
         : (order.refund_note ? `订单 ${order.order_id}：${order.refund_note}。` : "") + `如需为订单 ${order.order_id} 申请退款，回复“${order.order_id} 申请退款”即可。`);
     }
   }
-  if (orders.length > 1 && refundRequested(text)) parts.push(X.MULTI_REFUND_TEXT);
+  if (orders.length > 1 && refundRequested(text) && !onlyOne) parts.push(X.MULTI_REFUND_TEXT);
   else if (orders.length > 1 && looseRefund(text)) parts.push(X.ASK_WHICH_REFUND_TEXT);
 
   for (const shipment of shipments) {
@@ -714,7 +721,8 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   const knowledge = last("search_knowledge");
   const selfDamage = M._SELF_DAMAGE.test(text);
   const eta = shipments.length > 0 && (M._ETA.test(text) || wantsTracking(text) && ARRIVAL.test(text));
-  const rush = orders.length > 0 && !shipments.length && M._RUSH.test(text);
+  const cancelling = M._CANCEL.test(text) || T.CANCEL_TALK_RE.test(text);
+  const rush = orders.length > 0 && !shipments.length && M._RUSH.test(text) && !cancelling;
   const inquiry = orders.length === 1 && !refund && !orders[0].error && orders[0].refundable && mentionsRefund(text) && !refundRequested(text);
   if (knowledge) {
     const query = (refund && !refundFailed) || progress ? "退款 到账 工作日"
@@ -745,6 +753,10 @@ export function compose(input: string, allResults: Results, tenant: string, excl
       else if (!parts.length && !ticket) parts.push(knowledge.error ? X.SEARCH_DOWN : `${X.REFUSAL}${canDo(tenant)}`);
     }
   }
+  if (inquiry && M._REFUND_FAILED.test(text) && !parts.some((p) => p.includes("失败"))) {
+    // "SO… 退款失败怎么办": the documents say nothing about it; say so, and what this order's ledger shows.
+    parts.push(X.REFUND_FAILED_TEXT.replace("{status}", (orders[0].refunds ?? []).length ? "" : `订单 ${orders[0].order_id} 目前没有退款记录。`));
+  }
   if (inquiry) {
     const oid = orders[0].order_id;
     if (T.NEGATED_REFUND_RE.test(normalizeWidth(text))) parts.push(`如需退款，可以直接回复“${oid} 申请退款”，这次只解答问题、不会为您发起退款。`);
@@ -764,7 +776,7 @@ export function compose(input: string, allResults: Results, tenant: string, excl
   if (selfDamage) parts.push("如需协商处理，可以回复“转人工”。");
   if (shipments.length && chasing(text) && !shipments.some((s) => s.delivered)) parts.push(X.CHASE_TEXT);
   if (rush) parts.push(X.RUSH_TEXT);
-  if (orders.length === 1 && !refund && M._CANCEL.test(text) && !mentionsRefund(text) && !orders[0].error) {
+  if (orders.length === 1 && !refund && cancelling && !mentionsRefund(text) && !orders[0].error) {
     const oid = orders[0].order_id;
     parts.push(orders[0].status === "paid" && orders[0].refundable
       ? `如需取消这个订单，回复“${oid} 帮我取消订单”即可，未发货的订单按全额退款提交审核。`

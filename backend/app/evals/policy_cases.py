@@ -46,6 +46,7 @@ def refund_case(rng: random.Random, edge: bool) -> dict[str, Any]:
         refund["stated_amount"] = rng.choice((amount, amount + 1, paid, 2000))
     context: dict[str, Any] = {
         "reviewed": rng.random() < 0.25, "customer_declined": rng.random() < 0.05, "customer_asked": rng.random() > 0.1,
+        "claimed_authority": rng.random() < 0.08,
         "limits": LIMITS, "reviewers": {"other_admin": rng.random() > 0.2, "other_staff": rng.random() > 0.15},
     }
     if rng.random() > 0.08:  # sometimes the order could not be read: nothing to permit

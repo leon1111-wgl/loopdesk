@@ -136,6 +136,7 @@ const A_STEP = /进入|点击|页面/;
 const THROUGH_APPLE = /苹果|iphone|ipad|ios|app\s*store/i;
 
 const ASKS_IF_REFUNDABLE = /(?:能|可以|可不可以)退(?!回)/;
+const ASKS_AGAIN = /重复|再次|再(?:申请|退|提交|发起)|又(?:申请|退)|第二次|两次|已经(?:申请|退)|退过/;
 
 /** A parcel gone missing: what happened is the question, and the shipping rules around it do not answer that. */
 export const lostParcel = (text: string): boolean => /丢|被偷|被拿走|冒领/.test(text);
@@ -157,6 +158,8 @@ export function cannotAnswer(question: string, sentence: string, heading = "", v
   if (/开通/.test(question) && !/取消/.test(question) && /取消/.test(sentence)) return true;
   if (lostParcel(question) && !lostParcel(sentence)) return true;
   if (ASKS_IF_REFUNDABLE.test(question) && !/退/.test(sentence)) return true;
+  // "这单是不是不能退" is not answered by "不能重复申请退款" unless it asks about applying again (main-session probe of 1.1.0).
+  if (/重复/.test(sentence) && !ASKS_AGAIN.test(question)) return true;
   if (TO_JOIN.test(question) && !A_STEP.test(sentence)) return true;
   if (ASKS_HOW.test(question) && !NOT_A_WAY.test(question) && !STATES_A_WAY.test(sentence)) return true;
   return !sentence.includes(verb);

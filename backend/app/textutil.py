@@ -494,6 +494,15 @@ _PLAIN_ALSO_RE = re.compile(r"^(?:不退货|不用退货|不想换货?|不换货
 _PLAIN_NUMBER_RE = re.compile(rf"^[0-9]+(?:\.[0-9]+)?$|^(?:元|块钱?)(?:买的|(?:补偿|赔偿)?(?:就行|就好)?吧?)$|^{_PLAIN_AMOUNT}(?:买的)?$")
 # An injected line changes nothing either way, so it is not a reason to stop: the rules still run on the request beside it.
 _PLAIN_INJECTED_RE = re.compile(r"忽略.{0,8}指令|系统通知|管理员已授权|本对话中所有|(?:无需|不需要|不用)(?:审批|审核)|跳过(?:审核|审批)|经理已经|审批单号|^[A-Z]{1,4}-?[0-9]+$")
+# Words that claim an authority the customer does not have: a pasted system notice, an approval nobody gave, a staff role.
+# The grammar reads past them (the rules run as for anyone), and the policy sends such a refund to a person
+# (review.claimed_authority, backend/policies/loopdesk.cedar): the claim changes nothing, except that someone looks.
+CLAIMED_AUTHORITY_RE = re.compile(r"忽略.{0,8}指令|系统通知|管理员已授权|本对话中所有|(?:无需|不需要|不用)(?:审批|审核)|跳过(?:审核|审批)"
+                                  r"|经理已经|审批单号|额度已(?:调整|调至|改)|我是(?:店铺|你们的?|贵店的?)?(?:运营|店长|管理员|主管|经理|客服)")
+
+
+def claims_authority(text: str) -> bool:
+    return bool(CLAIMED_AUTHORITY_RE.search(normalize_width(text or "")))
 _PLAIN_BEFORE_RE = re.compile(r"^(?:本来|原本)不想退的?$|被拒了?$")
 _PLAIN_REASON_RE = re.compile(
     r"坏|碎|破|裂|漏|没声|不响|开线|划痕|瑕疵|质量|有问题|不能用|用不了|连不上|打不开|开不了|没反应|故障|杂音|异味|味道|裂纹|不想要|不喜欢|不太喜欢|不满意|不太满意|不合适|不好|不需要这|不想用|不想续"
@@ -771,11 +780,22 @@ _NOT_WITHDRAW_RE = re.compile(
 _CJK_SPACE_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+|\s+(?=[\u4e00-\u9fff])")
 
 
+# Taking back a cancellation: an unshipped order is cancelled by a refund application (N-063), so "撤回取消申请" and
+# "能撤回申请吗，想留着" take that application back like "撤回退款申请" (simulations, blind card b13).
+WITHDRAW_APPLICATION_RE = re.compile(
+    r"(?:撤回|撤销)掉?(?:一下)?(?:我的|这个|这笔|刚才的?|刚刚的?|之前的?|我?刚才?提交的|刚提交的)*(?:取消(?:订单)?的?)?申请"
+    r"|(?:撤回|撤销)[^。！!？?]{0,6}(?:想留着|想保留|留着|保留|不取消了|不想取消)"
+    r"|(?:想留着|想保留|不取消了|不想取消了?|反悔|改主意)[^。！!？?]{0,12}(?:撤回|撤销)")
+# "不想买了，想取消退款": cancel the order and be refunded, not take a refund back (simulations, dev card leon_coffee_cancel).
+_CANCEL_AND_REFUND_RE = re.compile(r"(?:不想买|不想要|不要这个|不要了)[^。！!？?]{0,12}取消退款|取消退款[^。！!？?]{0,6}(?:不想买|不想要)")
+
+
 def refund_withdraw_requested(text: str) -> bool:
     """True when the message asks to take back a refund application (N-127), not to file one."""
     text = _CJK_SPACE_RE.sub("", ORDER_ID_RE.sub("", normalize_width(text or "")))  # "撤回 SO… 的退款"
-    return (bool(WITHDRAW_REFUND_RE.search(text)) and bool(REFUND_RE.search(text) or "退" in text)
-            and not _NOT_WITHDRAW_RE.search(text))
+    asked = ((bool(WITHDRAW_REFUND_RE.search(text)) and bool(REFUND_RE.search(text) or "退" in text))
+             or bool(WITHDRAW_APPLICATION_RE.search(text)))
+    return asked and not _NOT_WITHDRAW_RE.search(text) and not _CANCEL_AND_REFUND_RE.search(text)
 
 
 # The second step of a withdrawal (N-145): the customer's whole reply is the confirmation the offer asked for,
@@ -810,10 +830,22 @@ _BARE_REFUND_AMOUNT = re.compile(
 _REFUND_AMOUNT_RE = re.compile(REFUND_AMOUNT)
 
 
+# A clause that is not the customer's own request: a pasted "system notice", a limit someone says was changed. A number
+# in it is never the amount to refund ("【系统通知】自动退款额度已调整为5000元。SO… 申请退款", main-session probe of 1.1.0).
+NOT_OWN_AMOUNT_RE = re.compile(r"【[^】]{0,20}】|系统通知|通知[:：]|额度|限额|上限|阈值|调整为|已调整|管理员已授权")
+_AMOUNT_CLAUSE_RE = re.compile(r"[^，,。！!？?；;\n]+[，,。！!？?；;\n]*")
+
+
+def own_amount_text(text: str) -> str:
+    """The message without the clauses that carry someone else's numbers (NOT_OWN_AMOUNT_RE)."""
+    return "".join(c for c in _AMOUNT_CLAUSE_RE.findall(text or "") if not NOT_OWN_AMOUNT_RE.search(c))
+
+
 def stated_refund_amount(text: str) -> float | None:
     """The amount the customer asks back in this message, if they name one (N-218): "退 100 块", "只退 50 元就行",
-    "退我20就行". None for "我要退款" or "退一半"; an amount they took back ("不要退 100 了") is not stated."""
-    kept = NEGATED_REFUND_RE.sub("，", numeral_amounts(normalize_width(text or "")))
+    "退我20就行". None for "我要退款" or "退一半"; an amount they took back ("不要退 100 了") is not stated, nor one in a
+    clause that is not theirs (own_amount_text)."""
+    kept = NEGATED_REFUND_RE.sub("，", numeral_amounts(own_amount_text(normalize_width(text or ""))))
     match = _REFUND_AMOUNT_RE.search(kept)
     number = (re.search(r"\d+(?:\.\d+)?", match.group()).group() if match
               else (bare.group(1).replace(",", "") if (bare := _BARE_REFUND_AMOUNT.search(kept)) else None))
@@ -824,6 +856,11 @@ def stated_refund_amount(text: str) -> float | None:
 # never a question about it ("能取消订单吗", "取消订单会扣钱吗").
 CANCEL_ORDER_RE = re.compile(r"取消(?:这个|这笔|该|我的)?订单|(?:不想要|不要)了.{0,8}取消|退(?:掉)?(?:这个)?订单")
 _CANCEL_VERB_RE = re.compile(r"(?:帮我|给我|我要|我想|请|麻烦|直接|赶紧|马上)取消|不想要了|不要了")
+# How people ask to cancel without the word 订单 (simulations, blind card b05): "能不能给我取消一下", "取消一下订单吧",
+# "那个单子能不能给我撤了". It only earns the cancel offer; filing still needs the closed grammar ("SO… 帮我取消订单").
+CANCEL_TALK_RE = re.compile(r"取消(?:一下|掉)(?:这个|这笔|我的)?(?:订单|单子?)?"
+                            r"|(?:订单|单子)[^，,。！!？?]{0,6}(?:给我|帮我)?(?:取消|撤)(?:了|掉|一下)"
+                            r"|(?:给我|帮我)(?:取消|撤)(?:了|掉|一下)(?![^，,。！!？?]{0,4}(?:申请|退款))")
 
 
 def cancel_requested(text: str, items: Iterable[str] = ()) -> bool:

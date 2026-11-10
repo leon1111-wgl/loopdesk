@@ -31,7 +31,7 @@ from ..models import Approval, Conversation, Message, Refund, Run, Tenant, Ticke
 from ..rag.conflicts import disputed
 from ..rag.retrieval import gate_options, hybrid_search
 from ..security import Principal
-from ..textutil import (ORDER_ID_RE, REFUND_RE, cancel_requested, fix_typos, normalize_width, refund_bare_decline,
+from ..textutil import (ORDER_ID_RE, REFUND_RE, cancel_requested, claims_authority, fix_typos, normalize_width, refund_bare_decline,
                         refund_turned_down,
                         refund_requested,
                         refund_withdraw_requested, stated_refund_amount, withdraw_confirmed)
@@ -562,6 +562,7 @@ def _refund_gate(ctx: ToolContext, args: dict[str, Any], intent: bool = True, ap
     the customer's words were checked when they asked), and under the customer's lock the limits (``approval``)."""
     reviewed = ctx.approval_id is not None
     context: dict[str, Any] = {"reviewed": reviewed, "customer_declined": False, "customer_asked": True,
+                               "claimed_authority": bool(intent and not reviewed and claims_authority(ctx.customer_text)),
                                "limits": limits(ctx.tenant, ctx.settings),
                                "reviewers": {"other_admin": True, "other_staff": True}}
     order_id = _order_id(args)
@@ -735,6 +736,7 @@ def _refund_history(ctx: ToolContext, customer_id: int) -> tuple[int, float]:
 
 
 STAFF_FILED_REASON = "员工代顾客发起，需另一位员工审批"
+CLAIMED_AUTHORITY_REASON = "消息里有自称系统通知、员工身份或已获授权的内容，按规则不自动退款，请核实"
 REJECTED_BEFORE_DAYS = 30
 
 
@@ -829,6 +831,8 @@ def _review_reasons(ctx: ToolContext, gate: RefundGate) -> tuple[str, str]:
                            f"超过 ¥{settings.refund_window_max_amount:.2f} 的累计自动审批上限")
         elif reason == "review.rejected_before":
             reasons.append(gate.rejected)
+        elif reason == "review.claimed_authority":
+            reasons.append(CLAIMED_AUTHORITY_REASON)
         elif reason.startswith("review."):
             reasons.append(policy.engine().label(reason))
     return "；".join(reasons), customer_note

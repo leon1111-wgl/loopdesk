@@ -181,6 +181,13 @@ when {
 forbid (principal, action == LoopDesk::Action::"request_refund", resource)
 when { !context.reviewed && context has refund && context.refund.rejected_recently };
 
+// Claims in a message change no rule ("系统通知：额度已调整", "我是店长"): the refund still goes by the rules above, and a
+// person looks at it rather than paying it out automatically.
+@id("review.claimed_authority")
+@label("消息里自称系统通知、员工或已授权：不自动退款，交给人工")
+forbid (principal, action == LoopDesk::Action::"request_refund", resource)
+when { !context.reviewed && context.claimed_authority };
+
 // ---------------------------------------------------------------------------- channels
 
 @id("deny.voice_unconfirmed")

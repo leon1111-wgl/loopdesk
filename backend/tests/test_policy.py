@@ -119,7 +119,7 @@ def test_money_on_the_voice_channel_needs_the_spoken_yes(engine):
 def test_deny_by_default():
     """No refund facts (the order could not be read): nothing permits the call, and no forbid needs to say so."""
     decision = SHIPPED.decide(("User", "u1"), "request_refund", ("Order", "SO1"),
-                              {"reviewed": False, "customer_declined": False, "customer_asked": True,
+                              {"reviewed": False, "customer_declined": False, "customer_asked": True, "claimed_authority": False,
                                "limits": policy_cases.LIMITS, "reviewers": {"other_admin": True, "other_staff": True}},
                               [policy.entity("User", "u1", role="customer")])
     assert (decision.effect, decision.reasons) == ("deny", ())
@@ -130,7 +130,7 @@ def test_deny_by_default():
 def test_a_review_needs_a_permit_underneath():
     """review.* forbids alone do not make a call reviewable: without the facts a permit needs, it is denied."""
     decision = SHIPPED.decide(("User", "u1"), "request_refund", ("Order", "SO1"),
-                              {"reviewed": False, "customer_declined": False, "customer_asked": True,
+                              {"reviewed": False, "customer_declined": False, "customer_asked": True, "claimed_authority": False,
                                "limits": policy_cases.LIMITS, "reviewers": {"other_admin": True, "other_staff": True}},
                               [policy.entity("User", "u1", role="agent")])
     assert decision.effect == "deny"

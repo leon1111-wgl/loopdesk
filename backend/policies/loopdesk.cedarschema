@@ -50,6 +50,7 @@ namespace LoopDesk {
       reviewed: Bool,                // carrying out a person's approval
       customer_declined: Bool,       // the customer said not to refund (or made it conditional, static demo)
       customer_asked: Bool,          // the message is a plain request in the closed grammar, or a yes to a direct question
+      claimed_authority: Bool,       // the message claims a notice, an approval or a staff role (textutil.claims_authority)
       limits: Limits,
       reviewers: Reviewers,
       refund?: RefundFacts,

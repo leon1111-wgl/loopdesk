@@ -8,7 +8,7 @@ import { noteToolCall } from "./decisionlog";
 import { decide, denial, entity, fen, NOT_LOADED, policyEngine, uid, type Decision, type PolicyEngine } from "./policy";
 import { pack, T, TOOLS, type SeedOrder, type TenantConfig, type TenantTool } from "./pack";
 import { clauseHits, search } from "./retrieval";
-import { classifyReply, conditionalRefund, findAll, fixTypos, itemWords, money, normalizeWidth, plainRequest, refundBareDecline, refundDeclined, refundRequested, refundWithdrawRequested, statedRefundAmount, withdrawConfirmed } from "./text";
+import { claimsAuthority, classifyReply, conditionalRefund, findAll, fixTypos, itemWords, money, normalizeWidth, plainRequest, refundBareDecline, refundDeclined, refundRequested, refundWithdrawRequested, statedRefundAmount, withdrawConfirmed } from "./text";
 
 const TX = pack.texts.tools;
 const HOUR = 3_600_000;
@@ -375,7 +375,8 @@ function otherReviewers(ctx: ToolContext): { other_admin: boolean; other_staff: 
 /** The facts in the order the checks were always made, then the policy (app/agent/business_tools._refund_gate). */
 function refundGate(world: World, ctx: ToolContext, args: Record<string, unknown>, intent = true, approval = true): RefundGate {
   const reviewed = ctx.approvalId !== null;
-  const context: Record<string, unknown> = { reviewed, customer_declined: false, customer_asked: true, limits: limitsOf(ctx.config), reviewers: { other_admin: true, other_staff: true } };
+  const context: Record<string, unknown> = { reviewed, customer_declined: false, customer_asked: true, claimed_authority: intent && !reviewed && claimsAuthority(ctx.customerText),
+    limits: limitsOf(ctx.config), reviewers: { other_admin: true, other_staff: true } };
   const gate: RefundGate = { decision: { action: "request_refund", effect: "deny", reasons: [], errors: [], micros: 0, context }, order: null, amount: null, error: null, waiting: undefined, days: null, stated: null, history: [0, 0], rejected: null };
   const decided = () => {
     gate.decision = decide(world.policy, ["User", ctx.user], "request_refund", ["Order", String(args.order_id ?? "?") || "?"], context, [entity("User", ctx.user, { role: ctx.role })]);
@@ -544,6 +545,7 @@ function refundPolicy(world: World, ctx: ToolContext, args: Record<string, unkno
       reasons.push(reason === "review.velocity_count" ? `近 ${window} 天已有 ${count} 笔退款，超过自动审批的次数上限（${maxCount} 笔）` : `近 ${window} 天累计退款将达到 ¥${money(total + amount)}，超过 ¥${money(maxAmount)} 的累计自动审批上限`);
       addEvidence(ctx, "tool", "refund_history", JSON.stringify({ customer: order.customer, window_days: window, refund_count: count, refund_total: Math.round(total * 100) / 100, this_request: amount }));
     } else if (reason === "review.rejected_before") reasons.push(gate.rejected!);
+    else if (reason === "review.claimed_authority") reasons.push(TX.CLAIMED_AUTHORITY_REASON);
     else if (reason.startsWith("review.")) reasons.push((world.policy ?? policyEngine())?.label(reason) ?? reason);
   }
   if (blocked) throw refusalFor(world, ctx, gate, blocked);
