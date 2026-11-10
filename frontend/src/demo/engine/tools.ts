@@ -4,6 +4,7 @@
  * limit, the velocity limit, four eyes. Thresholds come from the tenant's configuration, never from this file.
  * Nothing leaves the page: a reload starts again from the seed data.
  */
+import { noteToolCall } from "./decisionlog";
 import { pack, T, TOOLS, type SeedOrder, type TenantConfig, type TenantTool } from "./pack";
 import { clauseHits, search } from "./retrieval";
 import { classifyReply, conditionalRefund, findAll, fixTypos, itemWords, money, normalizeWidth, plainRequest, refundBareDecline, refundDeclined, refundRequested, refundWithdrawRequested, statedRefundAmount, withdrawConfirmed } from "./text";
@@ -577,6 +578,13 @@ export function availableTools(ctx: Pick<ToolContext, "tenant" | "role">): Set<s
 }
 
 export function runTool(world: World, ctx: ToolContext, name: string, rawArgs: Record<string, unknown>): Outcome {
+  const outcome = gateAndRun(world, ctx, name, rawArgs);
+  if (outcome.kind === "approval") noteToolCall(name, ctx.role, outcome.args, "approval", null, false, outcome.reason, outcome.approverRole ?? null);
+  else noteToolCall(name, ctx.role, rawArgs, "result", outcome.output, outcome.isError);
+  return outcome;
+}
+
+function gateAndRun(world: World, ctx: ToolContext, name: string, rawArgs: Record<string, unknown>): Outcome {
   const tenantTool = tenantTools(ctx.tenant).find((t) => t.name === name);
   if (!availableTools(ctx).has(name)) return { kind: "result", output: { error: `工具 ${name} 不存在或当前身份无权使用` }, isError: true };
   try {

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit
 from ..admission import get_admission
+from ..agent import decision_log
 from ..agent.business_tools import WITHDRAWN_COMMENT, end_paused_run, order_applications, reviewer_role
 from ..agent.runtime import REQUESTER_WITHDREW, ResumeError, decided_text
 from ..channels.feishu import FeishuClient
@@ -132,16 +133,23 @@ def decide(approval_id: int, body: DecisionIn, principal: Principal = Depends(re
     approval = get_owned(db, Approval, approval_id, principal.tenant.id)
     if approval.status != "pending":
         raise HTTPException(status.HTTP_409_CONFLICT, decided_text(approval.status, approval.comment))
+    needed = required_role(approval, principal.tenant)
+
+    def refuse(code: int, text: str) -> HTTPException:
+        decision_log.approval_decision(principal.user.role, approval.requested_by == principal.user.id, body.decision,
+                                       needed, code, text)
+        return HTTPException(code, text)
+
     if approval.requested_by == principal.user.id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "不能审批自己发起的申请（四眼原则）")
+        raise refuse(status.HTTP_403_FORBIDDEN, "不能审批自己发起的申请（四眼原则）")
     if body.decision == "reject" and not body.comment.strip():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "驳回必须填写原因：顾客会看到这条意见")
-    if (body.decision == "approve" and required_role(approval, principal.tenant) == "admin"
-            and principal.user.role != "admin"):
+        raise refuse(status.HTTP_400_BAD_REQUEST, "驳回必须填写原因：顾客会看到这条意见")
+    if body.decision == "approve" and needed == "admin" and principal.user.role != "admin":
         threshold = principal.tenant.approval_admin_threshold
         if approval.approver_role:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "按这个工具的审批策略，需要管理员审批（坐席可以驳回）")
-        raise HTTPException(status.HTTP_403_FORBIDDEN, f"金额超过 ¥{threshold:.0f}，需要管理员审批（坐席可以驳回）")
+            raise refuse(status.HTTP_403_FORBIDDEN, "按这个工具的审批策略，需要管理员审批（坐席可以驳回）")
+        raise refuse(status.HTTP_403_FORBIDDEN, f"金额超过 ¥{threshold:.0f}，需要管理员审批（坐席可以驳回）")
+    decision_log.approval_decision(principal.user.role, False, body.decision, needed, 200)
     services = get_services()
     # Resuming runs the agent (and may call the model): it takes a slot like a chat message (N-189).
     # A process slot only: a decision unblocks a customer, so a tenant busy with its own customers

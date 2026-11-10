@@ -3,6 +3,7 @@
  * and the runs it made, in the shape the console's API returns them. replay.ts sends it every question nobody recorded.
  */
 import type { AgentEvent } from "../../types";
+import { noteApprovalDecision } from "./decisionlog";
 import { pack, type TenantConfig } from "./pack";
 import { resumeApproval, runTurn, type EngineConversation, type Message, type ModelChoice, type RunRecord } from "./runtime";
 import { isRefusal } from "./text";
@@ -137,12 +138,18 @@ export class DemoEngine {
     const approval = this.world.approvals.find((a) => a.id === id && a.tenant === account.tenant && !a.recorded);
     if (!approval) throw new EngineError(404, "审批单不存在");
     if (approval.status !== "pending") throw new EngineError(409, "这笔申请已经处理过了");
-    if (approval.requester === email) throw new EngineError(403, "不能审批自己发起的申请（四眼原则）");
-    if (decision === "reject" && !comment.trim()) throw new EngineError(400, "驳回必须填写原因：顾客会看到这条意见");
+    const needed = this.requiredRole(approval);
+    const refuse = (status: number, text: string) => {
+      noteApprovalDecision(account.role, approval.requester === email, decision, needed, status, text);
+      return new EngineError(status, text);
+    };
+    if (approval.requester === email) throw refuse(403, "不能审批自己发起的申请（四眼原则）");
+    if (decision === "reject" && !comment.trim()) throw refuse(400, "驳回必须填写原因：顾客会看到这条意见");
     const config = this.config(account.tenant);
-    if (decision === "approve" && this.requiredRole(approval) === "admin" && account.role !== "admin") {
-      throw new EngineError(403, approval.approverRole ? "按这个工具的审批策略，需要管理员审批（坐席可以驳回）" : `金额超过 ¥${Math.round(config.approval_admin_threshold)}，需要管理员审批（坐席可以驳回）`);
+    if (decision === "approve" && needed === "admin" && account.role !== "admin") {
+      throw refuse(403, approval.approverRole ? "按这个工具的审批策略，需要管理员审批（坐席可以驳回）" : `金额超过 ¥${Math.round(config.approval_admin_threshold)}，需要管理员审批（坐席可以驳回）`);
     }
+    noteApprovalDecision(account.role, false, decision, needed, 200);
     const conversation = approval.conversationId === null ? undefined : this.conversations.get(approval.conversationId);
     const { text } = resumeApproval(this.world, approval, decision === "approve" ? "approve" : "reject", { email, name: account.name, role: account.role as "admin" | "agent" }, comment, config, conversation, this.runs.get(approval.runId));
     return { approval: this.approvalBody(approval), final: { text }, delivery: null };

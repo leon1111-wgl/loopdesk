@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit
 from ..channels.wecom import notify_approval
+from . import decision_log
 from ..config import Settings
 from ..governance import script
 from ..guardrails.injection import Channels, detect_injection, unsafe_answer
@@ -794,6 +795,7 @@ class AgentRuntime:
     def _run_tool(self, tracer: Tracer, ctx: ToolContext, call: ToolCall) -> ToolOutcome:
         tool = self._tools(ctx).get(call.name)
         allowed = {t.name for t in self._tools(ctx).for_role(ctx.user.role)}
+        args = call.arguments
         with (tracer.span("tool", call.name, {"arguments": call.arguments, "risk": tool.risk if tool else None}) as span,
               _integration_calls(span, ctx.deadline)):
             if tool is None or call.name not in allowed:
@@ -814,6 +816,8 @@ class AgentRuntime:
                     if need:
                         span.set(approval_required=True, reason=need.reason, customer_note=need.customer_note,
                                  arguments=args)
+                        decision_log.tool_call(call.name, ctx.user.role, args, "approval", None, False, need.reason,
+                                               need.approver_role)
                         return ToolOutcome("approval", reason=need.reason, customer_note=need.customer_note,
                                            arguments=args, approver_role=need.approver_role)
                     try:
@@ -821,6 +825,8 @@ class AgentRuntime:
                     except ApprovalRequired as exc:  # a re-check under the handler's locks (N-039)
                         span.set(approval_required=True, reason=exc.need.reason,
                                  customer_note=exc.need.customer_note, arguments=args, rechecked=True)
+                        decision_log.tool_call(call.name, ctx.user.role, args, "approval", None, False,
+                                               exc.need.reason, exc.need.approver_role)
                         return ToolOutcome("approval", reason=exc.need.reason, customer_note=exc.need.customer_note,
                                            arguments=args, approver_role=exc.need.approver_role)
                     # Tool output is untrusted text (a merchant system, an MCP server): what tries to
@@ -850,6 +856,7 @@ class AgentRuntime:
             if debug is not None:
                 span.set(retrieval=debug)
             span.set(output=outcome.output)
+            decision_log.tool_call(call.name, ctx.user.role, args, "result", outcome.output, outcome.is_error)
         if call.name != "search_knowledge" or outcome.is_error:
             ctx.add_evidence("tool", call.name, json.dumps(outcome.output, ensure_ascii=False),
                              **_order_meta(call.arguments))
